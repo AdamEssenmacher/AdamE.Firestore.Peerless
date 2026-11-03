@@ -31,6 +31,7 @@ workload (for example Linux CI): `dotnet build AdamE.Firestore.Peerless.NoApple.
 
 ```bash
 dotnet test --project tests/AdamE.Firestore.Peerless.Tests        # decoder, properties, golden frames
+dotnet run -c Release --project benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder   # decode time and allocation
 (cd android && ./gradlew :peerless-shim:testDebugUnitTest)         # Java encoder against the same golden frames
 ```
 
@@ -48,8 +49,14 @@ IDisposable listening = PeerlessListener.Listen(
 ```
 
 Disposing stops the listener from any thread: once `Dispose()` returns, no callback is running or will start (unless
-you call it from inside a callback, which then is the last one). The first error stops the listener. Exceptions thrown
-from your callbacks are not caught, as with ordinary Firestore listeners.
+you call it from inside a callback, which then is the last one). Because `Dispose()` waits for a callback in flight,
+don't block inside a callback on a thread that is disposing that listener, and don't call `Dispose()` while holding a
+lock the callback also takes; either deadlocks. The first error stops the listener. If you call `Listen` off the main
+thread, the first callback can arrive before `Listen` returns (an early error is held and posted after it returns).
+Exceptions thrown from your callbacks are not caught, as with ordinary Firestore listeners.
+
+Known build issue: after editing the Java shim, the first `dotnet build` can still bind the previous AAR (Gradle
+rebuilds it during that build); build again, or run `./gradlew :peerless-shim:assembleRelease` in `android/` first.
 
 ## Benchmarks (Android)
 

@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace AdamE.Firestore.Peerless;
@@ -8,24 +9,41 @@ namespace AdamE.Firestore.Peerless;
 /// Decodes one Peerless frame (see <c>docs/wire-format.md</c>) into plain .NET values. The decoder is stateless and
 /// thread-safe, and the result does not reference the input buffer, so the caller may reuse or free it afterwards.
 /// </summary>
+/// <remarks>
+/// A container's array is allocated at its declared size up front only while the counts of all containers still open
+/// fit in the bytes left to read (each item needs at least one byte). Real data always fits, so a normal frame is read
+/// straight into exact-size arrays. When a frame claims more than it can hold (hostile nesting), the excess containers
+/// are read onto a per-thread scratch stack instead and copied out when they end, so their memory grows only with
+/// items actually read. Either way, memory stays proportional to the frame's size.
+/// </remarks>
 public static class SnapshotDecoder
 {
-    // Firestore's timestamp range: 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z.
-    internal const long MinTimestampSeconds = -62_135_596_800;
-    internal const long MaxTimestampSeconds = 253_402_300_799;
-
-    // Containers start this small and double as their items actually arrive, so a declared count costs memory only in
-    // proportion to the bytes that back it, however deeply hostile counts are nested.
-    private const int InitialCapacity = 16;
+    // Kept for the tests' readability; the range lives on FirestoreTimestamp.
+    internal const long MinTimestampSeconds = FirestoreTimestamp.MinSeconds;
+    internal const long MaxTimestampSeconds = FirestoreTimestamp.MaxSeconds;
 
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
+    [ThreadStatic]
+    private static Scratch? cachedScratch;
 
     /// <summary>Decodes a query or document snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or uses an unsupported version.</exception>
     public static FirestoreSnapshot Decode(ReadOnlySpan<byte> frame)
     {
-        var reader = new FrameReader(frame);
-        return reader.ReadFrame();
+        // Taken, not shared: a decode never sees another decode's scratch, even if one somehow nested on this thread.
+        Scratch scratch = cachedScratch ?? new Scratch();
+        cachedScratch = null;
+        try
+        {
+            var reader = new FrameReader(frame, scratch);
+            return reader.ReadFrame();
+        }
+        finally
+        {
+            if (scratch.Reset())
+                cachedScratch = scratch;
+        }
     }
 
     /// <summary>Decodes a query snapshot frame.</summary>
@@ -40,12 +58,19 @@ public static class SnapshotDecoder
         Decode(frame) as FirestoreDocumentSnapshot
         ?? throw new PeerlessFormatException("The frame is not a document snapshot.", Wire.HeaderLength - 2);
 
-    private ref struct FrameReader(ReadOnlySpan<byte> frame)
+    // Strict: invalid UTF-8 (including overlong forms such as modified UTF-8's C0 80, and encoded surrogates) throws
+    // DecoderFallbackException, which the reader turns into a PeerlessFormatException.
+    private static string Utf8(ReadOnlySpan<byte> bytes) => bytes.IsEmpty ? string.Empty : StrictUtf8.GetString(bytes);
+
+    private ref struct FrameReader(ReadOnlySpan<byte> frame, Scratch scratch)
     {
         private readonly ReadOnlySpan<byte> frame = frame;
+        private readonly Scratch scratch = scratch;
         private int position;
-        private KeyCache keys = new();
-        private string?[] seen = [];
+
+        // Items declared but not yet started, across all open containers whose arrays were allocated up front. Each
+        // needs at least one unread byte, so an up-front allocation is allowed only while this fits in the bytes left.
+        private long reserved;
 
         public FirestoreSnapshot ReadFrame()
         {
@@ -61,27 +86,31 @@ public static class SnapshotDecoder
             position = Wire.HeaderLength;
             SnapshotMetadata? metadata = null;
             FirestoreDocument[]? documents = null;
+            Span<ulong> sectionsSeen = stackalloc ulong[4]; // one bit per section ID, known or not
             while (position < frame.Length)
             {
                 int sectionStart = position;
                 byte id = ReadByte();
+                ref ulong word = ref sectionsSeen[id >> 6];
+                ulong bit = 1UL << (id & 63);
+                if ((word & bit) != 0)
+                    throw Fail($"Section {id} appears twice.", sectionStart);
+                word |= bit;
+
                 uint declared = ReadUInt32();
                 if (declared > (uint)(frame.Length - position))
                     throw Fail("A section runs past the end of the frame.", sectionStart);
 
                 int length = (int)declared;
-
                 int end = position + length;
                 switch (id)
                 {
-                    case Wire.Section.Metadata when metadata is null:
+                    case Wire.Section.Metadata:
                         metadata = ReadMetadata();
                         break;
-                    case Wire.Section.Documents when documents is null:
+                    case Wire.Section.Documents:
                         documents = ReadDocuments(kind);
                         break;
-                    case Wire.Section.Metadata or Wire.Section.Documents:
-                        throw Fail($"Section {id} appears twice.", sectionStart);
                     default:
                         position = end; // A section from a newer minor version.
                         break;
@@ -111,18 +140,17 @@ public static class SnapshotDecoder
                 (flags & Wire.MetadataFlags.HasPendingWrites) != 0);
         }
 
+        // Only one level of documents, so its count is allocated exactly: at most 4 bytes of array per frame byte.
         private FirestoreDocument[] ReadDocuments(byte kind)
         {
             int count = ReadCount(minimumBytesEach: 2);
-            var documents = new FirestoreDocument[Math.Min(count, InitialCapacity)];
+            var documents = new FirestoreDocument[count];
             for (int index = 0; index < count; index++)
             {
-                if (index == documents.Length)
-                    Array.Resize(ref documents, Math.Min(count, documents.Length * 2));
                 int start = position;
                 string path = ReadString();
-                if (path.Length == 0)
-                    throw Fail("A document has an empty path.", start);
+                if (!FirestoreDocument.IsValidPath(path))
+                    throw Fail($"\"{path}\" is not a document path: it is empty or has an empty segment.", start);
 
                 byte flags = ReadByte();
                 bool exists = (flags & Wire.DocumentFlags.Exists) != 0;
@@ -133,7 +161,7 @@ public static class SnapshotDecoder
                     (flags & Wire.DocumentFlags.FromCache) != 0,
                     (flags & Wire.DocumentFlags.HasPendingWrites) != 0);
                 FirestoreMap fields = exists ? ReadMapBody(depth: 1) : FirestoreMap.Empty;
-                documents[index] = new FirestoreDocument(path, exists, metadata, fields);
+                documents[index] = new FirestoreDocument(path, exists, metadata, fields, validated: true);
             }
 
             return documents;
@@ -163,10 +191,8 @@ public static class SnapshotDecoder
                 {
                     long seconds = BinaryPrimitives.ReadInt64LittleEndian(Take(8));
                     int nanoseconds = BinaryPrimitives.ReadInt32LittleEndian(Take(4));
-                    if (nanoseconds is < 0 or > 999_999_999)
-                        throw Fail($"Timestamp nanoseconds {nanoseconds} are out of range.", start);
-                    if (seconds is < MinTimestampSeconds or > MaxTimestampSeconds)
-                        throw Fail($"Timestamp seconds {seconds} are outside Firestore's range (years 0001 to 9999).", start);
+                    if (!FirestoreTimestamp.IsValid(seconds, nanoseconds))
+                        throw Fail($"Timestamp {seconds}s+{nanoseconds}ns is outside Firestore's range (years 0001 to 9999).", start);
                     return FirestoreValue.FromTimestamp(new FirestoreTimestamp(seconds, nanoseconds));
                 }
 
@@ -183,15 +209,25 @@ public static class SnapshotDecoder
                 {
                     CheckDepth(depth, start);
                     int count = ReadCount(minimumBytesEach: 1);
-                    FirestoreValue[] items = count == 0 ? [] : new FirestoreValue[Math.Min(count, InitialCapacity)];
-                    for (int index = 0; index < count; index++)
+                    if (count == 0)
+                        return FirestoreValue.FromArray(FirestoreArray.Empty);
+
+                    if (TryReserve(count))
                     {
-                        if (index == items.Length)
-                            Array.Resize(ref items, Math.Min(count, items.Length * 2));
-                        items[index] = ReadValue(depth + 1);
+                        var items = new FirestoreValue[count];
+                        for (int index = 0; index < count; index++)
+                        {
+                            reserved--;
+                            items[index] = ReadValue(depth + 1);
+                        }
+
+                        return FirestoreValue.FromArray(FirestoreArray.Owning(items));
                     }
 
-                    return FirestoreValue.FromArray(FirestoreArray.Owning(items));
+                    int bottom = scratch.ValueTop;
+                    for (int index = 0; index < count; index++)
+                        scratch.PushValue(ReadValue(depth + 1));
+                    return FirestoreValue.FromArray(FirestoreArray.Owning(scratch.PopValues(bottom)));
                 }
 
                 case Wire.Tag.Map:
@@ -206,71 +242,52 @@ public static class SnapshotDecoder
 
         private FirestoreMap ReadMapBody(int depth)
         {
+            int start = position;
             int count = ReadCount(minimumBytesEach: 2);
             if (count == 0)
                 return FirestoreMap.Empty;
 
-            int start = position;
-            var names = new string[Math.Min(count, InitialCapacity)];
-            var values = new FirestoreValue[names.Length];
+            // Key hashes (already computed by the key cache) go on a scratch stack for the duplicate check.
+            int hashBottom = scratch.HashTop;
+            string? duplicate;
+            if (TryReserve(count))
+            {
+                var names = new string[count];
+                var values = new FirestoreValue[count];
+                for (int index = 0; index < count; index++)
+                {
+                    reserved--;
+                    names[index] = ReadKey();
+                    values[index] = ReadValue(depth);
+                }
+
+                if (scratch.HasDuplicateKey(names, hashBottom, out duplicate))
+                    throw Fail($"The map key \"{duplicate}\" appears twice.", start);
+                scratch.PopHashes(hashBottom);
+                return FirestoreMap.Owning(names, values);
+            }
+
+            int keyBottom = scratch.KeyTop;
+            int valueBottom = scratch.ValueTop;
             for (int index = 0; index < count; index++)
             {
-                if (index == names.Length)
-                {
-                    int capacity = Math.Min(count, names.Length * 2);
-                    Array.Resize(ref names, capacity);
-                    Array.Resize(ref values, capacity);
-                }
-
-                names[index] = ReadKey();
-                values[index] = ReadValue(depth);
+                scratch.PushKey(ReadKey());
+                scratch.PushValue(ReadValue(depth));
             }
 
-            RejectDuplicateKeys(names, start);
-            return FirestoreMap.Owning(names, values);
+            if (scratch.HasDuplicateKey(scratch.KeysFrom(keyBottom), hashBottom, out duplicate))
+                throw Fail($"The map key \"{duplicate}\" appears twice.", start);
+            scratch.PopHashes(hashBottom);
+            return FirestoreMap.Owning(scratch.PopKeys(keyBottom), scratch.PopValues(valueBottom));
         }
 
-        // Small maps compare pairwise; larger ones go through an open-addressing table reused for the whole frame, so
-        // the check allocates nothing per map.
-        private void RejectDuplicateKeys(string[] names, int start)
+        // Pre-allocates only while every open pre-allocated container could still be backed by the unread bytes.
+        private bool TryReserve(int count)
         {
-            if (names.Length <= 8)
-            {
-                for (int left = 1; left < names.Length; left++)
-                {
-                    for (int right = 0; right < left; right++)
-                    {
-                        if (string.Equals(names[left], names[right], StringComparison.Ordinal))
-                            throw Fail($"The map key \"{names[left]}\" appears twice.", start);
-                    }
-                }
-
-                return;
-            }
-
-            int size = (int)BitOperations.RoundUpToPowerOf2((uint)names.Length * 2);
-            if (seen.Length < size)
-                seen = new string?[size];
-            int mask = size - 1;
-            try
-            {
-                foreach (string name in names)
-                {
-                    int slot = StringComparer.Ordinal.GetHashCode(name) & mask;
-                    while (seen[slot] is { } occupied)
-                    {
-                        if (string.Equals(occupied, name, StringComparison.Ordinal))
-                            throw Fail($"The map key \"{name}\" appears twice.", start);
-                        slot = (slot + 1) & mask;
-                    }
-
-                    seen[slot] = name;
-                }
-            }
-            finally
-            {
-                Array.Clear(seen, 0, size);
-            }
+            if (reserved + count > frame.Length - position)
+                return false;
+            reserved += count;
+            return true;
         }
 
         private readonly void CheckDepth(int depth, int start)
@@ -286,7 +303,7 @@ public static class SnapshotDecoder
             ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
             try
             {
-                return keys.GetOrAdd(bytes);
+                return scratch.Key(bytes);
             }
             catch (DecoderFallbackException)
             {
@@ -353,47 +370,183 @@ public static class SnapshotDecoder
         private static PeerlessFormatException Fail(string message, int offset) => new(message, offset);
     }
 
-    // Strict: invalid UTF-8 (including overlong forms such as modified UTF-8's C0 80, and encoded surrogates) throws
-    // DecoderFallbackException, which the reader turns into a PeerlessFormatException.
-    private static string Utf8(ReadOnlySpan<byte> bytes) => bytes.IsEmpty ? string.Empty : StrictUtf8.GetString(bytes);
-
-    // A small open-addressing table from UTF-8 bytes to the string decoded from them, for one frame.
-    private struct KeyCache()
+    /// <summary>
+    /// Per-thread working memory for one decode: the item stacks, the field-name cache and the duplicate-key table.
+    /// Kept between decodes while it stays small, so normal frames allocate nothing here.
+    /// </summary>
+    private sealed class Scratch
     {
-        private const int Capacity = 256;
+        private const int InitialStack = 64;
+        private const int MaxRetainedStack = 4096; // larger stacks (a huge frame) are left for the GC
+        private const int KeyCacheSize = 256;
+        private const int KeyCacheLimit = KeyCacheSize / 2;
+        private const int MaxProbes = 8;
 
-        private readonly byte[]?[] encoded = new byte[Capacity][];
-        private readonly string?[] decoded = new string[Capacity];
-        private int count;
+        // Random per process, so the cache's slots can't be predicted by whoever writes the data.
+        private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
 
-        public string GetOrAdd(ReadOnlySpan<byte> bytes)
+        private FirestoreValue[] values = new FirestoreValue[InitialStack];
+        private string[] keys = new string[InitialStack];
+        private int valueHighWater;
+        private int keyHighWater;
+
+        private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
+        private readonly string?[] cachedKeys = new string[KeyCacheSize];
+        private int cachedCount;
+
+        private uint[] hashes = new uint[InitialStack];
+        private int[] seen = [];
+
+        public int ValueTop { get; private set; }
+
+        public int KeyTop { get; private set; }
+
+        public int HashTop { get; private set; }
+
+        public void PopHashes(int bottom) => HashTop = bottom;
+
+        public ReadOnlySpan<string> KeysFrom(int bottom) => keys.AsSpan(bottom, KeyTop - bottom);
+
+        public void PushValue(FirestoreValue value)
         {
+            if (ValueTop == values.Length)
+                Array.Resize(ref values, values.Length * 2);
+            values[ValueTop++] = value;
+            valueHighWater = Math.Max(valueHighWater, ValueTop);
+        }
+
+        public void PushKey(string key)
+        {
+            if (KeyTop == keys.Length)
+                Array.Resize(ref keys, keys.Length * 2);
+            keys[KeyTop++] = key;
+            keyHighWater = Math.Max(keyHighWater, KeyTop);
+        }
+
+        public FirestoreValue[] PopValues(int bottom)
+        {
+            FirestoreValue[] popped = values.AsSpan(bottom, ValueTop - bottom).ToArray();
+            ValueTop = bottom;
+            return popped;
+        }
+
+        public string[] PopKeys(int bottom)
+        {
+            string[] popped = keys.AsSpan(bottom, KeyTop - bottom).ToArray();
+            KeyTop = bottom;
+            return popped;
+        }
+
+        // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
+        // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch.
+        public bool HasDuplicateKey(ReadOnlySpan<string> names, int hashBottom, out string? duplicate)
+        {
+            ReadOnlySpan<uint> keyHashes = hashes.AsSpan(hashBottom, names.Length);
+            duplicate = null;
+            if (names.Length <= 8)
+            {
+                for (int left = 1; left < names.Length; left++)
+                {
+                    for (int right = 0; right < left; right++)
+                    {
+                        if (keyHashes[left] == keyHashes[right] && string.Equals(names[left], names[right], StringComparison.Ordinal))
+                        {
+                            duplicate = names[left];
+                            return true;
+                        }
+                    }
+                }
+
+                return false;
+            }
+
+            int size = (int)BitOperations.RoundUpToPowerOf2((uint)names.Length * 2);
+            if (seen.Length < size)
+                seen = new int[size];
+            int mask = size - 1;
+            try
+            {
+                for (int index = 0; index < names.Length; index++)
+                {
+                    int slot = (int)keyHashes[index] & mask;
+                    while (seen[slot] is var occupied and > 0)
+                    {
+                        int other = occupied - 1;
+                        if (keyHashes[other] == keyHashes[index] && string.Equals(names[other], names[index], StringComparison.Ordinal))
+                        {
+                            duplicate = names[index];
+                            return true;
+                        }
+
+                        slot = (slot + 1) & mask;
+                    }
+
+                    seen[slot] = index + 1;
+                }
+
+                return false;
+            }
+            finally
+            {
+                Array.Clear(seen, 0, size);
+            }
+        }
+
+        // Field names, decoded once per frame. The probe length is capped, so even keys crafted to collide cost a
+        // bounded number of comparisons each; past the cap a key is simply decoded without caching.
+        public string Key(ReadOnlySpan<byte> bytes)
+        {
+            uint hash = 2166136261 ^ Seed;
+            foreach (byte value in bytes)
+                hash = (hash ^ value) * 16777619;
+            hash ^= hash >> 15;
+
+            if (HashTop == hashes.Length)
+                Array.Resize(ref hashes, hashes.Length * 2);
+            hashes[HashTop++] = hash;
+
             if (bytes.IsEmpty)
                 return string.Empty;
 
-            uint hash = 2166136261;
-            foreach (byte value in bytes)
-                hash = (hash ^ value) * 16777619;
-
-            for (int probe = 0; probe < Capacity; probe++)
+            for (int probe = 0; probe < MaxProbes; probe++)
             {
-                int slot = (int)((hash + (uint)probe) % Capacity);
-                if (encoded[slot] is not { } existing)
+                int slot = (int)((hash + (uint)probe) & (KeyCacheSize - 1));
+                if (cachedBytes[slot] is not { } existing)
                 {
                     string text = Utf8(bytes);
-                    if (count >= Capacity / 2)
-                        return text; // Full enough: stop caching, keep decoding.
-                    encoded[slot] = bytes.ToArray();
-                    decoded[slot] = text;
-                    count++;
+                    if (cachedCount < KeyCacheLimit)
+                    {
+                        cachedBytes[slot] = bytes.ToArray();
+                        cachedKeys[slot] = text;
+                        cachedCount++;
+                    }
+
                     return text;
                 }
 
                 if (bytes.SequenceEqual(existing))
-                    return decoded[slot] ?? string.Empty;
+                    return cachedKeys[slot] ?? string.Empty;
             }
 
             return Utf8(bytes);
+        }
+
+        // Clears what the last decode left (so no strings or values outlive it) and says whether to keep this scratch.
+        public bool Reset()
+        {
+            if (RuntimeHelpers.IsReferenceOrContainsReferences<FirestoreValue>())
+                Array.Clear(values, 0, valueHighWater);
+            Array.Clear(keys, 0, keyHighWater);
+            ValueTop = KeyTop = HashTop = valueHighWater = keyHighWater = 0;
+            if (cachedCount > 0)
+            {
+                Array.Clear(cachedBytes);
+                Array.Clear(cachedKeys);
+                cachedCount = 0;
+            }
+
+            return values.Length <= MaxRetainedStack && keys.Length <= MaxRetainedStack
+                && hashes.Length <= MaxRetainedStack * 4 && seen.Length <= MaxRetainedStack * 4;
         }
     }
 }

@@ -3,10 +3,48 @@ using System.Globalization;
 namespace AdamE.Firestore.Peerless;
 
 /// <summary>A Firestore timestamp: seconds since the Unix epoch plus nanoseconds, exactly as stored.</summary>
-/// <param name="Seconds">Seconds since 1970-01-01T00:00:00Z.</param>
-/// <param name="Nanoseconds">Nanoseconds within the second, from 0 to 999,999,999.</param>
-public readonly record struct FirestoreTimestamp(long Seconds, int Nanoseconds)
+/// <remarks>
+/// Only Firestore's range is accepted: 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z, the same range the
+/// decoder enforces. <c>default</c> is the Unix epoch.
+/// </remarks>
+public readonly record struct FirestoreTimestamp
 {
+    /// <summary>The earliest second Firestore stores: 0001-01-01T00:00:00Z.</summary>
+    public const long MinSeconds = -62_135_596_800;
+
+    /// <summary>The latest second Firestore stores: 9999-12-31T23:59:59Z.</summary>
+    public const long MaxSeconds = 253_402_300_799;
+
+    /// <summary>Creates a timestamp.</summary>
+    /// <param name="seconds">Seconds since 1970-01-01T00:00:00Z, from <see cref="MinSeconds"/> to <see cref="MaxSeconds"/>.</param>
+    /// <param name="nanoseconds">Nanoseconds within the second, from 0 to 999,999,999.</param>
+    /// <exception cref="ArgumentOutOfRangeException">The timestamp is outside Firestore's range.</exception>
+    public FirestoreTimestamp(long seconds, int nanoseconds)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(seconds, MinSeconds);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(seconds, MaxSeconds);
+        ArgumentOutOfRangeException.ThrowIfNegative(nanoseconds);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(nanoseconds, 999_999_999);
+        Seconds = seconds;
+        Nanoseconds = nanoseconds;
+    }
+
+    /// <summary>Seconds since 1970-01-01T00:00:00Z.</summary>
+    public long Seconds { get; }
+
+    /// <summary>Nanoseconds within the second, from 0 to 999,999,999.</summary>
+    public int Nanoseconds { get; }
+
+    internal static bool IsValid(long seconds, int nanoseconds) =>
+        seconds is >= MinSeconds and <= MaxSeconds && nanoseconds is >= 0 and <= 999_999_999;
+
+    /// <summary>Deconstructs into seconds and nanoseconds.</summary>
+    public void Deconstruct(out long seconds, out int nanoseconds)
+    {
+        seconds = Seconds;
+        nanoseconds = Nanoseconds;
+    }
+
     /// <summary>
     /// Converts to a <see cref="DateTimeOffset"/> in UTC. Precision below 100 ns (one tick) is truncated.
     /// </summary>

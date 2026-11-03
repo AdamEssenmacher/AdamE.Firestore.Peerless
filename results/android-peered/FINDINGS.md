@@ -27,35 +27,44 @@ that changed one document, is converted in full**: the listener converts all of 
 ordinary app's listener does. Peerless (step 3) does the same on both sides, encoding and decoding the whole snapshot,
 so the two stay comparable; a changes-only variant is planned but not built.
 
-| docs | kind | wall ms | main-thread CPU ms | gen0 GCs in callback | managed alloc | GREF peak (absolute) | GREF peak over settled |
-|---:|---|---:|---:|---:|---:|---:|---:|
-| 10 | initial | 10 | 5 | 1 | 1.8 MB | 392 | 312 |
-| 10 | update ×20 | 58 | 9 | 10 | 2.1 MB | 432 | 304 |
-| 100 | initial | 72 | 48 | 3 | 16 MB | 1,530 | 1,428 |
-| 100 | update ×20 | 78 | 54 | 3 | 15 MB | 1,947 | 1,437 |
-| 500 | initial | 1,164 | 398 | 55 | 84 MB | 3,060 | 2,955 |
-| 500 | update ×20 | 552 | 353 | 13 | 73 MB | 4,546 | 2,433 |
-| 1000 | initial | 9,035 | 1,291 | 517 | 190 MB | 5,703 | 5,593 |
-| 1000 | update ×20 | 1,244 | 732 | 26 | 147 MB | 8,635 (max 10,658) | 4,520 (max 6,540) |
-| 1 (doc listener) | update ×50 | 8 | 1.6 | 0–1 | 213 KB | 273 | 150 |
+| docs | kind | n | wall ms | main-thread CPU ms | gen0 GCs in callback | managed alloc | GREF peak (absolute) | GREF peak over settled |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| 10 | initial | 1 | 10 | 5 | 1 | 1.8 MB | 392 | 312 |
+| 10 | update, after a settle | 4 | 64 | 9 | 10 | 2.1 MB | 377 | 242 |
+| 10 | update, other | 16 | 58 | 9 | 10 | 2.1 MB | 449 | 312 |
+| 100 | initial | 1 | 72 | 48 | 3 | 16 MB | 1,530 | 1,428 |
+| 100 | update ×20 (all) | 20 | 78 | 54 | 3 | 15 MB | 1,947 | 1,437 |
+| 500 | initial | 1 | 1,164 | 398 | 55 | 84 MB | 3,060 | 2,955 |
+| 500 | update ×20 (all) | 20 | 552 | 353 | 13 | 73 MB | 4,546 | 2,433 |
+| 1000 | initial | 1 | 9,035 | 1,291 | 517 | 190 MB | 5,703 | 5,593 |
+| 1000 | update, after a settle | 4 | 1,620 (max 10,032) | 923 | 34 | 147 MB | 6,732 | 2,614 |
+| 1000 | update, other | 16 | 1,211 | 719 | 26 | 147 MB | 9,121 (max 10,658) | 5,003 (max 6,540) |
+| 1 (doc listener) | update ×50 | 50 | 8 | 1.6 | 0–1 | 213 KB | 273 | 150 |
 
-*GREF peak* is the highest .NET-side count seen during the callback (sampled after each document). *Peak over
-settled* subtracts the count at the last settle point (forced .NET and Java GC) before the callback. An earlier
-version of this table subtracted the count at callback entry instead, which already included references that previous
-callbacks had left for the GC. That understated update peaks (1000-doc updates: 2,028 then, 4,520 now). All figures
-here are recomputed from the committed CSVs by `scripts/summarize-peered.py`; none needed a re-run.
+Medians (the per-size split for every row is in [the run's summary](20261103-134726/summary.md)).
 
-- **Managed allocation runs at about 4 KB per converted value** (3.9–4.5 KB at every size): peer creation plus the
-  binding's `JavaDictionary` and collection marshalling. This is the cost Peerless is meant to remove.
+**Read the absolute peak first: it is what an app sees.** An app never forces the full .NET and Java GCs this
+benchmark runs at its settle points, so nothing ever brings its count back down to the settled level. *Peak over
+settled* subtracts the count at the last settle point, which removes only references that survive a full GC.
+References earlier callbacks left for the GC since that settle are still included, so the figure grows with the number
+of callbacks since the settle. The cadence: a settle before listening, after the initial snapshot, and after every
+5th update (every 12th in the single-document phase; every update in warmup). Between two settles, the count at
+callback entry climbs (1000 docs: from 4,120 to 9,188 over five updates) and drops again at the next settle. That is
+why *update, after a settle* rows show a lower peak over settled than the other updates. An earlier version of this
+table subtracted the count at callback entry instead, which understated update peaks more (1000-doc updates: 2,028).
+All figures here are recomputed from the committed CSVs by `scripts/summarize-peered.py`; none needed a re-run.
+
+- **Managed allocation is about 3.5–4.5 KB per converted value at 100+ documents.** Updates (about 3.5 KB) run 10–20%
+  below initial snapshots (3.9–4.5 KB). The 10-document and single-document rows run higher (3.8–6.6 KB), with more
+  GC per callback. The cost is peer creation plus the binding's `JavaDictionary` and collection marshalling, which is
+  what Peerless is meant to remove.
 - **GREFs per snapshot.** With no GC during the callback, conversion holds about 31–36 GREFs per document over the
   settled count (10 docs: 312–364). At 500 and 1000 docs the peak is far below 35 × N because GCs fire inside the
-  callback and release earlier documents' peers. On a device the GC would not collect hugely less often: this
-  runtime's maximum gen0 budget is 6 MB (`GCGen0MaxBudget=6291456`), and a 1000-doc callback allocates about 190 MB,
-  so it still needs 30 or more GCs. Between two of them, about 6 MB ÷ 4.4 KB per value ≈ 1,400 values (about 30
-  documents, about 1,100 GREFs) can be live, on top of the roughly 4 GREFs per document that stay held (below). That
-  puts a device's 1000-doc peak at roughly **6,000–7,000 over settled**, in line with the 4,500–6,540 measured here,
-  and well under ART's 51,200 limit. An earlier version of this file estimated 35,000; that ignored GCs entirely and
-  was wrong.
+  callback and release earlier documents' peers. The highest absolute count measured is 10,658 (.NET-side; add about
+  435 for ART's own table), against ART's limit of 51,200. How high a device would go isn't something these runs
+  can bound: it depends on how often its GC runs inside the callback, which is exactly what this emulator distorts
+  (below). An earlier version of this file gave device estimates (35,000, then 6,000–7,000); neither followed from the
+  data, and both are withdrawn.
 - **GREFs level off rather than grow.** After forced GCs, references settle and stay flat across 20 updates at every
   size (for example, ART's global table holds 4,545 after the first 1000-doc snapshot and 4,550 after 20 updates).
   There is no per-update growth from listening. Two retained sets need explaining before step 6 compares numbers:
@@ -87,22 +96,34 @@ here are recomputed from the committed CSVs by `scripts/summarize-peered.py`; no
      `-p:PeerlessGen0=4mb` switch it used was removed afterwards, because it had no effect.
    - **Wall-time and GC numbers should be re-measured on a real arm64 device.** The Peerless side must be measured
      under the same conditions.
-2. **Host contention.** Load average ranged from 34 to 172 on 18 cores during the runs (other Scavos builds and tests,
-   the self-hosted runner's Firebase NuGet build, and two other Android emulators). Wall-time outliers (for example
-   10 s for one 1000-doc update) line up with this. Main-thread CPU time, allocations and GREF counts are much more
-   stable than wall time.
-3. **One run per configuration.** Initial-snapshot rows have n=1. Spread is shown as min–max in each `summary.md`.
+2. **GC storms right after a settle point.** Some callbacks run 500–720 GCs and take about 10 s at 1000 documents,
+   against about 25–50 GCs and 1.2 s for their neighbours, with about 2× the CPU. In every peered run this hits the
+   initial snapshot (which follows the "before listen" settle) and one update that follows a settle: seq 1 in this run
+   (right after the "after initial" settle) and seq 6 in round 2 of the step-3 comparison (right after the settle at
+   update 5). It is the GC count, not host load: an earlier version of this file blamed host contention for the 10 s
+   update, which was wrong. The likeliest cause is the forced full GCs at the settle point resetting the GC's tuning,
+   so the next large callback starts with a small gen0 budget; that is unconfirmed. Peerless callbacks don't show it
+   (0–1 GCs each). The summaries now report *update, after a settle* separately, in both modes, so these callbacks
+   can't skew the other update medians.
+3. **Host contention.** Load average ranged from 34 to 172 on 18 cores during the runs (other Scavos builds and tests,
+   the self-hosted runner's Firebase NuGet build, and two other Android emulators). Main-thread CPU time, allocations
+   and GREF counts are much more stable than wall time.
+4. **One run per configuration.** Initial-snapshot rows have n=1. Spread is shown as min–max in each `summary.md`.
    The two older runs (`20261103-133339`, `20261103-133741-gen0-4mb`) predate peak sampling, so their summaries show
    n/a for the GREF columns.
-4. **The managed GREF counter.** `JniEnvironment.Runtime.GlobalReferenceCount` matches ART's own table
+5. **The managed GREF counter.** `JniEnvironment.Runtime.GlobalReferenceCount` matches ART's own table
    (`VMDebug.dumpReferenceTables`, logged at every settle point) apart from about 435 cached `java.lang.Class`
    references that it doesn't count. Peaks are sampled after each document, so a spike within one document would be
    missed.
-5. **The committed timings include a small bookkeeping walk.** These runs counted the converted values (to prove the
+6. **The committed timings include a small bookkeeping walk.** These runs counted the converted values (to prove the
    conversion was complete) *inside* the timed window. The code now counts after the closing probe. The walk only
    reads the plain .NET values (no JNI), so it slightly overstates wall, CPU and allocation; these runs were not
    repeated for it.
-6. **Seeding is not free either.** Building 400-document write batches through the peered binding drove the runtime
+7. **The peered map walk was later made fair.** These runs converted each nested Java map with `keySet()` plus a
+   `get(new String(key))` per entry. That costs an extra Java string and hash lookup per entry, which inflates the
+   baseline. The code now walks `entrySet()` once. All numbers in this file predate the change. The step-3
+   comparison re-ran the peered path with the new walk; see `results/android/FINDINGS.md`.
+8. **Seeding is not free either.** Building 400-document write batches through the peered binding drove the runtime
    to its emergency GC threshold (`monodroid-gc: 46080 outstanding GREFs. Performing a full GC!`, 3 times while seeding
    1000 docs). Writes are out of scope, but a peered write path also gets close to ART's 51,200 limit.
 
@@ -122,7 +143,9 @@ here are recomputed from the committed CSVs by `scripts/summarize-peered.py`; no
 
 - ART's reference tables are read through a hidden API (`dalvik.system.VMDebug.dumpReferenceTables`). The API 36
   Google APIs image allowed it as-is; the run script now also runs `adb shell settings put global hidden_api_policy 1`
-  on the emulator (and warns if that fails) so it keeps working on stricter images.
+  on the emulator (and warns if that fails) so it keeps working on stricter images. It restores the previous value
+  when it exits, and refuses a serial that isn't an emulator unless `ALLOW_DEVICE=1` is set, because it also clears
+  logcat.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
 - `FIRESTORE_PORT=8181 scripts/run-android-peered.sh [serial] [am-start extras]` (now `run-android-benchmark.sh`), then

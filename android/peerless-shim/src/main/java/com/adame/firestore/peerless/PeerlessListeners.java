@@ -36,13 +36,13 @@ public final class PeerlessListeners {
     }
 
     @NonNull
-    public static ListenerRegistration listen(@NonNull Query query, @NonNull FrameSink sink, int delivery) {
-        Encoder encoder = new Encoder(sink, delivery);
+    public static ListenerRegistration listen(@NonNull Query query, @NonNull FrameSink sink, int delivery, boolean timed) {
+        Encoder encoder = new Encoder(sink, delivery, timed);
         return query.addSnapshotListener(MetadataChanges.EXCLUDE, new EventListener<QuerySnapshot>() {
             @Override
             public void onEvent(@Nullable QuerySnapshot snapshot, @Nullable FirebaseFirestoreException error) {
-                long start = System.nanoTime();
-                long cpu = Debug.threadCpuTimeNanos();
+                long start = encoder.timed ? System.nanoTime() : 0;
+                long cpu = encoder.timed ? Debug.threadCpuTimeNanos() : 0;
                 if (snapshot == null) {
                     encoder.fail(error);
                     return;
@@ -59,13 +59,14 @@ public final class PeerlessListeners {
     }
 
     @NonNull
-    public static ListenerRegistration listen(@NonNull DocumentReference document, @NonNull FrameSink sink, int delivery) {
-        Encoder encoder = new Encoder(sink, delivery);
+    public static ListenerRegistration listen(@NonNull DocumentReference document, @NonNull FrameSink sink, int delivery,
+                                              boolean timed) {
+        Encoder encoder = new Encoder(sink, delivery, timed);
         return document.addSnapshotListener(MetadataChanges.EXCLUDE, new EventListener<DocumentSnapshot>() {
             @Override
             public void onEvent(@Nullable DocumentSnapshot snapshot, @Nullable FirebaseFirestoreException error) {
-                long start = System.nanoTime();
-                long cpu = Debug.threadCpuTimeNanos();
+                long start = encoder.timed ? System.nanoTime() : 0;
+                long cpu = encoder.timed ? Debug.threadCpuTimeNanos() : 0;
                 if (snapshot == null) {
                     encoder.fail(error);
                     return;
@@ -82,22 +83,31 @@ public final class PeerlessListeners {
     }
 
     private static final class Encoder {
+        // Buffers above this size are shrunk once frames have been much smaller for a while, so one huge snapshot
+        // doesn't pin its memory (the writer's array plus the direct buffer) for the rest of the listener's life.
+        static final int SHRINK_ABOVE = 1024 * 1024;
+        static final int SHRINK_AFTER_FRAMES = 8;
+
         final FrameWriter writer = new FrameWriter();
+        final boolean timed;
         private final FrameSink sink;
         private final int delivery;
         @Nullable
         private ByteBuffer direct;
+        private int smallFrames;
+        private int largestRecentFrame;
 
-        Encoder(FrameSink sink, int delivery) {
+        Encoder(FrameSink sink, int delivery, boolean timed) {
             if (delivery != DELIVERY_BYTE_ARRAY && delivery != DELIVERY_DIRECT_BUFFER)
                 throw new IllegalArgumentException("Unknown delivery " + delivery);
             this.sink = sink;
             this.delivery = delivery;
+            this.timed = timed;
         }
 
         void deliver(long start, long cpuAtStart) {
-            long encodeNanos = System.nanoTime() - start;
-            long encodeCpuNanos = Debug.threadCpuTimeNanos() - cpuAtStart;
+            long encodeNanos = timed ? System.nanoTime() - start : 0;
+            long encodeCpuNanos = timed ? Debug.threadCpuTimeNanos() - cpuAtStart : 0;
             int length = writer.length();
             if (delivery == DELIVERY_BYTE_ARRAY) {
                 byte[] copy;
@@ -107,18 +117,15 @@ public final class PeerlessListeners {
                     encodingFailed(failure);
                     return;
                 }
-                sink.onFrame(copy, length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
+                send(copy, length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
+                shrinkIfIdle(length);
                 return;
             }
 
             ByteBuffer buffer = direct;
             if (buffer == null || buffer.capacity() < length) {
-                // The next power of two, without overflowing: above 2^30 the buffer is exactly the frame's size.
-                int capacity = length > (1 << 30)
-                        ? length
-                        : Math.max(64 * 1024, Integer.highestOneBit(Math.max(1, length - 1)) << 1);
                 try {
-                    buffer = ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN);
+                    buffer = ByteBuffer.allocateDirect(capacityFor(length)).order(ByteOrder.LITTLE_ENDIAN);
                 } catch (RuntimeException | OutOfMemoryError failure) {
                     encodingFailed(failure);
                     return;
@@ -128,7 +135,42 @@ public final class PeerlessListeners {
             }
             buffer.clear();
             buffer.put(writer.buffer(), 0, length);
-            sink.onFrame(null, length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
+            send(null, length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
+            shrinkIfIdle(length);
+        }
+
+        private void send(@Nullable byte[] frame, int length, long start, long cpu, long encodeNanos, long encodeCpuNanos) {
+            if (timed)
+                sink.onTimedFrame(frame, length, start, cpu, encodeNanos, encodeCpuNanos);
+            else
+                sink.onFrame(frame, length);
+        }
+
+        // After SHRINK_AFTER_FRAMES frames in a row that each used under a quarter of a buffer above SHRINK_ABOVE,
+        // the writer's array is cut to fit the largest of them and the direct buffer is dropped (the next frame
+        // allocates one of a fitting size and hands it to .NET, which releases the old one).
+        private void shrinkIfIdle(int length) {
+            int capacity = Math.max(writer.capacity(), direct == null ? 0 : direct.capacity());
+            if (capacity <= SHRINK_ABOVE || length >= capacity / 4) {
+                smallFrames = 0;
+                largestRecentFrame = 0;
+                return;
+            }
+            largestRecentFrame = Math.max(largestRecentFrame, length);
+            if (++smallFrames < SHRINK_AFTER_FRAMES)
+                return;
+            writer.shrinkTo(capacityFor(largestRecentFrame));
+            if (direct != null && direct.capacity() > SHRINK_ABOVE)
+                direct = null;
+            smallFrames = 0;
+            largestRecentFrame = 0;
+        }
+
+        // The next power of two, at least 64 KB, without overflowing: above 2^30 it is exactly the frame's size.
+        static int capacityFor(int length) {
+            return length > (1 << 30)
+                    ? length
+                    : Math.max(64 * 1024, Integer.highestOneBit(Math.max(1, length - 1)) << 1);
         }
 
         // .NET stops the listener when it hears this. Exceptions thrown by .NET callbacks are not caught here: like an

@@ -219,6 +219,12 @@ public final class FrameWriter {
         }
     }
 
+    /**
+     * A reference is written as its path within its database. The database ID is not carried: Firestore's
+     * {@code DocumentReference.getPath()} doesn't include it, and adding it would need a new value tag, which is a
+     * major format change. A reference into another database of the same project therefore decodes as a path in
+     * the listener's own database. See docs/wire-format.md.
+     */
     public void writeReference(@NonNull String path) {
         writeByte(TAG_REFERENCE);
         writeString(path);
@@ -330,6 +336,20 @@ public final class FrameWriter {
 
     public int length() {
         return length;
+    }
+
+    /** The writer's current buffer size. */
+    public int capacity() {
+        return buffer.length;
+    }
+
+    /** Replaces the buffer with a smaller one of at least {@code capacity} bytes (between frames: drops the content). */
+    public void shrinkTo(int capacity) {
+        int target = Math.max(64, Math.min(capacity, maxLength));
+        if (target < buffer.length) {
+            buffer = new byte[target];
+            reset();
+        }
     }
 
     /** A copy of the encoded frame. */

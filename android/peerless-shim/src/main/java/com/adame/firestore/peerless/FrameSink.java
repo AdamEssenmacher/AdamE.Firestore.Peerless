@@ -19,16 +19,23 @@ public interface FrameSink {
     /**
      * One encoded snapshot.
      *
-     * @param frame          the frame, in byte-array delivery; {@code null} in direct delivery, where the frame is
-     *                       bytes {@code [0, length)} of the last buffer passed to {@link #onBuffer}
-     * @param length         the frame's length in bytes
+     * @param frame  the frame, in byte-array delivery; {@code null} in direct delivery, where the frame is bytes
+     *               {@code [0, length)} of the last buffer passed to {@link #onBuffer}
+     * @param length the frame's length in bytes
+     */
+    void onFrame(@Nullable byte[] frame, int length);
+
+    /**
+     * {@link #onFrame} with timings, for the benchmark only: sent instead of it when the listener was registered with
+     * {@code timed}, so production frames don't pay for the clock reads.
+     *
      * @param startNanos     {@code System.nanoTime()} when the Firestore callback began (CLOCK_MONOTONIC)
      * @param startCpuNanos  {@code Debug.threadCpuTimeNanos()} when the Firestore callback began
      * @param encodeNanos    wall time spent encoding, in nanoseconds
      * @param encodeCpuNanos this thread's CPU time spent encoding, in nanoseconds
      */
-    void onFrame(@Nullable byte[] frame, int length, long startNanos, long startCpuNanos, long encodeNanos,
-                 long encodeCpuNanos);
+    void onTimedFrame(@Nullable byte[] frame, int length, long startNanos, long startCpuNanos, long encodeNanos,
+                      long encodeCpuNanos);
 
     /** The listener failed; Firestore stops it. {@code code} is FirebaseFirestoreException.Code's ordinal value. */
     void onError(int code, @NonNull String message);
