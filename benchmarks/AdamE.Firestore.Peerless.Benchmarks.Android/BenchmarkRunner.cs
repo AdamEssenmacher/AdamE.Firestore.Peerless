@@ -38,7 +38,8 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     private ResultWriter? results;
 
     // The .NET-side global reference count at the most recent settle point. A sample's "peak over settled" is measured
-    // from here, so references a previous callback left for the GC are not charged to this one.
+    // from here: that removes the references that survive a full GC, but references earlier callbacks left for the GC
+    // since this settle still count, so the figure depends on how many callbacks ran since it.
     private int lastSettledGlobal;
 
     public async Task RunAsync()
