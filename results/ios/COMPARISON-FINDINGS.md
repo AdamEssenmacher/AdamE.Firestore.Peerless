@@ -17,7 +17,7 @@ The step-4 peered baseline is [FINDINGS.md](FINDINGS.md), and Android's comparis
 
 On the same documents, sizes, settle points and simulator, Peerless delivers a snapshot as .NET values with:
 
-- **no `NSObject` peers at all**: 0 created and 0 live in every one of 556 Peerless callbacks, the snapshot itself
+- **no `NSObject` peers at all**: 0 created and 0 peer-table entries added in every one of 556 Peerless callbacks, the snapshot itself
   included (peered: about 47 created per document, 47,129 for a 1000-document snapshot),
 - **about 37× less managed allocation** (about 80 bytes per value instead of about 3 KB),
 - **25–28× less main-queue CPU** for collections of 500–1000 documents (1000 docs: 10 ms instead of 257–282 ms),
@@ -179,6 +179,51 @@ committed) matched them: 100 docs at 1.2–1.3 ms, 0 peers and about 350 KB per 
 calibration, `read back as written`, `identical (465 values)`, and the dispose race (20 thread-pool disposals, 11 of
 them during a running callback, plus one from inside a callback). Runs now fail, and the script exits nonzero, on any
 failed check.
+
+## Review changes, round two
+
+The second review moved the iOS .NET side onto the core's `ListenerGate`, the platform-neutral state machine
+Android's listener uses, with its tests in the core. That brought the rest of Android's behaviour: an error that
+arrives before `Listen` returns is held and posted to the main queue afterwards, production frames are untimed (the
+shim takes no clock reads unless the benchmark's observer asks), and `FirestoreListenException.Code` is the
+`FirestoreErrorCode` enum. The shim's lock stays underneath the gate, for native safety only: one writer per listener
+on a concurrent queue, and a context release that can't race a native callback. The lock order is always shim, then
+gate, and nothing waits for the shim while holding the gate.
+
+**A deadlock, found and fixed.** The first smoke run after these changes hung in the dispose race. A thread-pool
+`Dispose` held the shim's lock and called `-[FIRListenerRegistration remove]`, which takes Firestore's own listener
+mutex. Meanwhile, on the main queue, Firestore held that mutex while calling our callback block, which was waiting
+for the shim's lock. `sample` showed both stacks. The round-one shim already called `-remove` under its lock; that
+run's dispose race just didn't hit the window. The shim now never calls into the registration while holding its
+lock, on any path (removal, errors, attach). `tests/ListenerTests.m` reproduces the interleaving with a stand-in for
+Firestore's mutex. It reports `DEADLOCK` when the old ordering is restored, and passes with the fix.
+
+Also in round two:
+
+- **Lock-wait timing.** Encode timing now starts after the callback holds the lock. The timed runs above predate
+  the lock, so they include no lock wait.
+- **Version check.** It reads the loaded FirebaseFirestore framework's bundle version (Firestore has no public
+  version API) as well as FirebaseCore's. An ABI break, meaning a symbol the shim links against has gone, fails
+  earlier, when dyld loads the app.
+- **Rebuilds.** `Directory.Packages.props`, which `build-shim.sh` reads the binding version from, is now an input of
+  the shim build, so a binding version bump rebuilds it.
+- **Deadlocks documented.** `PeerlessListener`'s docs list the cases where `Dispose` waits forever. One is specific to
+  iOS: two listeners whose callbacks run at once, on a concurrent or a non-main queue, and dispose each other (ABBA).
+- **Deterministic listener tests.** They run in the headless shim executable, with the test playing Firestore:
+  - dispose before the first callback;
+  - an error, with the release deferred to the end of the callback;
+  - encode failure (−1);
+  - dispose from inside a callback;
+  - removal waiting for a callback in flight;
+  - a concurrent queue (400 callbacks, no overlap, none after removal);
+  - a foreign error domain;
+  - the Firestore-mutex deadlock above.
+
+  Each test counts release calls: exactly one. A mutation check confirmed the tests catch a removal that skips the
+  lock. 20 of 20 pass.
+- **Simulator smoke runs after the fix** (NativeAOT, host load 150–165, timings not committed): three in a row passed
+  every check. The dispose race recorded 13, 12 and 11 of its 20 disposals landing during a running callback. Frame
+  costs matched the timed runs (100 docs: 1.2–1.3 ms, 0 peers, 345 KB).
 
 ## What makes these numbers unreliable
 

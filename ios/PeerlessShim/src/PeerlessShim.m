@@ -1,5 +1,6 @@
 #import "PeerlessShim.h"
 #import "AdamEPeerlessFrameWriter.h"
+#import "AdamEPeerlessTesting.h"
 
 #import <pthread.h>
 #import <stdatomic.h>
@@ -29,6 +30,17 @@ const char *adame_peerless_compiled_firebase_version(void) {
     return ADAME_PEERLESS_FIREBASE_VERSION;
 }
 
+const char *adame_peerless_runtime_firestore_version(void) {
+    static char version[32];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *value = [NSBundle bundleForClass:[FIRFirestore class]].infoDictionary[@"CFBundleShortVersionString"];
+        if ([value isKindOfClass:[NSString class]])
+            strlcpy(version, value.UTF8String, sizeof version);
+    });
+    return version;
+}
+
 /// One listener: its writer (reused for every snapshot), the .NET callbacks and context, and the registration.
 ///
 /// Everything a callback touches is guarded by `_lock`, held for the whole callback, so callbacks never overlap (even
@@ -50,6 +62,8 @@ const char *adame_peerless_compiled_firebase_version(void) {
     BOOL _stopped;
     adame_peerless_release_callback _deferredRelease; // removal from inside a callback: released when it returns
     BOOL _releaseDeferred;
+    id<FIRListenerRegistration> _deferredRegistration; // taken out by a removal from inside a callback
+    BOOL _timed;
     adame_peerless_frame_timing _timing;
 }
 
@@ -66,9 +80,11 @@ const char *adame_peerless_compiled_firebase_version(void) {
 @end
 
 static AdamEPeerlessListener *AdamEPeerlessNewListener(void *context, adame_peerless_frame_callback onFrame,
-                                                       adame_peerless_error_callback onError) {
+                                                       adame_peerless_error_callback onError, BOOL timed) {
     AdamEPeerlessListener *listener = [AdamEPeerlessListener new];
     listener->_writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64 * 1024];
+    listener->_writer.timesData = timed;
+    listener->_timed = timed;
     listener->_context = context;
     listener->_onFrame = onFrame;
     listener->_onError = onError;
@@ -80,34 +96,40 @@ static inline uintptr_t AdamEPeerlessThisThread(void) {
     return (uintptr_t)pthread_self();
 }
 
-// Under the lock. Mutes the listener and removes its Firestore registration (which is safe on any thread).
-static void AdamEPeerlessStopLocked(AdamEPeerlessListener *listener) {
+// Under the lock. Mutes the listener and takes its Firestore registration out, for the caller to remove *after*
+// unlocking: Firestore holds its own listener mutex while it calls the callback block, and that block waits for our
+// lock, so calling -remove (which takes Firestore's mutex) while holding ours would deadlock against it.
+static id<FIRListenerRegistration> AdamEPeerlessStopLocked(AdamEPeerlessListener *listener) {
     listener->_stopped = YES;
-    [listener->_registration remove];
+    id<FIRListenerRegistration> registration = listener->_registration;
     listener->_registration = nil;
+    return registration;
 }
 
 // Stores the registration once addSnapshotListener: returns. A callback on another thread may already have failed and
 // stopped the listener, in which case the registration is removed straight away.
 static void AdamEPeerlessAttach(AdamEPeerlessListener *listener, id<FIRListenerRegistration> registration) {
     pthread_mutex_lock(&listener->_lock);
-    if (listener->_stopped)
-        [registration remove];
-    else
+    BOOL stopped = listener->_stopped;
+    if (!stopped)
         listener->_registration = registration;
     pthread_mutex_unlock(&listener->_lock);
+    if (stopped)
+        [registration remove];
 }
 
 // One Firestore callback. `encode` writes the snapshot into the writer.
 static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NSError *error,
                                 void (^encode)(AdamEPeerlessFrameWriter *writer)) {
-    uint64_t start = adame_peerless_now_nanos();
-    uint64_t startCpu = adame_peerless_thread_cpu_nanos();
     pthread_mutex_lock(&listener->_lock);
     if (listener->_stopped) {
         pthread_mutex_unlock(&listener->_lock);
         return;
     }
+    id<FIRListenerRegistration> removeAfterUnlock = nil;
+    // Timed only once the lock is held, so a wait for another callback or a removal isn't counted as encoding.
+    uint64_t start = listener->_timed ? adame_peerless_now_nanos() : 0;
+    uint64_t startCpu = listener->_timed ? adame_peerless_thread_cpu_nanos() : 0;
     atomic_store(&listener->_callbackThread, AdamEPeerlessThisThread());
 
     if (snapshot == nil) {
@@ -117,7 +139,7 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
             code = [error.domain isEqualToString:FIRFirestoreErrorDomain] ? (int32_t)error.code : (int32_t)FIRFirestoreErrorCodeUnknown;
             message = error.localizedDescription ?: @"Firestore reported an error without a description.";
         }
-        AdamEPeerlessStopLocked(listener);
+        removeAfterUnlock = AdamEPeerlessStopLocked(listener);
         listener->_onError(listener->_context, code, message.UTF8String);
     } else {
         NSString *failure = nil;
@@ -130,21 +152,27 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
         }
 
         if (failure != nil) {
-            AdamEPeerlessStopLocked(listener);
+            removeAfterUnlock = AdamEPeerlessStopLocked(listener);
             listener->_onError(listener->_context, ADAME_PEERLESS_ENCODE_FAILED, failure.UTF8String);
         } else {
-            listener->_timing = (adame_peerless_frame_timing){
-                .start_nanos = start,
-                .start_cpu_nanos = startCpu,
-                .encode_nanos = adame_peerless_now_nanos() - start,
-                .encode_cpu_nanos = adame_peerless_thread_cpu_nanos() - startCpu,
-                .data_nanos = listener->_writer.dataNanos,
-            };
+            if (listener->_timed)
+                listener->_timing = (adame_peerless_frame_timing){
+                    .start_nanos = start,
+                    .start_cpu_nanos = startCpu,
+                    .encode_nanos = adame_peerless_now_nanos() - start,
+                    .encode_cpu_nanos = adame_peerless_thread_cpu_nanos() - startCpu,
+                    .data_nanos = listener->_writer.dataNanos,
+                };
             listener->_onFrame(listener->_context, listener->_writer.bytes, listener->_writer.length);
         }
     }
 
     atomic_store(&listener->_callbackThread, 0);
+    // Removed from inside this callback: its registration (taken out by remove) goes with the error's, after unlocking.
+    if (listener->_deferredRegistration != nil) {
+        removeAfterUnlock = removeAfterUnlock ?: listener->_deferredRegistration;
+        listener->_deferredRegistration = nil;
+    }
     if (listener->_releaseDeferred) {
         listener->_releaseDeferred = NO;
         void *context = listener->_context;
@@ -153,14 +181,15 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
             listener->_deferredRelease(context);
     }
     pthread_mutex_unlock(&listener->_lock);
+    [removeAfterUnlock remove];
 }
 
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback onFrame,
-                                  adame_peerless_error_callback onError) {
+                                  adame_peerless_error_callback onError, int timed) {
     id object = (__bridge id)query;
     if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRQuery class]])
         return NULL;
-    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError);
+    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, timed != 0);
     __weak AdamEPeerlessListener *weak = listener;
     id<FIRListenerRegistration> registration =
         [(FIRQuery *)object addSnapshotListener:^(FIRQuerySnapshot *snapshot, NSError *error) {
@@ -175,11 +204,11 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
 }
 
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback onFrame,
-                                     adame_peerless_error_callback onError) {
+                                     adame_peerless_error_callback onError, int timed) {
     id object = (__bridge id)document;
     if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRDocumentReference class]])
         return NULL;
-    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError);
+    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, timed != 0);
     __weak AdamEPeerlessListener *weak = listener;
     id<FIRListenerRegistration> registration =
         [(FIRDocumentReference *)object addSnapshotListener:^(FIRDocumentSnapshot *snapshot, NSError *error) {
@@ -202,19 +231,21 @@ void adame_peerless_listener_remove(void *pointer, adame_peerless_release_callba
     // context when it returns (and keeps the listener alive until then).
     if (atomic_load(&listener->_callbackThread) == AdamEPeerlessThisThread()) {
         if (!listener->_stopped)
-            AdamEPeerlessStopLocked(listener);
+            listener->_deferredRegistration = AdamEPeerlessStopLocked(listener);
         listener->_deferredRelease = release;
         listener->_releaseDeferred = YES;
         return;
     }
 
-    // Anywhere else: taking the lock waits for a callback in flight; once it's held, none can start.
+    // Anywhere else: taking the lock waits for a callback in flight; once it's held, none can start. Firestore's
+    // registration is removed after unlocking (see AdamEPeerlessStopLocked), and a callback that was waiting for the
+    // lock then finds the listener stopped and returns without touching the context, so releasing it is safe.
     pthread_mutex_lock(&listener->_lock);
-    if (!listener->_stopped)
-        AdamEPeerlessStopLocked(listener);
+    id<FIRListenerRegistration> registration = listener->_stopped ? nil : AdamEPeerlessStopLocked(listener);
     void *context = listener->_context;
     listener->_context = NULL;
     pthread_mutex_unlock(&listener->_lock);
+    [registration remove];
     if (release != NULL)
         release(context);
 }
@@ -224,4 +255,18 @@ void adame_peerless_listener_timing(void *pointer, adame_peerless_frame_timing *
         return;
     AdamEPeerlessListener *listener = (__bridge AdamEPeerlessListener *)pointer;
     *timing = listener->_timing;
+}
+
+void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback onFrame,
+                                    adame_peerless_error_callback onError, id<FIRListenerRegistration> registration,
+                                    AdamEPeerlessTestingCallback *callback) {
+    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, NO);
+    __weak AdamEPeerlessListener *weak = listener;
+    *callback = ^(id snapshot, NSError *error, void (^encode)(AdamEPeerlessFrameWriter *writer)) {
+        AdamEPeerlessListener *strong = weak;
+        if (strong != nil)
+            AdamEPeerlessHandle(strong, snapshot, error, encode);
+    };
+    AdamEPeerlessAttach(listener, registration);
+    return (__bridge_retained void *)listener;
 }

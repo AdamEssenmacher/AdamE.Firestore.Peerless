@@ -3,6 +3,8 @@
 // more than one key is written entry by entry with the writer's building blocks; single-key maps and arrays go through
 // -writeValue:, as snapshot data does.
 //
+// ListenerTests.m adds the listener's lock, stop, error and release paths.
+//
 // A plain executable rather than XCTest, so it runs headless on a simulator with `simctl spawn` and needs no Xcode
 // project: scripts/test-ios-shim.sh. Usage: GoldenFixtureTests <fixtures/wire directory>. Exit code 0 = all passed.
 #import <Foundation/Foundation.h>
@@ -229,6 +231,18 @@ static void RefusesNestingDeeperThan100(void) {
     }
 }
 
+void ListenerTestsRecord(BOOL ok, NSString *name, NSString *detail) {
+    if (ok) {
+        passes++;
+        printf("PASS %s\n", name.UTF8String);
+    } else {
+        failures++;
+        printf("FAIL %s\n  %s\n", name.UTF8String, detail.UTF8String);
+    }
+}
+
+extern void RunListenerTests(void);
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc < 2) {
@@ -243,6 +257,7 @@ int main(int argc, const char *argv[]) {
         AReusedWriterProducesTheSameFrameAgain(fixtures);
         StringEdgeCases();
         RefusesNestingDeeperThan100();
+        RunListenerTests();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;
     }

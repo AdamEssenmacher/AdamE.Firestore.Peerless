@@ -84,8 +84,9 @@ table("Managed allocation per snapshot (KB)", "alloc_bytes", 1024, 0,
       ".NET allocations on the callback thread. Objective-C allocations (snapshot.data's dictionaries, the frame buffer) aren't counted in either mode.")
 table("NSObject peers created per snapshot", "peers_created", 1, 0,
       "Every peer the runtime registered during the callback (the peer table's insertion count).")
-table("Live NSObject peers at peak during a snapshot", "peers_peak_delta", 1, 0,
-      "Peak minus the count at callback entry (sampled per document in peered mode).")
+table("NSObject peer table entries added at peak during a snapshot", "peers_peak_delta", 1, 0,
+      "Peak minus the count at callback entry (sampled per document in peered mode). Entries are native retains held; "
+      "a GC can't remove one while the main-queue callback runs (NSObject_Disposer drains on the main queue).")
 table("GCs during a snapshot", "gen0", 1, 0, "Collections of any generation that started inside the callback.")
 
 lines += ["## Settled peers (after forced GC, finalizers and a main-queue turn)", "",

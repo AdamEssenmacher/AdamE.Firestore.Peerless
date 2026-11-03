@@ -3,15 +3,70 @@ using Firebase.CloudFirestore;
 
 namespace AdamE.Firestore.Peerless.iOS;
 
+/// <summary>Firestore's error codes (the same enum as the Android library's), numbered as gRPC numbers them (and as Firestore's SDKs report them).</summary>
+public enum FirestoreErrorCode
+{
+    /// <summary>Not an error.</summary>
+    Ok = 0,
+
+    /// <summary>The operation was cancelled.</summary>
+    Cancelled = 1,
+
+    /// <summary>An unknown error.</summary>
+    Unknown = 2,
+
+    /// <summary>The client specified an invalid argument.</summary>
+    InvalidArgument = 3,
+
+    /// <summary>The deadline expired before the operation could complete.</summary>
+    DeadlineExceeded = 4,
+
+    /// <summary>A requested document was not found.</summary>
+    NotFound = 5,
+
+    /// <summary>A document the client tried to create already exists.</summary>
+    AlreadyExists = 6,
+
+    /// <summary>The caller lacks permission (for example, security rules denied the query).</summary>
+    PermissionDenied = 7,
+
+    /// <summary>A resource has been exhausted, such as a quota.</summary>
+    ResourceExhausted = 8,
+
+    /// <summary>The system is not in a state required for the operation (for example, a missing index).</summary>
+    FailedPrecondition = 9,
+
+    /// <summary>The operation was aborted, typically by a concurrency issue.</summary>
+    Aborted = 10,
+
+    /// <summary>The operation was attempted past the valid range.</summary>
+    OutOfRange = 11,
+
+    /// <summary>The operation is not implemented or supported.</summary>
+    Unimplemented = 12,
+
+    /// <summary>An internal error.</summary>
+    Internal = 13,
+
+    /// <summary>The service is currently unavailable.</summary>
+    Unavailable = 14,
+
+    /// <summary>Unrecoverable data loss or corruption.</summary>
+    DataLoss = 15,
+
+    /// <summary>The request does not have valid authentication credentials.</summary>
+    Unauthenticated = 16,
+}
+
 /// <summary>Firestore reported that a listener failed.</summary>
 public sealed class FirestoreListenException : Exception
 {
     /// <summary>Creates the exception.</summary>
-    public FirestoreListenException(int code, string message)
+    public FirestoreListenException(FirestoreErrorCode code, string message)
         : base(message) => Code = code;
 
-    /// <summary>Firestore's error code (gRPC numbering, e.g. 7 = permission denied, 14 = unavailable).</summary>
-    public int Code { get; }
+    /// <summary>Firestore's error code. A value outside the enum is a code a newer SDK added.</summary>
+    public FirestoreErrorCode Code { get; }
 }
 
 /// <summary>
@@ -26,9 +81,28 @@ public sealed class FirestoreListenException : Exception
 /// <para>
 /// <b>Stopping.</b> Dispose the returned object to stop listening. It is safe from any thread. Once
 /// <see cref="IDisposable.Dispose"/> returns, no <c>onSnapshot</c> or <c>onError</c> call starts, and one that was
-/// already running has finished; to guarantee that, <c>Dispose</c> waits for a callback in flight on another thread
-/// (so don't dispose on a thread a callback is waiting for). The exception is <c>Dispose</c> called from inside a
-/// callback, which returns at once: the running callback is the last one.
+/// already running has finished; to guarantee that, <c>Dispose</c> waits for a callback in flight on another thread.
+/// The exception is <c>Dispose</c> called from inside a callback (on the callback thread), which returns at once: the
+/// running callback is the last one.
+/// </para>
+/// <para>
+/// <b>Because Dispose waits, three patterns deadlock:</b>
+/// <list type="bullet">
+/// <item>a callback that blocks waiting for a thread which is itself disposing this listener (for example,
+/// <c>onSnapshot</c> doing <c>task.Wait()</c> on work that calls <c>Dispose</c>);</item>
+/// <item>calling <c>Dispose</c> while holding a lock that the callback also takes;</item>
+/// <item>specific to iOS, where an app can give Firestore a concurrent or non-main callback queue: two listeners whose
+/// callbacks run at the same time on different threads and each dispose the other (A's callback disposes B while
+/// B's callback disposes A). Each waits for the other's callback to finish. On the main queue, which runs one callback
+/// at a time, this can't happen.</item>
+/// </list>
+/// Dispose from the callback thread, from inside the callback, or without holding the callback's locks; to stop one
+/// listener from another's callback on a concurrent queue, hand the disposal to another queue.
+/// </para>
+/// <para>
+/// <b>Calling Listen off the main queue.</b> Firestore may then deliver the first callback before <c>Listen</c>
+/// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
+/// held and posted to the main queue after <c>Listen</c> has returned.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> Until it is disposed or fails, a listener is rooted: the shim holds a GC handle to its callbacks, so
@@ -51,8 +125,10 @@ public sealed class FirestoreListenException : Exception
 /// </para>
 /// <para>
 /// <b>Firebase version.</b> The shim is compiled against one Firebase iOS SDK version (12.18.0 for this build). The
-/// first <c>Listen</c> checks the app's Firebase (from AdamE.Firebase.iOS.Core) has the same major version, and throws
-/// <see cref="InvalidOperationException"/> if not.
+/// first <c>Listen</c> checks that the FirebaseFirestore framework the app loaded (its bundle version) and FirebaseCore
+/// (<c>App.FirebaseVersion</c>) both have that major version, and throws <see cref="InvalidOperationException"/> if
+/// not. A build whose Firestore lacks a symbol the shim links against fails earlier, when the app loads, before any
+/// check can run.
 /// </para>
 /// </remarks>
 public static class PeerlessListener
@@ -111,6 +187,10 @@ public static class PeerlessListener
     internal static unsafe string CompiledFirebaseVersion =>
         Marshal.PtrToStringUTF8((nint)Native.CompiledFirebaseVersion()) ?? "unknown";
 
+    /// <summary>The FirebaseFirestore framework version the app loaded, or "" if its bundle doesn't say.</summary>
+    internal static unsafe string RuntimeFirestoreVersion =>
+        Marshal.PtrToStringUTF8((nint)Native.RuntimeFirestoreVersion()) ?? string.Empty;
+
     /// <summary>The shim's monotonic clock in nanoseconds, the clock <see cref="FrameArrival"/> uses.</summary>
     internal static long NowNanoseconds() => (long)Native.NowNanos();
 
@@ -124,14 +204,18 @@ public static class PeerlessListener
     }
 
     // The shim only uses long-stable SDK API (snapshot.data, metadata, the value classes), so a newer minor or patch
-    // release is accepted; a different major version may have changed what it relies on.
+    // release is accepted; a different major version may have changed what it relies on. Firestore's own framework is
+    // what the shim calls; FirebaseCore is checked too, since the two ship together.
     private static string? CheckFirebaseVersion()
     {
         string compiled = CompiledFirebaseVersion;
-        string running = Firebase.Core.App.FirebaseVersion;
-        return Major(compiled) == Major(running) && Major(compiled) is not null
+        string firestore = RuntimeFirestoreVersion;
+        string core = Firebase.Core.App.FirebaseVersion;
+        string? expected = Major(compiled);
+        return expected is not null && Major(firestore) == expected && Major(core) == expected
             ? null
-            : $"Peerless's iOS shim was compiled against Firebase {compiled}, but the app runs Firebase {running}. "
+            : $"Peerless's iOS shim was compiled against Firebase {compiled}, but the app loaded FirebaseFirestore "
+                + $"{(firestore.Length == 0 ? "(version unreadable)" : firestore)} and FirebaseCore {core}. "
                 + "Use a Peerless build for this Firebase major version.";
 
         static string? Major(string version) => version.Split('.') is [var major, ..] && major.Length > 0 ? major : null;

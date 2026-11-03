@@ -41,7 +41,8 @@
 
   <!-- Builds the shim when its sources are newer than the xcframework. A packaged build will ship the xcframework. -->
   <ItemGroup>
-    <PeerlessShimSource Include="$(PeerlessShimDirectory)PeerlessShim/src/**/*;$(PeerlessShimDirectory)PeerlessShim/include/**/*;$(PeerlessShimDirectory)build-shim.sh" />
+    <!-- Directory.Packages.props: build-shim.sh reads the binding version from it, so a version bump rebuilds. -->
+    <PeerlessShimSource Include="$(PeerlessShimDirectory)PeerlessShim/src/**/*;$(PeerlessShimDirectory)PeerlessShim/include/**/*;$(PeerlessShimDirectory)build-shim.sh;$(MSBuildThisFileDirectory)../../Directory.Packages.props" />
   </ItemGroup>
   <Target Name="BuildPeerlessShim" BeforeTargets="PrepareForBuild;ResolveAssemblyReferences;_CreateBindingResourcePackage"
           Inputs="@(PeerlessShimSource)" Outputs="$(PeerlessShimXcframework)/Info.plist">

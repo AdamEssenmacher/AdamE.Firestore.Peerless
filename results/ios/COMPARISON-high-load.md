@@ -79,9 +79,9 @@ Every peer the runtime registered during the callback (the peer table's insertio
 | 1 (doc) | initial | 81 | 0 | – |
 | 1 (doc) | update | 39 | 0 | – |
 
-## Live NSObject peers at peak during a snapshot
+## NSObject peer table entries added at peak during a snapshot
 
-Peak minus the count at callback entry (sampled per document in peered mode).
+Peak minus the count at callback entry (sampled per document in peered mode). Entries are native retains held; a GC can't remove one while the main-queue callback runs (NSObject_Disposer drains on the main queue).
 
 | docs | kind | peered | peerless | peered ÷ peerless |
 |---:|---|---:|---:|---:|

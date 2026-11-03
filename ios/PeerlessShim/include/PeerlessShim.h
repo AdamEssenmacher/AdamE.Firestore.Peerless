@@ -13,6 +13,9 @@
 //   and the running callback is the last.
 // - `release` runs exactly once, when no callback can still use the context: inside remove, or, when remove is called
 //   from inside a callback, right after that callback returns.
+// - Firestore's own registration is never removed while the listener's lock is held. Firestore holds its listener
+//   mutex while it calls the callback, which waits for our lock, so removing under our lock deadlocks (found by the
+//   benchmark's dispose race and reproduced in tests/ListenerTests.m).
 #ifndef ADAME_PEERLESS_SHIM_H
 #define ADAME_PEERLESS_SHIM_H
 
@@ -48,23 +51,31 @@ typedef struct adame_peerless_frame_timing {
 
 /// Listens to a FIRQuery (passed as its Objective-C object pointer). Returns the listener, or NULL if `query` isn't
 /// a FIRQuery. Callbacks run on the Firestore instance's callback queue (the main queue unless the app chose
-/// another), with metadata-only changes excluded, as addSnapshotListener: does by default.
+/// another), with metadata-only changes excluded, as addSnapshotListener: does by default. With `timed` nonzero the
+/// listener records adame_peerless_frame_timing for each frame (a few clock reads, plus two per document); production
+/// listeners pass 0 and take no clock reads.
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback on_frame,
-                                  adame_peerless_error_callback on_error);
+                                  adame_peerless_error_callback on_error, int timed);
 
 /// Listens to a FIRDocumentReference. Same contract as adame_peerless_listen_query.
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback on_frame,
-                                     adame_peerless_error_callback on_error);
+                                     adame_peerless_error_callback on_error, int timed);
 
 /// Stops the listener (see the contract above) and invalidates the listener pointer. Safe from any thread, and more
 /// than once per listener is a caller error.
 void adame_peerless_listener_remove(void *listener, adame_peerless_release_callback release);
 
-/// Fills in the timing of the frame being delivered. Only meaningful during a frame callback.
+/// Fills in the timing of the frame being delivered. Only meaningful during a frame callback of a timed listener.
+/// Timing starts once the callback holds the listener's lock, so time spent waiting for it isn't counted.
 void adame_peerless_listener_timing(void *listener, adame_peerless_frame_timing *timing);
 
 /// The Firebase iOS SDK version the shim was compiled against (for example "12.18.0").
 const char *adame_peerless_compiled_firebase_version(void);
+
+/// The version of the FirebaseFirestoreInternal framework the app actually loaded, from its bundle's
+/// CFBundleShortVersionString (Firestore has no public version API), or "" if it can't be read. An ABI break (a
+/// symbol the shim uses gone) fails earlier, when dyld loads the app, before any version check can run.
+const char *adame_peerless_runtime_firestore_version(void);
 
 /// The shim's monotonic clock (CLOCK_UPTIME_RAW), in nanoseconds.
 uint64_t adame_peerless_now_nanos(void);

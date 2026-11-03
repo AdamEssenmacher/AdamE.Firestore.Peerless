@@ -29,14 +29,16 @@ internal static unsafe class Native
         nint query,
         nint context,
         delegate* unmanaged<nint, byte*, nuint, void> onFrame,
-        delegate* unmanaged<nint, int, byte*, void> onError);
+        delegate* unmanaged<nint, int, byte*, void> onError,
+        int timed);
 
     [DllImport(Library, EntryPoint = "adame_peerless_listen_document")]
     public static extern nint ListenDocument(
         nint document,
         nint context,
         delegate* unmanaged<nint, byte*, nuint, void> onFrame,
-        delegate* unmanaged<nint, int, byte*, void> onError);
+        delegate* unmanaged<nint, int, byte*, void> onError,
+        int timed);
 
     [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);
@@ -46,6 +48,9 @@ internal static unsafe class Native
 
     [DllImport(Library, EntryPoint = "adame_peerless_compiled_firebase_version")]
     public static extern byte* CompiledFirebaseVersion();
+
+    [DllImport(Library, EntryPoint = "adame_peerless_runtime_firestore_version")]
+    public static extern byte* RuntimeFirestoreVersion();
 
     [DllImport(Library, EntryPoint = "adame_peerless_now_nanos")]
     public static extern ulong NowNanos();

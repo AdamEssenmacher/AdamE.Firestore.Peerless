@@ -31,34 +31,41 @@ internal interface IFrameObserver
 }
 
 /// <summary>
-/// The .NET end of one shim listener, and the <see cref="IDisposable"/> the app holds. The shim holds a
-/// <see cref="GCHandle"/> to it as its context and calls the <see cref="UnmanagedCallersOnlyAttribute"/> entry points
-/// below once per snapshot; the frame is decoded in place, as a span over the shim's buffer, before the call returns.
+/// The .NET end of one shim listener, and the <see cref="IDisposable"/> the app holds. Its concurrency contract
+/// (removal safe from any thread, first error stops, early errors deferred, release once) is the platform-neutral
+/// <see cref="ListenerGate"/>, shared with Android and tested in the core; this class adapts it to the shim's C API.
 /// </summary>
 /// <remarks>
-/// The removal contract lives in the shim (PeerlessShim.h): it runs each callback under the listener's lock, so
-/// removal waits for one in flight, none starts afterwards, and the handle is released only when no callback can still
-/// read it. Removal from inside a callback (as <see cref="Fail"/> does) is detected there and deferred to the
-/// callback's end. Callbacks for one listener are serialized, so <see cref="failed"/> needs no lock.
+/// <para>
+/// Two layers, with one lock order (shim, then gate). The shim's per-listener lock (PeerlessShim.h) is held across
+/// each native callback: it keeps a concurrent callback queue from sharing the frame writer, and its release callback,
+/// which frees the <see cref="GCHandle"/>, runs only when no native callback can still read it. The gate, entered from
+/// inside that callback, holds the .NET contract.
+/// </para>
+/// <para>
+/// The gate's "remove the registration" is <c>adame_peerless_listener_remove</c>. <see cref="ListenerGate.Stop"/> calls
+/// it after leaving the gate's lock, so it never holds the gate while waiting for the shim's. From inside a callback
+/// (<see cref="ListenerGate.Fail"/>), the shim sees its own thread and doesn't wait. The gate has nothing of its own to
+/// release: the handle is the shim's to free.
+/// </para>
 /// </remarks>
 internal sealed unsafe class FrameReceiver : IDisposable
 {
     public delegate FirestoreSnapshot FrameDecoder(ReadOnlySpan<byte> frame);
 
+    private readonly ListenerGate gate;
     private readonly FrameDecoder decode;
     private readonly Action<FirestoreSnapshot> onSnapshot;
-    private readonly Action<Exception> onError;
     private readonly IFrameObserver? observer;
-    private nint listener;
-    private volatile bool failed;
+    private nint listener; // for the timing hook only
 
     private FrameReceiver(
         FrameDecoder decode, Action<FirestoreSnapshot> onSnapshot, Action<Exception> onError, IFrameObserver? observer)
     {
         this.decode = decode;
         this.onSnapshot = onSnapshot;
-        this.onError = onError;
         this.observer = observer;
+        gate = new ListenerGate(onError, PostToMainQueue, release: static () => { });
     }
 
     public static FrameReceiver Start(
@@ -72,9 +79,10 @@ internal sealed unsafe class FrameReceiver : IDisposable
         var receiver = new FrameReceiver(decode, onSnapshot, onError, observer);
         GCHandle self = GCHandle.Alloc(receiver);
         nint context = GCHandle.ToIntPtr(self);
+        int timed = observer is null ? 0 : 1; // production frames take no clock reads
         nint created = isDocument
-            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError)
-            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError);
+            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed)
+            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed);
         GC.KeepAlive(target);
         if (created == 0)
         {
@@ -82,41 +90,36 @@ internal sealed unsafe class FrameReceiver : IDisposable
             throw new ArgumentException($"The shim could not listen to a {target.GetType().Name}.", nameof(target));
         }
 
-        _ = Interlocked.Exchange(ref receiver.listener, created);
-        // A first callback on another queue may have failed before the pointer was stored: remove it now.
-        if (receiver.failed)
-            receiver.Dispose();
+        Volatile.Write(ref receiver.listener, created);
+        // A first callback on another queue may already have failed: Attach then removes it and posts the error.
+        receiver.gate.Attach(() => Native.Remove(created, &OnRelease));
         return receiver;
     }
 
     /// <summary>Stops the listener (see <see cref="PeerlessListener"/>'s remarks). Idempotent; safe from any thread.</summary>
-    public void Dispose()
-    {
-        nint current = Interlocked.Exchange(ref listener, 0);
-        if (current != 0)
-            Native.Remove(current, &OnRelease);
-    }
+    public void Dispose() => gate.Stop();
 
     [UnmanagedCallersOnly]
     private static void OnFrame(nint context, byte* data, nuint length)
     {
         if (GCHandle.FromIntPtr(context).Target is FrameReceiver receiver)
-            receiver.Deliver(data, length);
+            receiver.Deliver((nint)data, length);
     }
 
     [UnmanagedCallersOnly]
     private static void OnError(nint context, int code, byte* message)
     {
-        if (GCHandle.FromIntPtr(context).Target is not FrameReceiver receiver || receiver.failed)
+        if (GCHandle.FromIntPtr(context).Target is not FrameReceiver receiver)
             return;
         string text = message is null
             ? "Firestore reported an error."
             : Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(message));
-        receiver.Fail(code == Native.EncodeFailed
+        _ = receiver.gate.Run(() => receiver.gate.Fail(code == Native.EncodeFailed
             ? new PeerlessFormatException($"The shim could not encode the snapshot: {text}", 0)
-            : new FirestoreListenException(code, text));
+            : new FirestoreListenException((FirestoreErrorCode)code, text)));
     }
 
+    // Called by the shim exactly once, when no native callback can still use the context.
     [UnmanagedCallersOnly]
     private static void OnRelease(nint context)
     {
@@ -125,15 +128,12 @@ internal sealed unsafe class FrameReceiver : IDisposable
             handle.Free();
     }
 
-    private void Deliver(byte* data, nuint length)
+    private void Deliver(nint data, nuint length) => gate.Run(() =>
     {
-        if (failed)
-            return;
-        nint current = Volatile.Read(ref listener);
         if (observer is not null)
         {
             FrameTiming timing = default;
-            Native.Timing(current, &timing);
+            Native.Timing(Volatile.Read(ref listener), &timing);
             observer.Arrived(new FrameArrival(
                 (long)timing.StartNanos,
                 (long)timing.StartCpuNanos,
@@ -151,24 +151,18 @@ internal sealed unsafe class FrameReceiver : IDisposable
         {
             if (length > int.MaxValue)
                 throw new PeerlessFormatException("The shim delivered a frame over 2 GB.", 0);
-            snapshot = decode(new ReadOnlySpan<byte>(data, (int)length));
+            snapshot = decode(new ReadOnlySpan<byte>((void*)data, (int)length));
         }
         catch (PeerlessFormatException exception)
         {
-            Fail(exception);
+            gate.Fail(exception);
             return;
         }
 
         onSnapshot(snapshot);
         observer?.Completed();
-    }
+    });
 
-    // On the callback thread, inside a callback. The first error is the last callback: the listener is stopped (the
-    // shim defers releasing the handle until this callback returns), then told.
-    private void Fail(Exception exception)
-    {
-        failed = true;
-        Dispose();
-        onError(exception);
-    }
+    // An error that arrived before Listen returned is delivered from here, after the app has its handle.
+    private static void PostToMainQueue(Action action) => CoreFoundation.DispatchQueue.MainQueue.DispatchAsync(action);
 }

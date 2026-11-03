@@ -44,7 +44,10 @@ typedef NS_ENUM(uint8_t, AdamEPeerlessSection) {
 
 @property(nonatomic, readonly) const uint8_t *bytes NS_RETURNS_INNER_POINTER;
 @property(nonatomic, readonly) size_t length;
-/// Wall time the last snapshot spent inside Firestore's -[FIRDocumentSnapshot data] (building the NSDictionary).
+/// Whether to time -[FIRDocumentSnapshot data] (two clock reads per document). Off unless a listener is timed.
+@property(nonatomic) BOOL timesData;
+/// Wall time the last snapshot spent inside Firestore's -[FIRDocumentSnapshot data] (building the NSDictionary), when
+/// timesData is on; 0 otherwise.
 @property(nonatomic, readonly) uint64_t dataNanos;
 
 @end

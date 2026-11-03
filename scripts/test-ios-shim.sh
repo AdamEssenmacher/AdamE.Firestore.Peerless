@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the Objective-C encoder's golden-fixture tests headless on an iOS Simulator: builds a small test executable
+# Runs the Objective-C encoder's golden-fixture tests, and the listener's lock/removal/release tests, headless on an iOS Simulator: builds a small test executable
 # against the shim and the frameworks the iOS benchmark app embeds (the same FirebaseFirestore binaries an app ships),
 # then runs it with `simctl spawn`. Exit code 0 means every test passed.
 #
@@ -21,7 +21,7 @@ exe="$out/tests/GoldenFixtureTests"
 mkdir -p "$(dirname "$exe")"
 
 # Compiled against the shipped headers, linked and run against the app's embedded frameworks.
-xcrun --sdk iphonesimulator clang "$shim/tests/GoldenFixtureTests.m" "$out/lib/iphonesimulator/libPeerlessShim.a" \
+xcrun --sdk iphonesimulator clang "$shim/tests/GoldenFixtureTests.m" "$shim/tests/ListenerTests.m" "$out/lib/iphonesimulator/libPeerlessShim.a" \
   -o "$exe" -target arm64-apple-ios15.0-simulator -isysroot "$sysroot" -fobjc-arc -fmodules -Wall -Werror \
   -I "$shim/include" -F "$headers/FirebaseFirestoreInternal.xcframework/$slice" -F "$headers/FirebaseCore.xcframework/$slice" \
   -F "$app/Frameworks" -framework FirebaseFirestoreInternal -framework FirebaseCore -Xlinker -rpath -Xlinker "$app/Frameworks"

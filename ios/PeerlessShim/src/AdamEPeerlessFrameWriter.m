@@ -37,6 +37,7 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
     unichar *_scratch;      // UTF-16 scratch for strings CFStringGetBytes can't convert (lone surrogates)
     size_t _scratchCapacity;
     uint64_t _dataNanos;
+    BOOL _timesData;
 }
 
 + (void)initialize {
@@ -83,6 +84,14 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 
 - (uint64_t)dataNanos {
     return _dataNanos;
+}
+
+- (BOOL)timesData {
+    return _timesData;
+}
+
+- (void)setTimesData:(BOOL)timesData {
+    _timesData = timesData;
 }
 
 static inline void PLSEnsure(AdamEPeerlessFrameWriter *self, size_t extra) {
@@ -365,10 +374,12 @@ static void PLSSnapshotDocument(AdamEPeerlessFrameWriter *self, FIRDocumentSnaps
     FIRSnapshotMetadata *metadata = document.metadata;
     BOOL exists = document.exists;
     NSDictionary *data = nil;
-    if (exists) {
+    if (exists && self->_timesData) {
         uint64_t start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
         data = document.data;
         self->_dataNanos += clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start;
+    } else if (exists) {
+        data = document.data;
     }
     PLSDocument(self, document.reference.path, exists, metadata.isFromCache, metadata.hasPendingWrites, data);
 }
