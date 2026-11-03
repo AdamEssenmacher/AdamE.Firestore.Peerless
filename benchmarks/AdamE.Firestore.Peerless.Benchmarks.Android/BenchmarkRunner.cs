@@ -37,6 +37,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
     private ResultWriter? results;
 
+    // The .NET-side global reference count at the most recent settle point. A sample's "peak over settled" is measured
+    // from here, so references a previous callback left for the GC are not charged to this one.
+    private int lastSettledGlobal;
+
     public async Task RunAsync()
     {
         string directory = context.GetExternalFilesDir(null)?.AbsolutePath ?? context.FilesDir?.AbsolutePath
@@ -110,7 +114,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         try
         {
             Sample initial = await NextAsync(sampler, size).ConfigureAwait(false);
-            results?.Sample(phase, size, 0, "initial", initial, writeToCallbackMilliseconds: null);
+            results?.Sample(phase, size, 0, "initial", initial, writeToCallbackMilliseconds: null, lastSettledGlobal);
             Probes.DumpArtReferenceTables($"{phase},{size},after-initial-unsettled");
             await SettledAsync(phase, size, "after-initial").ConfigureAwait(false);
 
@@ -138,7 +142,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         try
         {
             Sample initial = await NextAsync(sampler, 1).ConfigureAwait(false);
-            results?.Sample(phase, 1, 0, "initial", initial, writeToCallbackMilliseconds: null);
+            results?.Sample(phase, 1, 0, "initial", initial, writeToCallbackMilliseconds: null, lastSettledGlobal);
             await SettledAsync(phase, 1, "after-initial").ConfigureAwait(false);
             await UpdatesAsync(phase, 1, options.SingleDocumentUpdates, sampler, seeding.Collection(collection), 1)
                 .ConfigureAwait(false);
@@ -170,7 +174,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 .ConfigureAwait(false);
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
             double latency = Probes.Microseconds(written, sample.CallbackTimestamp) / 1000.0;
-            results?.Sample(phase, size, update, "update", sample, latency);
+            results?.Sample(phase, size, update, "update", sample, latency, lastSettledGlobal);
             if (update % settleEvery == 0)
                 await SettledAsync(phase, size, $"after-update-{update}").ConfigureAwait(false);
         }
@@ -187,13 +191,14 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 throw new InvalidOperationException($"Listener failed: {sample.Error}");
             if (sample.Documents == expectedDocuments)
                 return sample;
-            results?.Sample("skipped", expectedDocuments, -1, "partial", sample, writeToCallbackMilliseconds: null);
+            results?.Sample("skipped", expectedDocuments, -1, "partial", sample, writeToCallbackMilliseconds: null, lastSettledGlobal);
         }
     }
 
     private async Task SettledAsync(string phase, int size, string point)
     {
         (int global, int weak, int peers) = await Probes.SettleAsync().ConfigureAwait(false);
+        lastSettledGlobal = global;
         results?.Settled(phase, size, point, global, weak, peers);
         Log.Info(Tag, $"settled {phase} {size} {point}: gref={global} wgref={weak} peers={peers}");
         Probes.DumpArtReferenceTables($"{phase},{size},{point}");

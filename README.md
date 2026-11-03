@@ -25,16 +25,18 @@ dotnet test --project tests/AdamE.Firestore.Peerless.Tests
 `benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android` is an ordinary `Xamarin.Firebase.Firestore` app built with
 `PublishAot`. It seeds collections of 10, 100, 500 and 1000 realistic documents (16 fields: strings, longs, doubles, a
 bool, timestamps, a reference, arrays, and maps nested two deep), listens to each collection, and converts every
-snapshot eagerly into plain .NET values. For each callback it records wall time, main-thread CPU time, managed
+snapshot eagerly into plain .NET values. Every snapshot is converted in full, including one caused by a
+single-document update, as an ordinary app's listener does. For each callback it records wall time, main-thread CPU time, managed
 allocations, GC count and pause time, and JNI global references. It also records settled reference counts after forced
 GCs, which shows whether references keep growing or level off.
 
 Requirements: .NET SDK 10.0.403 with the `android` workload, Android NDK r28 (Android NativeAOT needs it to link), the
-Firebase CLI, and an arm64 Android emulator.
+Firebase CLI, and an arm64 Android emulator. The AVD setup (`Peerless_Bench_API36`, adb serial `emulator-5650`) is in
+[the step 1 findings](results/android-peered/FINDINGS.md#how-it-was-run) and at the top of the run script.
 
 ```bash
 firebase emulators:start --only firestore --project demo-peerless   # Firestore on 8181, hub 4501 (see firebase.json)
-scripts/run-android-peered.sh emulator-5650                          # results land in results/android-peered/<timestamp>/
+FIRESTORE_PORT=8181 scripts/run-android-peered.sh emulator-5650      # results land in results/android-peered/<timestamp>/
 ```
 
 Findings so far: [results/android-peered/FINDINGS.md](results/android-peered/FINDINGS.md).

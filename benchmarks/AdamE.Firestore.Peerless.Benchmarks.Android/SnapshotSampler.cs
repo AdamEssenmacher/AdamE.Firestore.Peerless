@@ -42,7 +42,7 @@ internal sealed class SnapshotSampler : Java.Lang.Object, IEventListener
         ProbeReading before = ProbeReading.Take();
         bool fromCache = false;
         int documents = 0;
-        int values = 0;
+        object? converted = null;
         string? failure = error?.Message;
         int peak = before.GlobalReferences;
 
@@ -51,18 +51,16 @@ internal sealed class SnapshotSampler : Java.Lang.Object, IEventListener
             switch (value)
             {
                 case QuerySnapshot query:
-                    List<PlainDocument> converted = PlainValues.Query(query, ref peak);
+                    List<PlainDocument> list = PlainValues.Query(query, ref peak);
                     fromCache = query.Metadata.IsFromCache;
-                    documents = converted.Count;
-                    Latest = converted;
-                    values = converted.Sum(PlainValues.CountValues);
+                    documents = list.Count;
+                    converted = list;
                     break;
                 case DocumentSnapshot document:
                     PlainDocument single = PlainValues.Document(document);
                     fromCache = document.Metadata.IsFromCache;
                     documents = 1;
-                    Latest = single;
-                    values = PlainValues.CountValues(single);
+                    converted = single;
                     break;
                 case null:
                     break;
@@ -77,6 +75,15 @@ internal sealed class SnapshotSampler : Java.Lang.Object, IEventListener
         }
 
         ProbeReading after = ProbeReading.Take();
+
+        // Bookkeeping outside the measured window: counting values proves the conversion was complete.
+        Latest = converted ?? Latest;
+        int values = converted switch
+        {
+            List<PlainDocument> list => list.Sum(PlainValues.CountValues),
+            PlainDocument single => PlainValues.CountValues(single),
+            _ => 0,
+        };
         _ = samples.Writer.TryWrite(new Sample(
             fromCache,
             documents,
