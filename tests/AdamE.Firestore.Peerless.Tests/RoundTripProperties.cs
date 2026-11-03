@@ -6,11 +6,23 @@ namespace AdamE.Firestore.Peerless.Tests;
 /// <summary>Property tests: anything the spec can express survives encode then decode, and garbage never crashes.</summary>
 public sealed class RoundTripProperties
 {
-    // Well-formed UTF-16 only: a lone surrogate is legitimately replaced with U+FFFD on the way through UTF-8.
+    // Well-formed UTF-16 only (a lone surrogate is legitimately replaced with U+FFFD on the way through UTF-8), but
+    // otherwise anything: NUL, every BMP plane outside the surrogates, and supplementary-plane characters as pairs.
+    private static readonly Gen<string> CodePoint = Gen.OneOf(
+        Gen.Int[0, 0xD7FF],
+        Gen.Int[0xE000, 0xFFFF],
+        Gen.Int[0x10000, 0x10FFFF]).Select(char.ConvertFromUtf32);
+
     private static readonly Gen<string> Text = Gen.OneOf(
         Gen.String[Gen.Char.AlphaNumeric, 0, 12],
-        Gen.Char[(char)0, (char)0xD7FF].Array[0, 12].Select(static chars => new string(chars)),
+        CodePoint.Array[0, 12].Select(static parts => string.Concat(parts)),
         Gen.Const("😀 émoji ✓"));
+
+    // Keys long enough to need a multi-byte varint length (128+ bytes) as well as short ones.
+    private static readonly Gen<string> Key = Gen.OneOf(
+        Text,
+        Gen.String[Gen.Char.AlphaNumeric, 128, 300],
+        CodePoint.Array[50, 120].Select(static parts => string.Concat(parts)));
 
     private static readonly Gen<string> Path = Gen.String[Gen.Char.AlphaNumeric, 1, 8]
         .Array[1, 4]
@@ -23,7 +35,7 @@ public sealed class RoundTripProperties
         Gen.Long.Select(static bits => FirestoreValue.FromDouble(BitConverter.Int64BitsToDouble(bits))),
         Text.Select(FirestoreValue.FromString),
         Gen.Byte.Array[0, 16].Select(static bytes => FirestoreValue.FromBytes(bytes)),
-        Gen.Select(Gen.Long, Gen.Int[0, 999_999_999], static (seconds, nanos) =>
+        Gen.Select(Gen.Long[SnapshotDecoder.MinTimestampSeconds, SnapshotDecoder.MaxTimestampSeconds], Gen.Int[0, 999_999_999], static (seconds, nanos) =>
             FirestoreValue.FromTimestamp(new FirestoreTimestamp(seconds, nanos))),
         Gen.Select(Gen.Double, Gen.Double, static (latitude, longitude) =>
             FirestoreValue.FromGeoPoint(new FirestoreGeoPoint(latitude, longitude))),
@@ -99,7 +111,7 @@ public sealed class RoundTripProperties
         });
 
     private static Gen<FirestoreMap> Fields(Gen<FirestoreValue> value) =>
-        Gen.Select(Text, value).Array[0, 6].Select(static entries =>
+        Gen.Select(Key, value).Array[0, 6].Select(static entries =>
         {
             var unique = new Dictionary<string, FirestoreValue>(StringComparer.Ordinal);
             foreach ((string key, FirestoreValue item) in entries)
