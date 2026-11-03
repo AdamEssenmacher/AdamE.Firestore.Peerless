@@ -5,8 +5,8 @@ namespace AdamE.Firestore.Peerless.Benchmarks;
 
 /// <summary>
 /// Writes the run as it goes, flushing every line, so a crash part-way through still leaves everything measured so far:
-/// <c>peered-samples.csv</c> (one row per callback), <c>peered-settled.csv</c> (reference counts after forced GCs)
-/// and <c>peered-run.txt</c> (environment and outcome).
+/// <c>{mode}-samples.csv</c> (one row per callback), <c>{mode}-settled.csv</c> (reference counts after forced GCs)
+/// and <c>{mode}-run.txt</c> (environment and outcome).
 /// </summary>
 internal sealed class ResultWriter : IDisposable
 {
@@ -14,14 +14,15 @@ internal sealed class ResultWriter : IDisposable
     private readonly StreamWriter settled;
     private readonly StreamWriter run;
 
-    public ResultWriter(string directory)
+    public ResultWriter(string directory, string mode)
     {
-        samples = Open(Path.Combine(directory, "peered-samples.csv"));
-        settled = Open(Path.Combine(directory, "peered-settled.csv"));
-        run = Open(Path.Combine(directory, "peered-run.txt"));
+        samples = Open(Path.Combine(directory, $"{mode}-samples.csv"));
+        settled = Open(Path.Combine(directory, $"{mode}-settled.csv"));
+        run = Open(Path.Combine(directory, $"{mode}-run.txt"));
         Line(samples,
             "phase,size,seq,kind,from_cache,documents,values,main_thread,wall_us,thread_cpu_us,alloc_bytes,"
-            + "gref_before,gref_after,gref_delta,gref_peak,gref_peak_delta,wgref_before,wgref_after,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms");
+            + "gref_before,gref_after,gref_delta,gref_peak,gref_peak_delta,wgref_before,wgref_after,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms,"
+            + "java_to_dotnet_us,java_encode_us,java_encode_cpu_us,dotnet_us,frame_bytes");
         Line(settled, "phase,size,point,gref,wgref,surfaced_peers");
     }
 
@@ -51,7 +52,12 @@ internal sealed class ResultWriter : IDisposable
             Invariant(sample.Gen1Collections),
             Invariant(sample.Gen2Collections),
             Invariant(sample.GcPauseMicroseconds),
-            writeToCallbackMilliseconds is { } latency ? Invariant(latency) : string.Empty));
+            writeToCallbackMilliseconds is { } latency ? Invariant(latency) : string.Empty,
+            sample.Java is { } java ? Invariant(java.ToDotnetMicroseconds) : string.Empty,
+            sample.Java is { } encode ? Invariant(encode.EncodeMicroseconds) : string.Empty,
+            sample.Java is { } encodeCpu ? Invariant(encodeCpu.EncodeCpuMicroseconds) : string.Empty,
+            sample.Java is { } dotnet ? Invariant(dotnet.DotnetMicroseconds) : string.Empty,
+            sample.Java is { } frame ? Invariant(frame.FrameBytes) : string.Empty));
 
     public void Settled(string phase, int size, string point, int global, int weak, int peers) =>
         Line(settled, string.Join(',', phase, Invariant(size), point, Invariant(global), Invariant(weak), Invariant(peers)));

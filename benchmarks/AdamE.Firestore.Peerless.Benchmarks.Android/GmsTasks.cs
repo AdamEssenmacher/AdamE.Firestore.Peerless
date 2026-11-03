@@ -7,7 +7,7 @@ namespace AdamE.Firestore.Peerless.Benchmarks;
 /// <summary>Awaits a Play Services task without relying on any reflection-based helper.</summary>
 internal static class GmsTasks
 {
-    public static Task AsTask(this Android.Gms.Tasks.Task task)
+    public static Task AsTask(this global::Android.Gms.Tasks.Task task)
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _ = task.AddOnCompleteListener(new Listener(completion));
@@ -16,7 +16,7 @@ internal static class GmsTasks
 
     private sealed class Listener(TaskCompletionSource completion) : Java.Lang.Object, IOnCompleteListener
     {
-        public void OnComplete(Android.Gms.Tasks.Task task)
+        public void OnComplete(global::Android.Gms.Tasks.Task task)
         {
             if (task.IsSuccessful)
                 completion.TrySetResult();

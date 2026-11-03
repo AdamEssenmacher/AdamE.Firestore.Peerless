@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using AdamE.Firestore.Peerless.Android;
 using Android.Content;
 using Android.Util;
 using Firebase;
@@ -7,17 +8,41 @@ using Firebase.Firestore;
 
 namespace AdamE.Firestore.Peerless.Benchmarks;
 
-/// <summary>Where the run reaches the Firestore emulator, and how much it does.</summary>
-internal sealed record BenchmarkOptions(string Host, int Port, int[] Sizes, int UpdatesPerSize, int SingleDocumentUpdates)
+/// <summary>How a run listens: the ordinary peered binding, or Peerless with one of its two deliveries.</summary>
+internal enum ListenMode
+{
+    Peered,
+    PeerlessDirect,
+    PeerlessBytes,
+}
+
+/// <summary>Where the run reaches the Firestore emulator, how it listens, and how much it does.</summary>
+internal sealed record BenchmarkOptions(
+    string Host, int Port, ListenMode Mode, int[] Sizes, int UpdatesPerSize, int SingleDocumentUpdates, bool Verify)
 {
     public const string ProjectId = "demo-peerless";
+
+    public string ModeName => Mode switch
+    {
+        ListenMode.Peered => "peered",
+        ListenMode.PeerlessDirect => "peerless-direct",
+        _ => "peerless-bytes",
+    };
 
     public static BenchmarkOptions From(Intent? intent) => new(
         intent?.GetStringExtra("host") ?? "10.0.2.2",
         intent?.GetIntExtra("port", 8181) ?? 8181,
+        (intent?.GetStringExtra("mode") ?? "peered") switch
+        {
+            "peered" => ListenMode.Peered,
+            "peerless-direct" => ListenMode.PeerlessDirect,
+            "peerless-bytes" => ListenMode.PeerlessBytes,
+            var other => throw new ArgumentException($"Unknown mode '{other}'."),
+        },
         ParseSizes(intent?.GetStringExtra("sizes")) ?? [10, 100, 500, 1000],
         intent?.GetIntExtra("updates", 20) ?? 20,
-        intent?.GetIntExtra("singleUpdates", 50) ?? 50);
+        intent?.GetIntExtra("singleUpdates", 50) ?? 50,
+        intent?.GetBooleanExtra("verify", true) ?? true);
 
     private static int[]? ParseSizes(string? text) =>
         string.IsNullOrWhiteSpace(text)
@@ -41,29 +66,28 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     {
         string directory = context.GetExternalFilesDir(null)?.AbsolutePath ?? context.FilesDir?.AbsolutePath
             ?? throw new InvalidOperationException("The app has no files directory.");
-        using var writer = new ResultWriter(directory);
+        using var writer = new ResultWriter(directory, options.ModeName);
         results = writer;
+        writer.Note("mode", options.ModeName);
         writer.Note("project", BenchmarkOptions.ProjectId);
         writer.Note("emulator", $"{options.Host}:{options.Port}");
         writer.Note("runtime", System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription);
         writer.Note("nativeAot", (!System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported).ToString());
-        writer.Note("device", $"{Android.OS.Build.Model} API {(int)Android.OS.Build.VERSION.SdkInt} {Android.OS.Build.SupportedAbis?.FirstOrDefault()}");
+        writer.Note("device", $"{(global::Android.OS.Build.Model)} API {((int)global::Android.OS.Build.VERSION.SdkInt)} {(global::Android.OS.Build.SupportedAbis?.FirstOrDefault())}");
         writer.Note("sizes", string.Join(',', options.Sizes));
         writer.Note("updatesPerSize", options.UpdatesPerSize.ToString(CultureInfo.InvariantCulture));
+        writer.Note("stopwatchFrequency", Stopwatch.Frequency.ToString(CultureInfo.InvariantCulture));
         GCMemoryInfo memory = GC.GetGCMemoryInfo();
         writer.Note("gc", $"server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} "
-            + $"available={memory.TotalAvailableMemoryBytes} gen0size={Environment.GetEnvironmentVariable("DOTNET_GCgen0size") ?? "default"}");
-        writer.Note("gcConfig", string.Join(' ', GC.GetConfigurationVariables()
-            .Where(static pair => pair.Key.Contains("gen0", StringComparison.OrdinalIgnoreCase)
-                || pair.Key.Contains("Regions", StringComparison.OrdinalIgnoreCase)
-                || pair.Key.Contains("Conserve", StringComparison.OrdinalIgnoreCase))
-            .Select(static pair => $"{pair.Key}={pair.Value}")));
+            + $"available={memory.TotalAvailableMemoryBytes}");
 
         try
         {
             FirebaseFirestore listening = Connect(FirebaseApp.DefaultAppName);
             FirebaseFirestore seeding = Connect("seeder");
 
+            if (options.Verify)
+                await VerifyAsync(listening, seeding).ConfigureAwait(false);
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
                 await QueryPhaseAsync("query", listening, seeding, size, options.UpdatesPerSize).ConfigureAwait(false);
@@ -96,6 +120,83 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         return firestore;
     }
 
+    private (IDisposable Registration, ISampler Sampler) Listen(Query query) => Listen(
+        sampler => query.AddSnapshotListener(sampler),
+        sampler => PeerlessListener.Listen(query, sampler.OnSnapshot, sampler.OnError, Delivery, sampler));
+
+    private (IDisposable Registration, ISampler Sampler) Listen(DocumentReference document) => Listen(
+        sampler => document.AddSnapshotListener(sampler),
+        sampler => PeerlessListener.Listen(document, sampler.OnSnapshot, sampler.OnError, Delivery, sampler));
+
+    private (IDisposable Registration, ISampler Sampler) Listen(
+        Func<PeeredSampler, IListenerRegistration> peered, Func<PeerlessSampler, IDisposable> peerless)
+    {
+        if (options.Mode == ListenMode.Peered)
+        {
+            var sampler = new PeeredSampler();
+            IListenerRegistration registration = peered(sampler);
+            return (new PeeredRegistration(registration, sampler), sampler);
+        }
+
+        var peerlessSampler = new PeerlessSampler();
+        return (peerless(peerlessSampler), peerlessSampler);
+    }
+
+    private FrameDelivery Delivery =>
+        options.Mode == ListenMode.PeerlessBytes ? FrameDelivery.ByteArray : FrameDelivery.DirectBuffer;
+
+    // Keeps the peered sampler (and its latest conversion) alive until removal, as an app's view model would.
+    private sealed class PeeredRegistration(IListenerRegistration registration, PeeredSampler sampler) : IDisposable
+    {
+        public void Dispose()
+        {
+            registration.Remove();
+            GC.KeepAlive(sampler.Latest);
+        }
+    }
+
+    /// <summary>
+    /// Proves the two paths agree on real Firestore data: the same snapshot through the peered conversion and through
+    /// both Peerless deliveries must decode to equal values. Covers every value kind, including ones the benchmark
+    /// documents don't use.
+    /// </summary>
+    private async Task VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    {
+        const string collection = "verify";
+        Report("verify: seeding");
+        CollectionReference reference = seeding.Collection(collection);
+        WriteBatch batch = seeding.Batch();
+        for (int index = 0; index < 10; index++)
+            _ = batch.Set(reference.Document(DocumentId(index)), SeedData.Document(seeding, index));
+        _ = batch.Set(reference.Document("every-kind"), SeedData.EveryKind(seeding));
+        await batch.Commit().AsTask().ConfigureAwait(false);
+
+        var direct = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var bytes = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Query query = listening.Collection(collection).OrderBy(FieldPath.DocumentId());
+        var peered = new ModelListener();
+        IListenerRegistration peeredRegistration = query.AddSnapshotListener(peered);
+        using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => direct.TrySetResult(snapshot),
+            error => direct.TrySetException(error), FrameDelivery.DirectBuffer);
+        using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => bytes.TrySetResult(snapshot),
+            error => bytes.TrySetException(error), FrameDelivery.ByteArray);
+        try
+        {
+            FirestoreSnapshot expected = await peered.First.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            string? directDifference = SnapshotAssertions.Difference(expected, await direct.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
+            string? bytesDifference = SnapshotAssertions.Difference(expected, await bytes.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
+            string verdict = directDifference is null && bytesDifference is null
+                ? $"identical ({SnapshotAssertions.DocumentCount(expected)} documents, {PeeredConversion.CountValues(expected)} values)"
+                : $"DIFFERENT direct: {directDifference ?? "same"} | bytes: {bytesDifference ?? "same"}";
+            results?.Note("verify", verdict.ReplaceLineEndings(" | "));
+            Report($"verify: {verdict}");
+        }
+        finally
+        {
+            peeredRegistration.Remove();
+        }
+    }
+
     private async Task QueryPhaseAsync(
         string phase, FirebaseFirestore listening, FirebaseFirestore seeding, int size, int updates)
     {
@@ -105,8 +206,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         await SettledAsync(phase, size, "before-listen").ConfigureAwait(false);
 
         Report($"{phase} {size}: listening");
-        var sampler = new SnapshotSampler();
-        IListenerRegistration registration = listening.Collection(collection).AddSnapshotListener(sampler);
+        (IDisposable registration, ISampler sampler) = Listen(listening.Collection(collection));
         try
         {
             Sample initial = await NextAsync(sampler, size).ConfigureAwait(false);
@@ -118,10 +218,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
         finally
         {
-            registration.Remove();
+            registration.Dispose();
         }
 
-        GC.KeepAlive(sampler.Latest);
         await SettledAsync(phase, size, "after-remove").ConfigureAwait(false);
     }
 
@@ -132,9 +231,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         await SeedAsync(seeding, collection, 1).ConfigureAwait(false);
         await SettledAsync(phase, 1, "before-listen").ConfigureAwait(false);
 
-        var sampler = new SnapshotSampler();
-        IListenerRegistration registration =
-            listening.Collection(collection).Document(DocumentId(0)).AddSnapshotListener(sampler);
+        (IDisposable registration, ISampler sampler) = Listen(listening.Collection(collection).Document(DocumentId(0)));
         try
         {
             Sample initial = await NextAsync(sampler, 1).ConfigureAwait(false);
@@ -145,7 +242,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
         finally
         {
-            registration.Remove();
+            registration.Dispose();
         }
 
         await SettledAsync(phase, 1, "after-remove").ConfigureAwait(false);
@@ -153,7 +250,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
     // Each update changes one document through the seeder, so the listener sees exactly one server-driven snapshot.
     private async Task UpdatesAsync(
-        string phase, int size, int updates, SnapshotSampler sampler, CollectionReference seedingCollection, int expected)
+        string phase, int size, int updates, ISampler sampler, CollectionReference seedingCollection, int expected)
     {
         int settleEvery = Math.Max(1, updates / 4);
         for (int update = 1; update <= updates; update++)
@@ -169,7 +266,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 .AsTask()
                 .ConfigureAwait(false);
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
-            double latency = Probes.Microseconds(written, sample.CallbackTimestamp) / 1000.0;
+            double latency = Probes.Microseconds(written, sample.DoneTimestamp) / 1000.0;
             results?.Sample(phase, size, update, "update", sample, latency);
             if (update % settleEvery == 0)
                 await SettledAsync(phase, size, $"after-update-{update}").ConfigureAwait(false);
@@ -177,7 +274,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     }
 
     // Skips snapshots that are not yet the whole collection (for example a partial one from cache), but records them.
-    private async Task<Sample> NextAsync(SnapshotSampler sampler, int expectedDocuments)
+    private async Task<Sample> NextAsync(ISampler sampler, int expectedDocuments)
     {
         using var timeout = new CancellationTokenSource(SnapshotTimeout);
         while (true)

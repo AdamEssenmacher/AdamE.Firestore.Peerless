@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Summarizes a peered benchmark run directory into summary.md (medians and ranges per phase, size and kind)."""
+"""Summarizes one benchmark run directory into summary.md (medians and ranges per phase, size and kind)."""
 import csv, statistics, sys
 from pathlib import Path
 
 run = Path(sys.argv[1])
-rows = list(csv.DictReader(open(run / "peered-samples.csv")))
-settled = list(csv.DictReader(open(run / "peered-settled.csv")))
+mode = next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
+rows = list(csv.DictReader(open(run / f"{mode}-samples.csv")))
+settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
 
 def f(row, key): return float(row.get(key) or 0.0)  # older runs lack some columns
 def med(values): return statistics.median(values) if values else 0.0
 
-lines = ["# Peered baseline summary", "", (run / "peered-run.txt").read_text().strip().replace("\n", "  \n"), "",
+lines = [f"# {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().replace("\n", "  \n"), "",
          "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. GREF peak is the highest .NET-side JNI",
          "global reference count sampled after each document, minus the count at callback entry; GREF end is the same at",
          "the end of the callback (GCs inside the callback release some). The .NET counter excludes ~435 cached",
@@ -34,6 +35,17 @@ for (phase, size, kind), group in groups.items():
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind == "update" else "",
     ]) + " |")
 skipped = [r for r in rows if r["phase"] == "skipped"]
+if any(r.get("java_encode_us") for r in rows):
+    lines += ["", "## Where the time goes (Peerless: Java side vs .NET side)", "",
+              "Medians. *Java→.NET* runs from the Java callback's entry to entry into .NET: encoding, copying into the",
+              "delivery buffer and the JNI call. *.NET* runs from there to the snapshot fully decoded.", "",
+              "| phase | docs | kind | frame KB | Java encode ms | Java encode CPU ms | Java→.NET ms | .NET decode ms | end-to-end ms |",
+              "|---|---:|---|---:|---:|---:|---:|---:|---:|"]
+    for (phase, size, kind), group in groups.items():
+        m = lambda key, scale=1000.0: med([f(r, key) for r in group]) / scale
+        lines.append(f"| {phase} | {size} | {kind} | {m('frame_bytes', 1024):.1f} | {m('java_encode_us'):.2f} | "
+                     f"{m('java_encode_cpu_us'):.2f} | {m('java_to_dotnet_us'):.2f} | {m('dotnet_us'):.2f} | {m('wall_us'):.2f} |")
+
 forced = [l.split("monodroid-gc: ", 1)[1].strip() for l in ((run / "logcat.txt").read_text(errors="replace").splitlines()
           if (run / "logcat.txt").exists() else []) if "outstanding GREFs" in l]
 lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): {len(forced)}"

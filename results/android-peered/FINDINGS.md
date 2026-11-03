@@ -91,3 +91,5 @@ Each document has 16 top-level fields, which come to 44 converted values.
 - Each run's raw `logcat.txt` is captured by `scripts/run-android-peered.sh` but not committed (it's gitignored). The
   ART reference-table and `monodroid-gc` sections of each `summary.md` were parsed from it, so re-running
   `summarize-peered.py` on a committed run directory without its logcat drops those sections.
+- Since step 3 these scripts are `scripts/run-android-benchmark.sh [serial] peered …` and
+  `scripts/summarize-benchmark.py`, and new runs write `peered-*` files under `results/android/`.
