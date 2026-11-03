@@ -85,14 +85,14 @@ internal static class PlainValues
         return items;
     }
 
+    // One walk over entrySet(), as an app written for speed would do it: each entry yields its key and value, with no
+    // second lookup per key. (Step 1's first runs used keySet() plus a get() per key, which cost a Java string and a
+    // hash lookup per entry; results/android-peered/FINDINGS.md says which numbers predate the change.)
     private static Dictionary<string, object?> Map(Java.Util.IMap map)
     {
-        var entries = new Dictionary<string, object?>(StringComparer.Ordinal);
-        foreach (object? key in map.KeySet())
-        {
-            using var name = new Java.Lang.String(key?.ToString() ?? string.Empty);
-            entries[name.ToString()] = From(map.Get(name));
-        }
+        var entries = new Dictionary<string, object?>(map.Size(), StringComparer.Ordinal);
+        foreach (Java.Util.IMapEntry entry in map.EntrySet())
+            entries[entry.Key?.ToString() ?? string.Empty] = From(entry.Value);
 
         return entries;
     }

@@ -10,6 +10,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Tests" />
+    <!-- The decode benchmark builds frames with the tests' spec-derived encoder, which uses the wire constants. -->
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Decoder" />
     <!-- The benchmark's equality check builds this value model from the peered binding (PeeredConversion), through the
          owning constructors, to compare it with what Peerless decodes. -->
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Android" />

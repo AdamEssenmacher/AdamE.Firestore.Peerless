@@ -26,6 +26,7 @@ iOS is next. Nothing is published as a NuGet yet.
 
 ```bash
 dotnet test --project tests/AdamE.Firestore.Peerless.Tests        # decoder, properties, golden frames
+dotnet run -c Release --project benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder   # decode time and allocation
 (cd android && ./gradlew :peerless-shim:testDebugUnitTest)         # Java encoder against the same golden frames
 ```
 
