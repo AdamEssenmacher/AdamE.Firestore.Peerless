@@ -99,7 +99,10 @@ IDisposable listening = PeerlessListener.Listen(
 The shim is a static xcframework with no copy of Firestore in it: its Firestore symbols resolve, at the app's link,
 against the `FirebaseFirestoreInternal` and `FirebaseCore` frameworks that `AdamE.Firebase.iOS.CloudFirestore` already
 embeds. `src/AdamE.Firestore.Peerless.iOS` builds it with `ios/build-shim.sh` (Xcode needed) and packages it into the
-assembly's `.resources.zip`, as a binding NuGet does.
+assembly's `.resources.zip`, as a binding NuGet does. It is compiled against Firebase iOS 12.18.0, and `Listen` refuses
+a different Firebase major version at run time. The device (`ios-arm64`) slice is built but has only been linked, not
+run: every run so far was on the simulator. The listener's contract (threads, removal, errors, lifetime) matches
+Android's and is in `PeerlessListener`'s docs.
 
 ## Benchmarks (iOS)
 
@@ -109,7 +112,9 @@ Android's peered mode) or through Peerless. For each callback it records wall ti
 allocations, GC count and pause time, and `NSObject` peers: every peer created, and the live peer table. Peerless mode
 also splits the time between the Objective-C side (encoding) and the .NET side (decoding). It also records the settled
 peer table after forced GCs. Each run first checks that a collection covering every value kind reads back exactly as
-written, that Peerless decodes it identically to the peered binding, and that removing a Peerless listener mutes it.
+written, that Peerless decodes it identically to the peered binding, and that removal holds its contract while frames
+are arriving (disposed from a thread-pool thread, mid-callback, and from inside a callback). A failed check fails the
+run, and the script exits nonzero.
 
 Requirements: .NET SDK 10.0.403 with the `ios` workload (27.1), Xcode 27.1, the Firebase CLI, and an arm64 iOS
 Simulator of your own (the script installs over and terminates the app on it).

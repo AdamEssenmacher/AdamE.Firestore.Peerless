@@ -4,6 +4,9 @@
 # ships. Nothing of Firestore is linked in: the app resolves those symbols against the binding's own frameworks, so
 # it carries one copy of Firestore.
 #
+# The shim is compiled against one Firebase version (recorded in the library; .NET refuses a different major version at
+# run time). The device (ios-arm64) slice is built but has not been run on a device.
+#
 # Usage: ios/build-shim.sh [binding version]   (default: the version in Directory.Packages.props)
 set -euo pipefail
 
@@ -14,15 +17,20 @@ version="${1:-$(sed -n 's/.*"AdamE.Firebase.iOS.CloudFirestore" Version="\([^"]*
 packages="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
 min_ios=15.0
 
-# The binding's frameworks, headers included (an app bundle keeps only the binaries).
+# The binding's frameworks, headers included (an app bundle keeps only the binaries). The package's lib directory is
+# found rather than assumed (it is named after the iOS SDK the binding was built with, e.g. net10.0-ios26.0).
 headers="$out/firebase-$version"
-if [[ ! -d "$headers/FirebaseFirestoreInternal.xcframework" ]]; then
+if [[ ! -f "$headers/.complete" ]]; then
   rm -rf "$headers" && mkdir -p "$headers"
-  for package in cloudfirestore:Firebase.CloudFirestore core:Firebase.Core; do
-    zip="$packages/adame.firebase.ios.${package%%:*}/$version/lib/net10.0-ios26.0/${package##*:}.resources.zip"
-    [[ -f "$zip" ]] || { echo "missing $zip (restore the benchmark first)" >&2; exit 1; }
-    unzip -q -o "$zip" 'FirebaseFirestoreInternal.xcframework/*' 'FirebaseCore.xcframework/*' -d "$headers" 2>/dev/null || true
+  for package in cloudfirestore:Firebase.CloudFirestore:FirebaseFirestoreInternal core:Firebase.Core:FirebaseCore; do
+    IFS=: read -r id assembly framework <<<"$package"
+    dir="$packages/adame.firebase.ios.$id/$version"
+    zip="$(ls -d "$dir"/lib/net*-ios*/"$assembly".resources.zip 2>/dev/null | sort -V | tail -1 || true)"
+    [[ -n "$zip" ]] || { echo "No $assembly.resources.zip under $dir/lib/net*-ios* (restore the iOS projects first)" >&2; exit 1; }
+    unzip -q -o "$zip" "$framework.xcframework/*" -d "$headers"
+    [[ -d "$headers/$framework.xcframework" ]] || { echo "$zip has no $framework.xcframework" >&2; exit 1; }
   done
+  touch "$headers/.complete"
 fi
 
 compile() { # sdk slice target...
@@ -36,6 +44,7 @@ compile() { # sdk slice target...
       local object="$dir/$(basename "${source%.m}").o"
       xcrun --sdk "$sdk" clang -c "$source" -o "$object" -target "$target" -isysroot "$sysroot" \
         -fobjc-arc -fmodules -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter \
+        -DADAME_PEERLESS_FIREBASE_VERSION="\"$version\"" \
         -I "$shim/include" \
         -F "$headers/FirebaseFirestoreInternal.xcframework/$slice" -F "$headers/FirebaseCore.xcframework/$slice"
       objects+=("$object")

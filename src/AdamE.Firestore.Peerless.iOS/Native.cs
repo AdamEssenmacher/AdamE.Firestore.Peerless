@@ -21,29 +21,35 @@ internal static unsafe class Native
 {
     private const string Library = "__Internal";
 
-    [DllImport(Library, EntryPoint = "peerless_listen_query")]
+    /// <summary>The shim's error code for a snapshot it could not encode.</summary>
+    public const int EncodeFailed = -1;
+
+    [DllImport(Library, EntryPoint = "adame_peerless_listen_query")]
     public static extern nint ListenQuery(
         nint query,
         nint context,
         delegate* unmanaged<nint, byte*, nuint, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError);
 
-    [DllImport(Library, EntryPoint = "peerless_listen_document")]
+    [DllImport(Library, EntryPoint = "adame_peerless_listen_document")]
     public static extern nint ListenDocument(
         nint document,
         nint context,
         delegate* unmanaged<nint, byte*, nuint, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError);
 
-    [DllImport(Library, EntryPoint = "peerless_listener_remove")]
+    [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);
 
-    [DllImport(Library, EntryPoint = "peerless_listener_timing")]
+    [DllImport(Library, EntryPoint = "adame_peerless_listener_timing")]
     public static extern void Timing(nint listener, FrameTiming* timing);
 
-    [DllImport(Library, EntryPoint = "peerless_now_nanos")]
+    [DllImport(Library, EntryPoint = "adame_peerless_compiled_firebase_version")]
+    public static extern byte* CompiledFirebaseVersion();
+
+    [DllImport(Library, EntryPoint = "adame_peerless_now_nanos")]
     public static extern ulong NowNanos();
 
-    [DllImport(Library, EntryPoint = "peerless_thread_cpu_nanos")]
+    [DllImport(Library, EntryPoint = "adame_peerless_thread_cpu_nanos")]
     public static extern ulong ThreadCpuNanos();
 }

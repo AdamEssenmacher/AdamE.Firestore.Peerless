@@ -11,9 +11,15 @@ and settle points into `benchmarks/Shared`, are in [../android](../android/FINDI
   bytes, and 742 for the document listener). Frame size depends on every seeded string, number and container, so the
   shared `SeedSpec` writes what step 1's `SeedData` wrote. iOS frames are the same sizes too.
 - **Same values.** All four runs reported `identical (11 documents, 465 values)` for peered vs Peerless.
-- **Same allocation and references.** Medians are within 1% of step 3 in every case, for example peered at 1000 docs:
-  197,948 KB now vs 198,739 KB then (initial), and a GREF peak of 5,626 vs 5,584. Peerless allocation (3,453 KB at
-  1000 docs) is identical to the kilobyte, and it holds 0 GREFs in both runs.
+- **Same allocation.** Medians are within 1% of step 3 in every case, for example peered at 1000 docs: 197,948 KB now
+  vs 198,739 KB then (initial). Peerless allocation (3,453 KB at 1000 docs) is identical to the kilobyte.
+- **Same references, on step 3's corrected metric** (the GREF peak during a snapshot over the last settle point,
+  introduced in the PR #1–#3 review; [COMPARISON.md](COMPARISON.md) has it and the absolute peak). Initial snapshots
+  match step 3 closely: peered 312 / 1,362 / 3,006 / 5,630 at 10 / 100 / 500 / 1000 docs (step 3: 312 / 1,374 /
+  3,094 / 5,588), and Peerless 4 at every size (step 3: 4). As in step 3, Peerless's figure is the listener's own
+  registration plus, on updates, the seeder's writes since the last settle point. Its snapshots create no reference.
+  Peered updates vary more (1000 docs: 3,568 now vs 4,496 then), because how many references a GC releases inside
+  the callback depends on when it runs, and today's host load was heavier.
 - **Same phases and settle points**, by construction, and the settled references match step 3. At 1000 docs ART's
   table holds 4,554 / 4,556 / 4,556 references for peered after the initial snapshot, after 20 updates and after
   removal (step 3: 4,558 / 4,563 / 4,562), against 557 / 557 / 554 for Peerless (step 3: 556 / 556 / 552). The small
@@ -42,7 +48,7 @@ Peerless ratios in [COMPARISON.md](COMPARISON.md) are inflated by load and shoul
 | native encode, initial | 7.42 ms (Java) | 9.06 ms (Objective-C) |
 | .NET decode, initial | 1.12 ms | 0.98 ms |
 | managed allocation | 3,453 KB | 3,453 KB |
-| bridge references held | 0 GREFs | 0 peers |
+| bridge references a snapshot creates | none (4 GREFs over settled are the listener's own) | 0 peers |
 
 Each platform's peered baseline also allocates about 3–4 KB per value and holds a native reference per object while
 converting.

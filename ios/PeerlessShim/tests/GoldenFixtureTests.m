@@ -11,7 +11,7 @@
 #import <FirebaseFirestoreInternal/FIRFieldValue.h>
 #import <FirebaseFirestoreInternal/FIRGeoPoint.h>
 
-#import "PLSFrameWriter.h"
+#import "AdamEPeerlessFrameWriter.h"
 
 static int failures = 0;
 static int passes = 0;
@@ -23,7 +23,7 @@ static NSString *Hex(const uint8_t *bytes, size_t length) {
     return text;
 }
 
-static void Expect(NSString *name, NSData *expected, PLSFrameWriter *writer) {
+static void Expect(NSString *name, NSData *expected, AdamEPeerlessFrameWriter *writer) {
     NSString *want = Hex(expected.bytes, expected.length);
     NSString *got = Hex(writer.bytes, writer.length);
     if ([want isEqualToString:got]) {
@@ -35,7 +35,7 @@ static void Expect(NSString *name, NSData *expected, PLSFrameWriter *writer) {
     }
 }
 
-static void ExpectFixture(NSString *directory, NSString *name, PLSFrameWriter *writer) {
+static void ExpectFixture(NSString *directory, NSString *name, AdamEPeerlessFrameWriter *writer) {
     NSData *expected = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:[name stringByAppendingString:@".bin"]]];
     if (expected == nil) {
         failures++;
@@ -50,10 +50,10 @@ static NSData *Bytes(const uint8_t *bytes, size_t length) {
 }
 
 static void DocumentScalars(NSString *fixtures) {
-    PLSFrameWriter *writer = [[PLSFrameWriter alloc] initWithCapacity:64];
-    [writer writeHeader:PLSFrameKindDocument];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    [writer writeHeader:AdamEPeerlessFrameKindDocument];
     [writer writeMetadataSectionFromCache:NO hasPendingWrites:NO];
-    [writer beginSection:PLSSectionDocuments];
+    [writer beginSection:AdamEPeerlessSectionDocuments];
     [writer writeVarint:1];
     [writer writeString:@"fixtures/scalars"];
     [writer writeByte:0x01];
@@ -104,10 +104,10 @@ static void DocumentScalars(NSString *fixtures) {
 }
 
 static void DocumentMissing(NSString *fixtures) {
-    PLSFrameWriter *writer = [[PLSFrameWriter alloc] initWithCapacity:64];
-    [writer writeHeader:PLSFrameKindDocument];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    [writer writeHeader:AdamEPeerlessFrameKindDocument];
     [writer writeMetadataSectionFromCache:YES hasPendingWrites:NO];
-    [writer beginSection:PLSSectionDocuments];
+    [writer beginSection:AdamEPeerlessSectionDocuments];
     [writer writeVarint:1];
     [writer writeDocumentPath:@"fixtures/missing" exists:NO fromCache:YES hasPendingWrites:NO data:nil];
     [writer endSection];
@@ -115,10 +115,10 @@ static void DocumentMissing(NSString *fixtures) {
 }
 
 static void QueryNested(NSString *fixtures) {
-    PLSFrameWriter *writer = [[PLSFrameWriter alloc] initWithCapacity:64];
-    [writer writeHeader:PLSFrameKindQuery];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    [writer writeHeader:AdamEPeerlessFrameKindQuery];
     [writer writeMetadataSectionFromCache:NO hasPendingWrites:YES];
-    [writer beginSection:PLSSectionDocuments];
+    [writer beginSection:AdamEPeerlessSectionDocuments];
     [writer writeVarint:2];
 
     // items/a: four fields in fixture order.
@@ -151,23 +151,23 @@ static void QueryNested(NSString *fixtures) {
     ExpectFixture(fixtures, @"query-nested", writer);
 }
 
-static void WriteQueryEmpty(PLSFrameWriter *writer) {
+static void WriteQueryEmpty(AdamEPeerlessFrameWriter *writer) {
     [writer reset];
-    [writer writeHeader:PLSFrameKindQuery];
+    [writer writeHeader:AdamEPeerlessFrameKindQuery];
     [writer writeMetadataSectionFromCache:YES hasPendingWrites:NO];
-    [writer beginSection:PLSSectionDocuments];
+    [writer beginSection:AdamEPeerlessSectionDocuments];
     [writer writeVarint:0];
     [writer endSection];
 }
 
 static void QueryEmpty(NSString *fixtures) {
-    PLSFrameWriter *writer = [[PLSFrameWriter alloc] initWithCapacity:64];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
     WriteQueryEmpty(writer);
     ExpectFixture(fixtures, @"query-empty", writer);
 }
 
 static void AReusedWriterProducesTheSameFrameAgain(NSString *fixtures) {
-    PLSFrameWriter *writer = [[PLSFrameWriter alloc] initWithCapacity:64];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
     for (int round = 0; round < 3; round++) {
         WriteQueryEmpty(writer);
         ExpectFixture(fixtures, @"query-empty", writer);
@@ -176,7 +176,7 @@ static void AReusedWriterProducesTheSameFrameAgain(NSString *fixtures) {
 
 // Not fixtures: properties the format requires of every encoder.
 static void StringEdgeCases(void) {
-    PLSFrameWriter *writer = [[PLSFrameWriter alloc] initWithCapacity:64];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
     unichar lone[] = {'a', 0xD800, 'b', 0xDC00};
     [writer writeString:[NSString stringWithCharacters:lone length:4]];
     const uint8_t loneExpected[] = {8, 'a', 0xEF, 0xBF, 0xBD, 'b', 0xEF, 0xBF, 0xBD};
@@ -212,6 +212,23 @@ static void StringEdgeCases(void) {
     }
 }
 
+// The listener turns an exception from the writer into error code -1 (ADAME_PEERLESS_ENCODE_FAILED) rather than a
+// truncated frame, so the writer must throw for a value it refuses.
+static void RefusesNestingDeeperThan100(void) {
+    id value = @"leaf";
+    for (int depth = 0; depth < 101; depth++)
+        value = @[value];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    @try {
+        [writer writeValue:value];
+        failures++;
+        printf("FAIL nesting deeper than 100 is refused (no exception)\n");
+    } @catch (NSException *exception) {
+        passes++;
+        printf("PASS nesting deeper than 100 is refused (%s)\n", exception.reason.UTF8String);
+    }
+}
+
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc < 2) {
@@ -225,6 +242,7 @@ int main(int argc, const char *argv[]) {
         QueryEmpty(fixtures);
         AReusedWriterProducesTheSameFrameAgain(fixtures);
         StringEdgeCases();
+        RefusesNestingDeeperThan100();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;
     }

@@ -6,18 +6,18 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-typedef NS_ENUM(uint8_t, PLSFrameKind) {
-    PLSFrameKindQuery = 1,
-    PLSFrameKindDocument = 2,
+typedef NS_ENUM(uint8_t, AdamEPeerlessFrameKind) {
+    AdamEPeerlessFrameKindQuery = 1,
+    AdamEPeerlessFrameKindDocument = 2,
 };
 
-typedef NS_ENUM(uint8_t, PLSSection) {
-    PLSSectionMetadata = 1,
-    PLSSectionDocuments = 2,
+typedef NS_ENUM(uint8_t, AdamEPeerlessSection) {
+    AdamEPeerlessSectionMetadata = 1,
+    AdamEPeerlessSectionDocuments = 2,
 };
 
 /// Encodes snapshots into frames. Reused per listener: -reset keeps the buffer. Not thread-safe.
-@interface PLSFrameWriter : NSObject
+@interface AdamEPeerlessFrameWriter : NSObject
 
 - (instancetype)initWithCapacity:(size_t)capacity NS_DESIGNATED_INITIALIZER;
 
@@ -26,9 +26,9 @@ typedef NS_ENUM(uint8_t, PLSSection) {
 
 // Building blocks, so tests can build frames from plain values in a fixed key order.
 - (void)reset;
-- (void)writeHeader:(PLSFrameKind)kind;
+- (void)writeHeader:(AdamEPeerlessFrameKind)kind;
 - (void)writeMetadataSectionFromCache:(BOOL)fromCache hasPendingWrites:(BOOL)hasPendingWrites;
-- (void)beginSection:(PLSSection)section;
+- (void)beginSection:(AdamEPeerlessSection)section;
 - (void)endSection;
 /// Writes a document entry: path, flags, and (if it exists) the map body of `data` (nil means no fields).
 - (void)writeDocumentPath:(NSString *)path exists:(BOOL)exists fromCache:(BOOL)fromCache

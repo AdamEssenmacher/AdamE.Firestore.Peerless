@@ -31,7 +31,10 @@ reported `identical (11 documents, 465 values)`, compared exactly (doubles bit f
 `read back as written` against the seeded values.
 
 **Removal mutes at once.** Each run listens to one document, disposes the listener on the main queue, writes the
-document, and waits 1 s. All eight runs reported `no callback after removal`.
+document, and waits 1 s. All eight runs reported `no callback after removal`. After review, this check was replaced
+by the stronger one Android has: 20 disposals from a thread-pool thread while frames keep arriving (every other one
+while a callback is certainly running), plus one from inside a callback. The run fails on any violation. The
+post-review smoke run passed it (see *Review changes*).
 
 **Everything ran under full NativeAOT** (`nativeAot: True`), with zero build warnings for the app, the binding library
 and the shim (`-Wall -Wextra -Werror`).
@@ -80,8 +83,11 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   unmanaged function pointer, with no marshalling and no peer.
 - **.NET decode is about 22 ns per value** (1.0–1.2 ms at 1000 docs). That's the same decoder and allocation as
   Android (3,453 KB at 1000 docs on both platforms).
-- **Both platforms' encoders write the same frames.** Every snapshot size matches Android's to the byte (7,212,
-  72,474, 364,475 and 730,471 bytes; 742 for the document listener).
+- **Both platforms' encoders write frames of the same size.** Every snapshot's frame size matches Android's to the
+  byte (7,212, 72,474, 364,475 and 730,471 bytes; 742 for the document listener). The bytes themselves were not
+  compared across platforms, and they likely differ: each encoder writes map keys in its platform's iteration order
+  (Java `HashMap` vs `NSDictionary`), which the format allows. Each platform's values are checked exactly against
+  its own peered binding instead.
 
 ## The shim, and how it's linked
 
@@ -91,14 +97,30 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   `FIRTimestamp` are undefined in the executable and resolve "from FirebaseFirestoreInternal" / "from FirebaseCore",
   the binding's embedded dynamic frameworks (`nm -m`). The app defines no Firestore classes and embeds the same 22
   frameworks as step 4.
-- **The C API** (`ios/PeerlessShim/include/PeerlessShim.h`):
-  - `peerless_listen_query(FIRQuery*, context, on_frame, on_error)` and `peerless_listen_document(...)`. The frame
-    callback is `(void* context, const uint8_t* data, size_t length)`. The error callback carries the code and a UTF-8
-    message.
-  - `peerless_listener_remove(listener, release)` mutes at once (an atomic flag, checked before encoding and again
-    before calling .NET). It then removes the Firestore registration and calls `release(context)` on the callback
-    queue, after any callback already running.
-  - `peerless_listener_timing` is for measurement.
+- **The C API** (`ios/PeerlessShim/include/PeerlessShim.h`; every symbol is prefixed `adame_peerless_` and every
+  Objective-C class `AdamEPeerless`, so neither collides with an app's own):
+  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error)` and `adame_peerless_listen_document(...)`.
+    The frame callback is `(void* context, const uint8_t* data, size_t length)`. The error callback carries the code
+    and a UTF-8 message, with code −1 when the shim could not encode a snapshot.
+  - `adame_peerless_listener_remove(listener, release)` stops the listener, safe from any thread, with the same
+    contract as Android's .NET listener:
+    - After it returns, no callback starts.
+    - A callback running on another thread has finished before it returns (it waits for it).
+    - Called from inside a callback, it returns at once, and that callback is the last.
+    - `release(context)` runs exactly once, when no callback can still use the context: inside the call, or right
+      after the running callback, when the call came from inside it.
+  - `adame_peerless_listener_timing` is for measurement. `adame_peerless_compiled_firebase_version` reports the
+    Firebase version the shim was compiled against.
+- **How removal is made safe: a per-listener lock, not a serial-queue check.** Each callback (encode plus the call
+  into .NET) runs holding the listener's `pthread_mutex`. `remove` takes the lock, which is what makes it wait. A
+  thread marker tells removal from inside a callback (which must not wait for itself) apart from removal elsewhere.
+  The same lock is what makes a concurrent `settings.dispatchQueue` safe: callbacks for one listener can't overlap
+  and share the writer, and the handle can't be freed under one that's running. I chose this over rejecting
+  non-serial queues because GCD has no public API to ask whether a queue is concurrent, so a check would be a guess.
+  The cost is one uncontended lock per snapshot.
+- **The first error stops the listener.** A Firestore error, or an encode failure (an Objective-C exception from the
+  writer, or a frame over 2 GB), mutes the listener and removes its registration before `on_error` is called. .NET
+  then stops it from inside that callback, so the handle is released when the callback returns.
 - **Encoding happens on Firestore's callback queue** (`settings.dispatchQueue`, main by default), from
   `snapshot.data`, which keeps the SDK's default server-timestamp behavior (none → null), as on Android.
 - **Each listener reuses one malloc'd buffer**, which grows to the largest frame. Strings go straight into it through
@@ -113,16 +135,50 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   - The frame is decoded in place, as a `ReadOnlySpan<byte>` over the shim's buffer, before the call returns. The
     `GCHandle` is freed by the shim's release callback, so it can't be freed under a running callback.
   - There are no registrar types: the binding's `NSObject` for the query is touched once, at `Listen`.
+  - The public shape and contract match Android's (#3): `Listen(query | document, onSnapshot, Action<Exception>
+    onError)`. `onError` is required, and the timing hook is internal.
+    - `onError` receives a `FirestoreListenException` from Firestore, or a `PeerlessFormatException` for a frame .NET
+      couldn't decode or a snapshot the shim couldn't encode (code −1).
+    - An exception thrown by the app's own callback isn't caught or reported as a format error. It can't unwind into
+      Objective-C, so it ends the process, as the API docs say.
+  - A listener that is never disposed (and never fails) stays rooted: the shim's `GCHandle` keeps its callbacks, and
+    what they capture, alive. Dispose it.
+  - Not supported, on either platform: `includeMetadataChanges` and `ListenSource`. Listeners behave like the SDK's
+    default `addSnapshotListener`. Both would be cheap to add (a flag passed to the SDK's listen-options call); they
+    were left out to keep the two platforms' APIs identical.
 - **Packaging for a NuGet.** The library is a binding project with an empty API definition, because the SDK packages
   a `NativeReference` only from a binding project. Its build produces `AdamE.Firestore.Peerless.iOS.resources.zip`
   holding `PeerlessShim.xcframework` (simulator arm64 + x86_64, device arm64), as the AdamE.Firebase bindings ship
   theirs. Its `Frameworks` metadata names `FirebaseFirestoreInternal` and `FirebaseCore`, which the CloudFirestore
   package brings. The csproj runs `ios/build-shim.sh` when the shim's sources change.
+  - `build-shim.sh` finds the binding package's `lib/net*-ios*` directory instead of assuming `net10.0-ios26.0`, and
+    fails if a framework is missing.
+  - The Firebase version is pinned: the shim records the version it was compiled against (12.18.0). The first
+    `Listen` throws `InvalidOperationException` if the app's Firebase (`App.FirebaseVersion`) has a different major
+    version. A newer minor or patch is accepted, because the shim uses only long-stable SDK API (`data`, `metadata`,
+    the value classes).
+  - **The device (ios-arm64) slice is built but untested:** every run so far was on the simulator.
 - **Tests:** `scripts/test-ios-shim.sh <udid>` builds a plain executable against the shim and the app's embedded
   frameworks and runs it headless with `simctl spawn`. It reproduces all four golden frames byte for byte (plus
   writer reuse), and checks lone surrogates, an embedded NUL, a two-byte varint length, and that a `FIRVectorValue`
-  is written as unsupported with its class name: 11 of 11 pass. I chose this over XCTest because it needs no Xcode
+  is written as unsupported with its class name. After review there is also a check that nesting deeper than 100
+  throws (the listener turns that into code −1): 12 of 12 pass. I chose this over XCTest because it needs no Xcode
   project or test host.
+
+## Review changes (after the timed runs)
+
+The PR #4/#5 review changed the listener after the runs above:
+
+- the per-listener lock and the removal contract,
+- code −1, and the first error stopping the listener,
+- the prefixed names, the Firebase version check, and the Android-shaped API.
+
+None of this touches the encode or decode code. It adds one uncontended lock and a few branches per snapshot, so the
+timed runs were not repeated. A post-fix smoke run on the simulator (NativeAOT, 10 and 100 docs, host load 76–95, not
+committed) matched them: 100 docs at 1.2–1.3 ms, 0 peers and about 350 KB per snapshot. It passed every check:
+calibration, `read back as written`, `identical (465 values)`, and the dispose race (20 thread-pool disposals, 11 of
+them during a running callback, plus one from inside a callback). Runs now fail, and the script exits nonzero, on any
+failed check.
 
 ## What makes these numbers unreliable
 

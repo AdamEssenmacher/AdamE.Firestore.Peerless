@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -21,7 +20,9 @@ internal readonly record struct FrameArrival(
     int Length,
     long ArrivedNanos);
 
-/// <summary>Sees each frame on arrival (before decoding) and after the snapshot callback returns.</summary>
+/// <summary>
+/// Sees each frame on arrival (before decoding) and after the snapshot callback returns. Internal, for the benchmark.
+/// </summary>
 internal interface IFrameObserver
 {
     void Arrived(in FrameArrival arrival);
@@ -30,77 +31,90 @@ internal interface IFrameObserver
 }
 
 /// <summary>
-/// The .NET end of one shim listener. The shim holds a <see cref="GCHandle"/> to it as its context and calls the
-/// <see cref="UnmanagedCallersOnlyAttribute"/> entry points below once per snapshot; the frame is decoded in place,
-/// as a span over the shim's buffer, before the call returns (the buffer is reused for the next frame).
+/// The .NET end of one shim listener, and the <see cref="IDisposable"/> the app holds. The shim holds a
+/// <see cref="GCHandle"/> to it as its context and calls the <see cref="UnmanagedCallersOnlyAttribute"/> entry points
+/// below once per snapshot; the frame is decoded in place, as a span over the shim's buffer, before the call returns.
 /// </summary>
+/// <remarks>
+/// The removal contract lives in the shim (PeerlessShim.h): it runs each callback under the listener's lock, so
+/// removal waits for one in flight, none starts afterwards, and the handle is released only when no callback can still
+/// read it. Removal from inside a callback (as <see cref="Fail"/> does) is detected there and deferred to the
+/// callback's end. Callbacks for one listener are serialized, so <see cref="failed"/> needs no lock.
+/// </remarks>
 internal sealed unsafe class FrameReceiver : IDisposable
 {
-    public delegate void FrameHandler(ReadOnlySpan<byte> frame);
+    public delegate FirestoreSnapshot FrameDecoder(ReadOnlySpan<byte> frame);
 
-    private readonly FrameHandler onFrame;
-    private readonly Action<FirestoreListenException>? onError;
+    private readonly FrameDecoder decode;
+    private readonly Action<FirestoreSnapshot> onSnapshot;
+    private readonly Action<Exception> onError;
     private readonly IFrameObserver? observer;
-    private GCHandle self;
     private nint listener;
-    private volatile bool closed;
+    private volatile bool failed;
 
-    private FrameReceiver(FrameHandler onFrame, Action<FirestoreListenException>? onError, IFrameObserver? observer)
+    private FrameReceiver(
+        FrameDecoder decode, Action<FirestoreSnapshot> onSnapshot, Action<Exception> onError, IFrameObserver? observer)
     {
-        this.onFrame = onFrame;
+        this.decode = decode;
+        this.onSnapshot = onSnapshot;
         this.onError = onError;
         this.observer = observer;
     }
 
     public static FrameReceiver Start(
         NSObject target,
-        FrameHandler onFrame,
-        Action<FirestoreListenException>? onError,
+        FrameDecoder decode,
+        Action<FirestoreSnapshot> onSnapshot,
+        Action<Exception> onError,
         IFrameObserver? observer,
         bool isDocument)
     {
-        var receiver = new FrameReceiver(onFrame, onError, observer);
-        receiver.self = GCHandle.Alloc(receiver);
-        nint context = GCHandle.ToIntPtr(receiver.self);
-        nint listener = isDocument
+        var receiver = new FrameReceiver(decode, onSnapshot, onError, observer);
+        GCHandle self = GCHandle.Alloc(receiver);
+        nint context = GCHandle.ToIntPtr(self);
+        nint created = isDocument
             ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError)
             : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError);
         GC.KeepAlive(target);
-        if (listener == 0)
+        if (created == 0)
         {
-            receiver.self.Free();
+            self.Free();
             throw new ArgumentException($"The shim could not listen to a {target.GetType().Name}.", nameof(target));
         }
 
-        receiver.listener = listener;
+        _ = Interlocked.Exchange(ref receiver.listener, created);
+        // A first callback on another queue may have failed before the pointer was stored: remove it now.
+        if (receiver.failed)
+            receiver.Dispose();
         return receiver;
     }
 
-    /// <summary>Mutes the listener at once; the shim frees the context on the callback queue afterwards.</summary>
+    /// <summary>Stops the listener (see <see cref="PeerlessListener"/>'s remarks). Idempotent; safe from any thread.</summary>
     public void Dispose()
     {
         nint current = Interlocked.Exchange(ref listener, 0);
-        if (current == 0)
-            return;
-        closed = true;
-        Native.Remove(current, &OnRelease);
+        if (current != 0)
+            Native.Remove(current, &OnRelease);
     }
 
     [UnmanagedCallersOnly]
     private static void OnFrame(nint context, byte* data, nuint length)
     {
-        if (GCHandle.FromIntPtr(context).Target is not FrameReceiver receiver || receiver.closed)
-            return;
-        receiver.Deliver(new ReadOnlySpan<byte>(data, checked((int)length)));
+        if (GCHandle.FromIntPtr(context).Target is FrameReceiver receiver)
+            receiver.Deliver(data, length);
     }
 
     [UnmanagedCallersOnly]
     private static void OnError(nint context, int code, byte* message)
     {
-        if (GCHandle.FromIntPtr(context).Target is not FrameReceiver receiver || receiver.closed)
+        if (GCHandle.FromIntPtr(context).Target is not FrameReceiver receiver || receiver.failed)
             return;
-        string text = message is null ? "Firestore reported an error." : Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(message));
-        receiver.Fail(new FirestoreListenException(code, text));
+        string text = message is null
+            ? "Firestore reported an error."
+            : Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(message));
+        receiver.Fail(code == Native.EncodeFailed
+            ? new PeerlessFormatException($"The shim could not encode the snapshot: {text}", 0)
+            : new FirestoreListenException(code, text));
     }
 
     [UnmanagedCallersOnly]
@@ -111,36 +125,50 @@ internal sealed unsafe class FrameReceiver : IDisposable
             handle.Free();
     }
 
-    private void Deliver(ReadOnlySpan<byte> frame)
+    private void Deliver(byte* data, nuint length)
     {
+        if (failed)
+            return;
+        nint current = Volatile.Read(ref listener);
         if (observer is not null)
         {
-            FrameTiming timing;
-            Native.Timing(listener, &timing);
+            FrameTiming timing = default;
+            Native.Timing(current, &timing);
             observer.Arrived(new FrameArrival(
                 (long)timing.StartNanos,
                 (long)timing.StartCpuNanos,
                 (long)timing.EncodeNanos,
                 (long)timing.EncodeCpuNanos,
                 (long)timing.DataNanos,
-                frame.Length,
+                length > int.MaxValue ? -1 : (int)length,
                 PeerlessListener.NowNanoseconds()));
         }
 
+        // Only decoding is guarded: a PeerlessFormatException thrown by the app's own callback is the app's exception,
+        // not a frame failure.
+        FirestoreSnapshot snapshot;
         try
         {
-            onFrame(frame);
+            if (length > int.MaxValue)
+                throw new PeerlessFormatException("The shim delivered a frame over 2 GB.", 0);
+            snapshot = decode(new ReadOnlySpan<byte>(data, (int)length));
         }
         catch (PeerlessFormatException exception)
         {
-            // Firestore's INTERNAL code: the shim and this decoder disagree about the format.
-            Fail(new FirestoreListenException(13, exception.Message));
+            Fail(exception);
+            return;
         }
 
+        onSnapshot(snapshot);
         observer?.Completed();
     }
 
-    // An exception from the app's own callback is not caught: like any unhandled exception on the main queue, it
-    // ends the process (an [UnmanagedCallersOnly] method can't let it unwind into Objective-C).
-    private void Fail(FirestoreListenException exception) => onError?.Invoke(exception);
+    // On the callback thread, inside a callback. The first error is the last callback: the listener is stopped (the
+    // shim defers releasing the handle until this callback returns), then told.
+    private void Fail(Exception exception)
+    {
+        failed = true;
+        Dispose();
+        onError(exception);
+    }
 }

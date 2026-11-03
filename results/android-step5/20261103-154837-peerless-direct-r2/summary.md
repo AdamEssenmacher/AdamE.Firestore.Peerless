@@ -13,25 +13,27 @@ gc: server=False latency=Interactive available=2592632832
 verify: identical (11 documents, 465 values)  
 outcome: completed
 
-Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. GREF peak is the highest .NET-side JNI
-global reference count sampled after each document, minus the count at callback entry; GREF end is the same at
-the end of the callback (GCs inside the callback release some). The .NET counter excludes ~435 cached
-java.lang.Class references that ART's own table (below) includes.
+Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *GREF peak* is the highest .NET-side
+JNI global reference count seen during the callback (sampled after each document), as an absolute count.
+*Peak over settled* is that peak minus the count at the last settle point before the callback (forced .NET
+and Java GC), so references an earlier callback left for the GC are not charged to this one. The .NET counter
+excludes ~435 cached java.lang.Class references that ART's own table (below) includes. n/a: this run predates
+peak sampling.
 
-| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | GREF end | write→callback ms |
+| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|
-| warmup | 10 | initial | 1 | 440 | 0.8 [0.8–0.8] | 0.7 [0.7–0.7] | 0.0 [0.0–0.0] | 0 | 40 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] |  |
-| warmup | 10 | update | 3 | 440 | 0.6 [0.4–0.9] | 0.6 [0.4–0.9] | 0.0 [0.0–0.0] | 0 | 40 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] | 11 |
-| query | 10 | initial | 1 | 440 | 0.9 [0.9–0.9] | 0.8 [0.8–0.8] | 0.0 [0.0–0.0] | 0 | 40 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] |  |
-| query | 10 | update | 20 | 440 | 0.5 [0.3–12.2] | 0.4 [0.0–0.9] | 0.0 [0.0–0.0] | 0 | 40 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] | 13 |
-| query | 100 | initial | 1 | 4400 | 4.1 [4.1–4.1] | 3.7 [3.7–3.7] | 0.0 [0.0–0.0] | 0 | 349 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] |  |
-| query | 100 | update | 20 | 4400 | 1.9 [1.4–4.7] | 1.8 [1.2–4.0] | 0.0 [0.0–0.0] | 0 | 349 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] | 37 |
-| query | 500 | initial | 1 | 22000 | 5.2 [5.2–5.2] | 4.9 [4.9–4.9] | 0.0 [0.0–0.0] | 0 | 1728 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] |  |
-| query | 500 | update | 20 | 22000 | 5.1 [2.9–22.6] | 5.0 [2.8–21.4] | 0.0 [0.0–3.5] | 0 | 1728 | 0.0 [-24.0–0.0] | 0.0 [-24.0–0.0] | 69 |
-| query | 1000 | initial | 1 | 44000 | 9.8 [9.8–9.8] | 9.6 [9.6–9.6] | 0.0 [0.0–0.0] | 0 | 3453 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] |  |
-| query | 1000 | update | 20 | 44000 | 20.6 [7.8–273.6] | 19.4 [7.7–254.3] | 3.9 [0.0–56.5] | 1 | 3453 | -3.0 [-12.0–0.0] | -3.0 [-12.0–0.0] | 195 |
-| document | 1 | initial | 1 | 44 | 0.2 [0.2–0.2] | 0.2 [0.2–0.2] | 0.0 [0.0–0.0] | 0 | 9 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] |  |
-| document | 1 | update | 50 | 44 | 0.1 [0.1–258.5] | 0.1 [0.0–226.0] | 0.0 [0.0–29.2] | 0 | 9 | 0.0 [0.0–0.0] | 0.0 [0.0–0.0] | 86 |
+| warmup | 10 | initial | 1 | 440 | 0.8 [0.8–0.8] | 0.7 [0.7–0.7] | 0.0 [0.0–0.0] | 0 | 40 | 88.0 [88.0–88.0] | 10.0 [10.0–10.0] |  |
+| warmup | 10 | update | 3 | 440 | 0.6 [0.4–0.9] | 0.6 [0.4–0.9] | 0.0 [0.0–0.0] | 0 | 40 | 98.0 [97.0–99.0] | 7.0 [7.0–7.0] | 11 |
+| query | 10 | initial | 1 | 440 | 0.9 [0.9–0.9] | 0.8 [0.8–0.8] | 0.0 [0.0–0.0] | 0 | 40 | 93.0 [93.0–93.0] | 4.0 [4.0–4.0] |  |
+| query | 10 | update | 20 | 440 | 0.5 [0.3–12.2] | 0.4 [0.0–0.9] | 0.0 [0.0–0.0] | 0 | 40 | 118.5 [99.0–140.0] | 21.0 [6.0–35.0] | 13 |
+| query | 100 | initial | 1 | 4400 | 4.1 [4.1–4.1] | 3.7 [3.7–3.7] | 0.0 [0.0–0.0] | 0 | 349 | 115.0 [115.0–115.0] | 4.0 [4.0–4.0] |  |
+| query | 100 | update | 20 | 4400 | 1.9 [1.4–4.7] | 1.8 [1.2–4.0] | 0.0 [0.0–0.0] | 0 | 349 | 133.0 [121.0–145.0] | 18.0 [6.0–30.0] | 37 |
+| query | 500 | initial | 1 | 22000 | 5.2 [5.2–5.2] | 4.9 [4.9–4.9] | 0.0 [0.0–0.0] | 0 | 1728 | 118.0 [118.0–118.0] | 4.0 [4.0–4.0] |  |
+| query | 500 | update | 20 | 22000 | 5.1 [2.9–22.6] | 5.0 [2.8–21.4] | 0.0 [0.0–3.5] | 0 | 1728 | 124.0 [118.0–136.0] | 6.0 [0.0–18.0] | 69 |
+| query | 1000 | initial | 1 | 44000 | 9.8 [9.8–9.8] | 9.6 [9.6–9.6] | 0.0 [0.0–0.0] | 0 | 3453 | 123.0 [123.0–123.0] | 4.0 [4.0–4.0] |  |
+| query | 1000 | update | 20 | 44000 | 20.6 [7.8–273.6] | 19.4 [7.7–254.3] | 3.9 [0.0–56.5] | 1 | 3453 | 126.0 [123.0–129.0] | 3.0 [0.0–6.0] | 195 |
+| document | 1 | initial | 1 | 44 | 0.2 [0.2–0.2] | 0.2 [0.2–0.2] | 0.0 [0.0–0.0] | 0 | 9 | 124.0 [124.0–124.0] | 5.0 [5.0–5.0] |  |
+| document | 1 | update | 50 | 44 | 0.1 [0.1–258.5] | 0.1 [0.0–226.0] | 0.0 [0.0–29.2] | 0 | 9 | 150.0 [128.0–182.0] | 19.5 [5.0–45.0] | 86 |
 
 ## Where the time goes (Peerless: Java side vs .NET side)
 

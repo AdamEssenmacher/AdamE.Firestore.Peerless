@@ -1,4 +1,4 @@
-#import "PLSFrameWriter.h"
+#import "AdamEPeerlessFrameWriter.h"
 
 #import <time.h>
 
@@ -29,7 +29,7 @@ enum {
 static Class PLSStringClass, PLSNumberClass, PLSDictionaryClass, PLSArrayClass, PLSNullClass, PLSDataClass;
 static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 
-@implementation PLSFrameWriter {
+@implementation AdamEPeerlessFrameWriter {
     uint8_t *_buffer;
     size_t _capacity;
     size_t _length;
@@ -40,7 +40,7 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 }
 
 + (void)initialize {
-    if (self != [PLSFrameWriter class])
+    if (self != [AdamEPeerlessFrameWriter class])
         return;
     PLSStringClass = [NSString class];
     PLSNumberClass = [NSNumber class];
@@ -85,7 +85,7 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
     return _dataNanos;
 }
 
-static inline void PLSEnsure(PLSFrameWriter *self, size_t extra) {
+static inline void PLSEnsure(AdamEPeerlessFrameWriter *self, size_t extra) {
     if (self->_length + extra <= self->_capacity)
         return;
     size_t capacity = self->_capacity;
@@ -98,12 +98,12 @@ static inline void PLSEnsure(PLSFrameWriter *self, size_t extra) {
     self->_capacity = capacity;
 }
 
-static inline void PLSByte(PLSFrameWriter *self, uint8_t value) {
+static inline void PLSByte(AdamEPeerlessFrameWriter *self, uint8_t value) {
     PLSEnsure(self, 1);
     self->_buffer[self->_length++] = value;
 }
 
-static inline void PLSVarint(PLSFrameWriter *self, uint32_t value) {
+static inline void PLSVarint(AdamEPeerlessFrameWriter *self, uint32_t value) {
     PLSEnsure(self, 5);
     while (value >= 0x80) {
         self->_buffer[self->_length++] = (uint8_t)(value | 0x80);
@@ -122,28 +122,28 @@ static inline size_t PLSVarintSize(uint32_t value) {
 }
 
 // Little-endian, as the format requires; arm64 and x86_64 both are.
-static inline void PLSInt32(PLSFrameWriter *self, int32_t value) {
+static inline void PLSInt32(AdamEPeerlessFrameWriter *self, int32_t value) {
     PLSEnsure(self, 4);
     uint32_t bits = CFSwapInt32HostToLittle((uint32_t)value);
     memcpy(self->_buffer + self->_length, &bits, 4);
     self->_length += 4;
 }
 
-static inline void PLSInt64(PLSFrameWriter *self, int64_t value) {
+static inline void PLSInt64(AdamEPeerlessFrameWriter *self, int64_t value) {
     PLSEnsure(self, 8);
     uint64_t bits = CFSwapInt64HostToLittle((uint64_t)value);
     memcpy(self->_buffer + self->_length, &bits, 8);
     self->_length += 8;
 }
 
-static inline void PLSDouble(PLSFrameWriter *self, double value) {
+static inline void PLSDouble(AdamEPeerlessFrameWriter *self, double value) {
     uint64_t bits;
     memcpy(&bits, &value, 8); // the bits as they are: -0.0, NaN payloads and infinities survive
     PLSInt64(self, (int64_t)bits);
 }
 
 // UTF-16 → UTF-8 by hand, for strings holding a lone surrogate: it becomes U+FFFD, as in .NET and the Java encoder.
-static void PLSStringSlow(PLSFrameWriter *self, CFStringRef value, CFIndex chars) {
+static void PLSStringSlow(AdamEPeerlessFrameWriter *self, CFStringRef value, CFIndex chars) {
     if (self->_scratchCapacity < (size_t)chars) {
         unichar *grown = realloc(self->_scratch, (size_t)chars * sizeof(unichar));
         if (grown == NULL)
@@ -215,7 +215,7 @@ static inline BOOL PLSIsWellFormed(const uint8_t *bytes, size_t length) {
 // Converts straight into the frame buffer, 5 bytes past the cursor (room for the longest varint), then slides the
 // bytes back once their length is known. CFStringGetBytes stops at a character it can't convert (lossByte 0), and
 // then the slow path redoes the string.
-static void PLSString(PLSFrameWriter *self, CFStringRef value) {
+static void PLSString(AdamEPeerlessFrameWriter *self, CFStringRef value) {
     CFIndex chars = CFStringGetLength(value);
     if (chars == 0) {
         PLSByte(self, 0);
@@ -244,9 +244,9 @@ static void PLSString(PLSFrameWriter *self, CFStringRef value) {
     self->_length += prefix + (size_t)used;
 }
 
-static void PLSValue(PLSFrameWriter *self, id value, int depth);
+static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth);
 
-static void PLSMapBody(PLSFrameWriter *self, NSDictionary *map, int depth) {
+static void PLSMapBody(AdamEPeerlessFrameWriter *self, NSDictionary *map, int depth) {
     CFIndex count = CFDictionaryGetCount((__bridge CFDictionaryRef)map);
     PLSVarint(self, (uint32_t)count);
     if (count == 0)
@@ -270,13 +270,13 @@ static void PLSMapBody(PLSFrameWriter *self, NSDictionary *map, int depth) {
         free(values);
 }
 
-static void PLSUnsupported(PLSFrameWriter *self, NSString *typeName) {
+static void PLSUnsupported(AdamEPeerlessFrameWriter *self, NSString *typeName) {
     PLSByte(self, PLSTagUnsupported);
     PLSString(self, (__bridge CFStringRef)typeName);
 }
 
 // Ordered by how often each kind appears in typical documents.
-static void PLSValue(PLSFrameWriter *self, id value, int depth) {
+static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth) {
     if (depth > 100)
         [NSException raise:NSInvalidArgumentException format:@"Peerless refuses values nested deeper than 100."];
     if (value == nil) {
@@ -346,7 +346,7 @@ static void PLSValue(PLSFrameWriter *self, id value, int depth) {
     }
 }
 
-static void PLSDocument(PLSFrameWriter *self, NSString *path, BOOL exists, BOOL fromCache, BOOL hasPendingWrites,
+static void PLSDocument(AdamEPeerlessFrameWriter *self, NSString *path, BOOL exists, BOOL fromCache, BOOL hasPendingWrites,
                         NSDictionary *data) {
     PLSString(self, (__bridge CFStringRef)path);
     PLSByte(self, (uint8_t)((exists ? 0x01 : 0) | (fromCache ? 0x02 : 0) | (hasPendingWrites ? 0x04 : 0)));
@@ -361,7 +361,7 @@ static void PLSDocument(PLSFrameWriter *self, NSString *path, BOOL exists, BOOL 
 
 // `data` uses the SDK's default server timestamp behavior (none: unresolved server timestamps read as null), the
 // same as an ordinary app reading snapshot.data.
-static void PLSSnapshotDocument(PLSFrameWriter *self, FIRDocumentSnapshot *document) {
+static void PLSSnapshotDocument(AdamEPeerlessFrameWriter *self, FIRDocumentSnapshot *document) {
     FIRSnapshotMetadata *metadata = document.metadata;
     BOOL exists = document.exists;
     NSDictionary *data = nil;
@@ -375,11 +375,11 @@ static void PLSSnapshotDocument(PLSFrameWriter *self, FIRDocumentSnapshot *docum
 
 - (void)writeQuerySnapshot:(FIRQuerySnapshot *)snapshot {
     [self reset];
-    [self writeHeader:PLSFrameKindQuery];
+    [self writeHeader:AdamEPeerlessFrameKindQuery];
     FIRSnapshotMetadata *metadata = snapshot.metadata;
     [self writeMetadataSectionFromCache:metadata.isFromCache hasPendingWrites:metadata.hasPendingWrites];
     NSArray<FIRQueryDocumentSnapshot *> *documents = snapshot.documents;
-    [self beginSection:PLSSectionDocuments];
+    [self beginSection:AdamEPeerlessSectionDocuments];
     PLSVarint(self, (uint32_t)documents.count);
     for (FIRQueryDocumentSnapshot *document in documents) {
         @autoreleasepool {
@@ -391,10 +391,10 @@ static void PLSSnapshotDocument(PLSFrameWriter *self, FIRDocumentSnapshot *docum
 
 - (void)writeDocumentSnapshot:(FIRDocumentSnapshot *)snapshot {
     [self reset];
-    [self writeHeader:PLSFrameKindDocument];
+    [self writeHeader:AdamEPeerlessFrameKindDocument];
     FIRSnapshotMetadata *metadata = snapshot.metadata;
     [self writeMetadataSectionFromCache:metadata.isFromCache hasPendingWrites:metadata.hasPendingWrites];
-    [self beginSection:PLSSectionDocuments];
+    [self beginSection:AdamEPeerlessSectionDocuments];
     PLSVarint(self, 1);
     PLSSnapshotDocument(self, snapshot);
     [self endSection];
@@ -406,7 +406,7 @@ static void PLSSnapshotDocument(PLSFrameWriter *self, FIRDocumentSnapshot *docum
     _dataNanos = 0;
 }
 
-- (void)writeHeader:(PLSFrameKind)kind {
+- (void)writeHeader:(AdamEPeerlessFrameKind)kind {
     PLSEnsure(self, 8);
     const uint8_t header[8] = {'P', 'L', 'S', 'F', 1, 0, kind, 0};
     memcpy(_buffer + _length, header, 8);
@@ -414,12 +414,12 @@ static void PLSSnapshotDocument(PLSFrameWriter *self, FIRDocumentSnapshot *docum
 }
 
 - (void)writeMetadataSectionFromCache:(BOOL)fromCache hasPendingWrites:(BOOL)hasPendingWrites {
-    [self beginSection:PLSSectionMetadata];
+    [self beginSection:AdamEPeerlessSectionMetadata];
     PLSByte(self, (uint8_t)((fromCache ? 0x01 : 0) | (hasPendingWrites ? 0x02 : 0)));
     [self endSection];
 }
 
-- (void)beginSection:(PLSSection)section {
+- (void)beginSection:(AdamEPeerlessSection)section {
     if (_sectionStart >= 0)
         [NSException raise:NSInternalInconsistencyException format:@"Sections do not nest."];
     PLSByte(self, section);

@@ -85,6 +85,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         writer.Note("nativeAot", (!RuntimeFeature.IsDynamicCodeSupported).ToString());
         writer.Note("microsoftIos", typeof(NSObject).Assembly.GetName().Version?.ToString() ?? "unknown");
         writer.Note("firebase", App.FirebaseVersion);
+        writer.Note("shimCompiledAgainstFirebase", PeerlessListener.CompiledFirebaseVersion);
         writer.Note("device", $"{UIDevice.CurrentDevice.Model} {UIDevice.CurrentDevice.SystemName} "
             + $"{UIDevice.CurrentDevice.SystemVersion} {RuntimeInformation.ProcessArchitecture} "
             + $"simulator={ObjCRuntime.Runtime.Arch == ObjCRuntime.Arch.SIMULATOR} "
@@ -117,7 +118,10 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
             seeding = Connect("seeder");
 
             if (options.Verify)
+            {
                 await VerifyAsync().ConfigureAwait(false);
+                await DisposeRaceAsync().ConfigureAwait(false);
+            }
             await BenchmarkPhases.RunAsync(this, options.Plan).ConfigureAwait(false);
 
             writer.Note("outcome", "completed");
@@ -276,7 +280,8 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                 : $"DIFFERENT {peerlessDifference}";
             results?.Note("verifyPeerless", comparison.ReplaceLineEndings(" | "));
             Report($"verify peered vs Peerless: {comparison}");
-            await VerifyRemovalAsync(collection).ConfigureAwait(false);
+            if (peerlessDifference is not null)
+                throw new BenchmarkCheckException($"verify peered vs Peerless: {comparison}");
         }
         finally
         {
@@ -286,30 +291,102 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     }
 
     /// <summary>
-    /// Removal must mute a Peerless listener at once: after Dispose returns, a write that Firestore would deliver must
-    /// not reach .NET. Disposed from the main queue, as an app's view would.
+    /// Checks PeerlessListener's removal contract under load, as on Android: disposed from a thread-pool thread while
+    /// frames keep arriving, no callback may still be running when Dispose returns, and none may start after it. Every
+    /// other round disposes while a callback is certainly running (Dispose must wait for it). Then one listener disposes
+    /// itself from inside its callback, which must neither deadlock nor see another frame.
     /// </summary>
-    private async Task VerifyRemovalAsync(string collection)
+    private async Task DisposeRaceAsync()
     {
-        DocumentReference document = Listening.GetCollection(collection).GetDocument(BenchmarkPlan.DocumentId(0));
-        int callbacks = 0;
-        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        IDisposable listener = PeerlessListener.Listen(document, _ =>
+        const string collection = "dispose-race";
+        const int iterations = 20;
+        Report("dispose race: seeding");
+        await BenchmarkPhases.SeedAsync(this, collection, 50).ConfigureAwait(false);
+        Query query = Listening.GetCollection(collection);
+        int violations = 0;
+        int disposedMidCallback = 0;
+
+        for (int iteration = 0; iteration < iterations; iteration++)
         {
-            Interlocked.Increment(ref callbacks);
-            first.TrySetResult();
-        });
-        await first.Task.WaitAsync(VerifyTimeout).ConfigureAwait(false);
-        await Probes.OnMainQueueAsync(listener.Dispose).ConfigureAwait(false);
-        int before = Volatile.Read(ref callbacks);
-        await PrepareUpdate(collection, BenchmarkPlan.DocumentId(0), 99)().ConfigureAwait(false);
-        await Task.Delay(1000).ConfigureAwait(false);
-        int after = Volatile.Read(ref callbacks);
-        string verdict = after == before
-            ? $"no callback after removal ({before} before it)"
-            : $"FAILED: {after - before} callback(s) after removal";
-        results?.Note("verifyRemoval", verdict);
-        Report($"verify removal: {verdict}");
+            int inside = 0;
+            int returned = 0;
+            int frames = 0;
+            bool forceMidCallback = iteration % 2 == 0;
+            var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable registration = PeerlessListener.Listen(
+                query,
+                _ =>
+                {
+                    if (Volatile.Read(ref returned) == 1)
+                        Interlocked.Increment(ref violations); // started after Dispose returned
+                    Volatile.Write(ref inside, 1);
+                    int frame = Interlocked.Increment(ref frames);
+                    if (forceMidCallback && frame >= 2)
+                    {
+                        started.TrySetResult();
+                        Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
+                    }
+                    else
+                    {
+                        Thread.Sleep(3); // widen the window a disposal can land in
+                    }
+
+                    if (frame >= 2)
+                        flowing.TrySetResult();
+                    Volatile.Write(ref inside, 0);
+                },
+                error => flowing.TrySetException(error));
+
+            using var stop = new CancellationTokenSource();
+            Task writes = Task.Run(async () =>
+            {
+                for (int write = 0; !stop.IsCancellationRequested; write++)
+                    await PrepareUpdate(collection, BenchmarkPlan.DocumentId(write % 50), write)().ConfigureAwait(false);
+            });
+
+            await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(VerifyTimeout).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                if (Volatile.Read(ref inside) == 1)
+                    Interlocked.Increment(ref disposedMidCallback);
+                registration.Dispose();
+                if (Volatile.Read(ref inside) == 1)
+                    Interlocked.Increment(ref violations); // still running after Dispose returned
+                Volatile.Write(ref returned, 1);
+            }).ConfigureAwait(false);
+
+            await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+            await stop.CancelAsync().ConfigureAwait(false);
+            await writes.ConfigureAwait(false);
+        }
+
+        // Disposal from inside a callback, on the callback thread (the main queue).
+        int selfCallbacks = 0;
+        var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable? self = null;
+        await Probes.OnMainQueueAsync(() => self = PeerlessListener.Listen(
+            query,
+            _ =>
+            {
+                if (Interlocked.Increment(ref selfCallbacks) > 1)
+                    Interlocked.Increment(ref violations);
+                self?.Dispose();
+                selfDisposed.TrySetResult();
+            },
+            error => selfDisposed.TrySetException(error))).ConfigureAwait(false);
+        await selfDisposed.Task.WaitAsync(VerifyTimeout).ConfigureAwait(false);
+        for (int write = 0; write < 5; write++)
+            await PrepareUpdate(collection, BenchmarkPlan.DocumentId(write), 1000 + write)().ConfigureAwait(false);
+
+        await Task.Delay(300).ConfigureAwait(false);
+        string verdict = violations == 0
+            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
+            : $"VIOLATED {violations} times";
+        results?.Note("disposeRace", verdict);
+        Report($"dispose race: {verdict}");
+        if (violations != 0)
+            throw new BenchmarkCheckException($"dispose race: {verdict}");
     }
 
     // IBenchmarkPlatform: the shared phases drive these.
