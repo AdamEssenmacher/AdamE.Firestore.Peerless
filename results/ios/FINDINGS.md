@@ -50,8 +50,12 @@ Each document has 16 top-level fields, which come to 44 converted values.
 | 1 (doc listener) | update ×50 | 100 | 0.33 | 0.33 | 0 | 0 | 92 KB | 39 | 31 |
 
 - **About 47 `NSObject` peers are created per document, slightly more than one per value** (47.1–47.4 at 100–1000
-  docs). Every peer here is a managed object, a GC handle and a retain on a native object. The count is
-  deterministic: both runs created exactly 4,741, 47,129 and 81 peers for the same snapshots.
+  docs). Every peer here is a managed object, a GC handle and a retain on a native object. Most counts repeat across
+  runs: both runs created exactly 511, 4,741, 47,129 and 81 peers for the initial 10-, 100- and 1000-document
+  snapshots and the document listener's initial snapshot. Others vary slightly: the 500-document initial snapshot
+  created 23,562 and then 23,576 peers, and updates vary by up to about 0.3% (for example 47,027–47,247 at 1000
+  docs). The likely cause, unconfirmed, is that when a GC lands inside the callback, peers for native objects that
+  Firestore hands over more than once can die and be created again.
 - **About 3 KB of managed allocation per converted value** (2.9–3.0 KB at 100–1000 docs, 3.2 KB at 10). Android's
   peered path allocates about 4 KB per value. The cost has the same shape on both platforms: a peer per value, plus
   the binding's marshalling (`NSDictionary` enumeration, `NSString`→`string`, and `ObjCType` strings for every
@@ -110,7 +114,7 @@ of one callback.
    (`dotnet publish -r ios-arm64`, which needs a provisioning profile).
 2. **Host load was extreme.** The 1-minute load average was 95–178 on 18 cores during the two runs, and up to 370
    during the smoke runs before them, from other sessions' builds, tests and simulators. Main-queue CPU time is much
-   steadier than wall time (1000-doc updates: CPU 234–347 ms, wall 234–1,174 ms). Read CPU, allocation and peer
+   steadier than wall time (1000-doc updates: CPU 228.5–347 ms, wall 234–1,174 ms). Read CPU, allocation and peer
    counts first. Unlike the Android emulator, the simulator shares the host's scheduler directly.
 3. **The peer counter reads private runtime state.** `ObjCRuntime.Runtime.object_map` (the
    `Dictionary<IntPtr, GCHandle>` every peer is registered in) and its `lock_obj` are read through
@@ -147,6 +151,9 @@ of one callback.
   instance starts with an empty cache and each update reaches it as exactly one server snapshot.
 - The same documents (`SeedSpec`), sizes, update counts and settle points as Android, from `benchmarks/Shared`, which
   both apps compile in. Peered conversion output is the same plain .NET model as Android's peered mode.
+- A run fails, and the script exits nonzero, when the app isn't NativeAOT (`IsDynamicCodeSupported`), when the peer
+  counter fails its calibration, when the verify check finds a difference, and on a timeout or a dead process. (Added
+  in review, after these runs. Both runs above passed every one of those checks.)
 - `scripts/run-ios-benchmark.sh <udid> [launch args]` builds, installs, clears the emulator, launches, waits and copies
   the results. Then `scripts/summarize-ios-benchmark.py <run-dir>`. The app's own progress log (`ios-console.txt`,
   with live peer kinds after each initial snapshot) is copied next to the results but not committed.

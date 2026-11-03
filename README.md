@@ -28,6 +28,9 @@ under NativeAOT. Nothing is published as a NuGet yet.
 | `benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android` | NativeAOT benchmark app: peered vs Peerless |
 | `benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS` | NativeAOT benchmark app (simulator): peered baseline |
 
+`AdamE.Firestore.Peerless.NoApple.slnf` is the solution without its iOS projects, for machines without the `ios`
+workload (for example Linux CI): `dotnet build AdamE.Firestore.Peerless.NoApple.slnf`.
+
 ```bash
 dotnet test --project tests/AdamE.Firestore.Peerless.Tests        # decoder, properties, golden frames
 (cd android && ./gradlew :peerless-shim:testDebugUnitTest)         # Java encoder against the same golden frames

@@ -6,18 +6,24 @@
 #   firebase emulators:start --only firestore --project demo-peerless
 #
 # Usage: scripts/run-ios-benchmark.sh <simulator-udid> [peered|peerless] [extra launch arguments, e.g. -sizes 10,100]
+#   FIRESTORE_PORT  the Firestore emulator's port (default 8181, as in firebase.json); the simulator shares the host's
+#                   network, so the app reaches it at 127.0.0.1:<port>
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
+#
+# Exits nonzero unless the run completed under NativeAOT with every self-check passing (the app records a failed
+# check as outcome: failed), and on a timeout, a dead process or a summarizer error.
 set -euo pipefail
 
 udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [peered|peerless] [launch args]}"
 mode="${2:-peered}"
 shift 2 || shift $# || true
+port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS"
 bundle="com.adame.firestore.peerless.benchmarks"
 out="${RESULTS_DIR:-$root/results/ios}/$(date +%Y%m%d-%H%M%S)-$mode${RUN_LABEL:+-$RUN_LABEL}"
 
-curl -sf -o /dev/null "http://127.0.0.1:8181/" || { echo "Firestore emulator is not listening on 8181" >&2; exit 1; }
+curl -sf -o /dev/null "http://127.0.0.1:$port/" || { echo "Firestore emulator is not listening on $port" >&2; exit 1; }
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
@@ -29,12 +35,12 @@ xcrun simctl install "$udid" "$app"
 container="$(xcrun simctl get_app_container "$udid" "$bundle" data)"
 rm -rf "$container/Library/Caches/peerless"
 # Start each run from an empty emulator database.
-curl -sf -X DELETE "http://127.0.0.1:8181/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
+curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
 
 mkdir -p "$out"
 files="$container/Library/Caches/peerless"
 load_before="$(uptime)"
-xcrun simctl launch --terminate-running-process "$udid" "$bundle" -mode "$mode" "$@"
+xcrun simctl launch --terminate-running-process "$udid" "$bundle" -mode "$mode" -port "$port" "$@"
 
 # A simulator app is an ordinary host process, so pgrep finds it (by this simulator's path) without simctl.
 echo "Waiting for the run to finish…"
@@ -53,5 +59,11 @@ cp "$files/$mode-console.txt" "$out/ios-console.txt" 2>/dev/null || echo "missin
 xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
 { echo "outcome: $outcome"; echo "simulator: $(xcrun simctl list devices | grep "$udid" | sed 's/^ *//')";
   echo "build args: ${BUILD_ARGS:-none}"; echo "host load before: $load_before"; echo "host load after: $(uptime)"; } | tee -a "$out/host.txt"
-python3 -I "$root/scripts/summarize-ios-benchmark.py" "$out" >/dev/null || true
+python3 -I "$root/scripts/summarize-ios-benchmark.py" "$out" >/dev/null
 echo "results: $out"
+
+# The run only counts if it finished, as NativeAOT, with its own checks (calibration, verify) passed.
+[[ "$outcome" == "done" ]] || { echo "run did not finish: $outcome" >&2; exit 1; }
+grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+grep -qx "outcome: completed" "$out/$mode-run.txt" \
+  || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
