@@ -43,7 +43,12 @@ for run in runs:
             earlier = [g for k, g in order[(row["phase"], int(row["size"]))] if k < seq or (seq == 0 and k == -1)]
             if earlier:
                 row["gref_peak_over_settled"] = str(float(row["gref_peak"]) - earlier[-1])
-        samples[(mode, row["phase"], int(row["size"]), row["kind"])].append(row)
+        # Updates that come straight after a settle point are reported on their own, in every mode: forced GCs at the
+        # settle point make some of the following peered callbacks run GC storms (see results/android-peered).
+        kind = row["kind"]
+        if kind == "update" and any(k == int(row["seq"]) - 1 for k, _ in order[(row["phase"], int(row["size"]))]):
+            kind = "update, after a settle"
+        samples[(mode, row["phase"], int(row["size"]), kind)].append(row)
     summary = (run / "summary.md").read_text() if (run / "summary.md").exists() else ""
     summary = summary.split("## ART's JNI tables", 1)[1] if "## ART's JNI tables" in summary else ""
     for m in re.finditer(r"^\| (\w+) \| (\d+) \| ([\w-]+) \| (\d+) \| (\d+) \|", summary, re.M):
@@ -98,12 +103,15 @@ table("Main-thread CPU per snapshot (ms)", "thread_cpu_us", 1000, 2,
       "Thread CPU time on the callback (main) thread over the same span; for Peerless this includes Java encoding.")
 table("Managed allocation per snapshot (KB)", "alloc_bytes", 1024, 0,
       ".NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode.")
-table("JNI global references at peak during a snapshot, over the last settle point", "gref_peak_over_settled", 1, 0,
-      "The highest .NET-side count seen during the callback (sampled per document in peered mode) minus the count at "
-      "the last settle point (forced .NET and Java GC) before it, so references earlier callbacks left for the GC are "
-      "not charged to this one. Earlier versions subtracted the count at callback entry, which understated updates.")
 table("JNI global references at peak during a snapshot (absolute)", "gref_peak", 1, 0,
-      "The .NET-side count, which leaves out ~435 java.lang.Class references Java.Interop caches.")
+      "The highest .NET-side count seen during the callback (sampled per document in peered mode): what an app sees, "
+      "since an app never forces the settles this benchmark does. The .NET counter leaves out ~435 java.lang.Class "
+      "references Java.Interop caches.")
+table("JNI global references at peak during a snapshot, over the last settle point", "gref_peak_over_settled", 1, 0,
+      "The peak minus the count at the last settle point (forced .NET and Java GC). That removes only references that "
+      "survive a full GC; references earlier callbacks left for the GC since the settle are still included, so the "
+      "figure grows with the callbacks since it. Cadence: a settle before listening, after the initial snapshot and "
+      "after every 5th update (every 12th in the single-document phase).")
 table("GCs during a snapshot", "gen0", 1, 0, "Collections of any generation that started inside the callback.")
 
 lines += ["## Settled JNI global references (after forced .NET + Java GC)", "",

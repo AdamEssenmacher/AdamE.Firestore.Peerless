@@ -96,7 +96,7 @@ value = tag:u8 body
 | 6 | bytes | `varint` length, raw bytes |
 | 7 | timestamp | `seconds:i64 nanoseconds:i32`, within Firestore's range: 0 ≤ nanoseconds ≤ 999,999,999 and −62,135,596,800 ≤ seconds ≤ 253,402,300,799 (0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z). Decoders reject anything outside it. |
 | 8 | geo point | `latitude:f64 longitude:f64` |
-| 9 | reference | `path:string`, the referenced document's full path |
+| 9 | reference | `path:string`, the referenced document's full path within its database. The database ID is not carried (the SDKs' `DocumentReference.path` doesn't include it), so a reference into another database of the same project reads as a path in the listener's own database. Carrying it would need a new tag, a major version. |
 | 10 | array | `count:varint value*count` |
 | 11 | map | `map-body` |
 | 12 | unsupported | `typeName:string`, the native type the encoder didn't understand |

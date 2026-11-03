@@ -7,6 +7,8 @@
 #
 # Usage: scripts/run-android-benchmark.sh [adb-serial] [peered|peerless-direct|peerless-bytes] [extra `am start` args,
 #        e.g. --es sizes 10,100 --ei updates 5]
+#   ALLOW_DEVICE=1  run against a physical device too (the script changes a global setting, restored on exit, and
+#                   clears logcat); without it, non-emulator serials are refused
 #   FIRESTORE_PORT  the Firestore emulator's host port (default 8181, as in firebase.json); the app reaches it at
 #                   10.0.2.2:<port>
 #
@@ -26,6 +28,17 @@ package="com.adame.firestore.peerless.benchmarks"
 files="/sdcard/Android/data/$package/files"
 out="${RESULTS_DIR:-$root/results/android}/$(date +%Y%m%d-%H%M%S)-$mode${RUN_LABEL:+-$RUN_LABEL}"
 
+# This script changes a global setting and clears logcat, so it only runs against an emulator unless told otherwise.
+is_emulator() {
+  [[ "$serial" == emulator-* ]] && return 0
+  [ "$(adb -s "$serial" shell getprop ro.boot.qemu 2>/dev/null | tr -d '\r')" = "1" ] && return 0
+  [ "$(adb -s "$serial" shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r')" = "1" ]
+}
+if ! is_emulator && [ "${ALLOW_DEVICE:-0}" != "1" ]; then
+  echo "$serial is not an emulator. This script sets hidden_api_policy and clears logcat; set ALLOW_DEVICE=1 to run it on a device anyway." >&2
+  exit 1
+fi
+
 curl -sf -o /dev/null "http://127.0.0.1:$port/" || { echo "Firestore emulator is not listening on $port" >&2; exit 1; }
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
@@ -39,6 +52,16 @@ adb -s "$serial" shell rm -f "$files/$mode-samples.csv" "$files/$mode-settled.cs
 curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
 # The app reads ART's JNI reference tables through a hidden API (dalvik.system.VMDebug). API 36 Google APIs images
 # allow it already; this keeps it working on stricter images. Emulator-only setting; it does not touch the host.
+# The previous value is restored when the script exits, however it exits.
+previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
+restore_policy() {
+  if [ "$previous_policy" = "null" ] || [ -z "$previous_policy" ]; then
+    adb -s "$serial" shell settings delete global hidden_api_policy >/dev/null 2>&1 || true
+  else
+    adb -s "$serial" shell settings put global hidden_api_policy "$previous_policy" >/dev/null 2>&1 || true
+  fi
+}
+trap restore_policy EXIT
 adb -s "$serial" shell settings put global hidden_api_policy 1
 [ "$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')" = "1" ] \
   || { echo "Could not set hidden_api_policy on $serial; ART reference-table dumps will be missing." >&2; }

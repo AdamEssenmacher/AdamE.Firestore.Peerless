@@ -16,15 +16,70 @@ internal enum FrameDelivery
     ByteArray = PeerlessListeners.DeliveryByteArray,
 }
 
+/// <summary>Firestore's error codes, numbered as gRPC numbers them (and as Firestore's SDKs report them).</summary>
+public enum FirestoreErrorCode
+{
+    /// <summary>Not an error.</summary>
+    Ok = 0,
+
+    /// <summary>The operation was cancelled.</summary>
+    Cancelled = 1,
+
+    /// <summary>An unknown error.</summary>
+    Unknown = 2,
+
+    /// <summary>The client specified an invalid argument.</summary>
+    InvalidArgument = 3,
+
+    /// <summary>The deadline expired before the operation could complete.</summary>
+    DeadlineExceeded = 4,
+
+    /// <summary>A requested document was not found.</summary>
+    NotFound = 5,
+
+    /// <summary>A document the client tried to create already exists.</summary>
+    AlreadyExists = 6,
+
+    /// <summary>The caller lacks permission (for example, security rules denied the query).</summary>
+    PermissionDenied = 7,
+
+    /// <summary>A resource has been exhausted, such as a quota.</summary>
+    ResourceExhausted = 8,
+
+    /// <summary>The system is not in a state required for the operation (for example, a missing index).</summary>
+    FailedPrecondition = 9,
+
+    /// <summary>The operation was aborted, typically by a concurrency issue.</summary>
+    Aborted = 10,
+
+    /// <summary>The operation was attempted past the valid range.</summary>
+    OutOfRange = 11,
+
+    /// <summary>The operation is not implemented or supported.</summary>
+    Unimplemented = 12,
+
+    /// <summary>An internal error.</summary>
+    Internal = 13,
+
+    /// <summary>The service is currently unavailable.</summary>
+    Unavailable = 14,
+
+    /// <summary>Unrecoverable data loss or corruption.</summary>
+    DataLoss = 15,
+
+    /// <summary>The request does not have valid authentication credentials.</summary>
+    Unauthenticated = 16,
+}
+
 /// <summary>Firestore reported that a listener failed.</summary>
 public sealed class FirestoreListenException : Exception
 {
     /// <summary>Creates the exception.</summary>
-    public FirestoreListenException(int code, string message)
+    public FirestoreListenException(FirestoreErrorCode code, string message)
         : base(message) => Code = code;
 
-    /// <summary>Firestore's error code (gRPC numbering, e.g. 7 = permission denied, 14 = unavailable).</summary>
-    public int Code { get; }
+    /// <summary>Firestore's error code. A value outside the enum is a code a newer SDK added.</summary>
+    public FirestoreErrorCode Code { get; }
 }
 
 /// <summary>
@@ -41,6 +96,17 @@ public sealed class FirestoreListenException : Exception
 /// already running has finished; to guarantee that, <c>Dispose</c> waits for a callback in flight on another thread.
 /// The exception is <c>Dispose</c> called from inside a callback (on the callback thread), which returns at once: the
 /// running callback is the last one.
+/// </para>
+/// <para>
+/// <b>Because Dispose waits, two patterns deadlock:</b> a callback that blocks waiting for a thread which is itself
+/// disposing this listener (for example, <c>onSnapshot</c> doing <c>task.Wait()</c> on work that calls
+/// <c>Dispose</c>), and calling <c>Dispose</c> while holding a lock that the callback also takes. Dispose from the
+/// callback thread, from inside the callback, or without holding the callback's locks.
+/// </para>
+/// <para>
+/// <b>Calling Listen off the main thread.</b> Firestore may then deliver the first callback before <c>Listen</c>
+/// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
+/// held and posted to the main thread after <c>Listen</c> has returned.
 /// </para>
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
@@ -80,7 +146,7 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
             observer);
-        receiver.Attach(PeerlessListeners.Listen(query, receiver, (int)delivery));
+        receiver.Attach(PeerlessListeners.Listen(query, receiver, (int)delivery, receiver.Timed));
         return new Registration(receiver);
     }
 
@@ -99,7 +165,7 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer);
-        receiver.Attach(PeerlessListeners.Listen(document, receiver, (int)delivery));
+        receiver.Attach(PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed));
         return new Registration(receiver);
     }
 

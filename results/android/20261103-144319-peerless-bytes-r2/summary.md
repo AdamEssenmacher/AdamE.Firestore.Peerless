@@ -13,27 +13,37 @@ gc: server=False latency=Interactive available=2592632832
 verify: identical (11 documents, 465 values)  
 outcome: completed
 
-Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *GREF peak* is the highest .NET-side
-JNI global reference count seen during the callback (sampled after each document), as an absolute count.
-*Peak over settled* is that peak minus the count at the last settle point before the callback (forced .NET
-and Java GC), so references an earlier callback left for the GC are not charged to this one. The .NET counter
-excludes ~435 cached java.lang.Class references that ART's own table (below) includes. n/a: this run predates
-peak sampling.
+Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB.
+
+*GREF peak* is the highest .NET-side JNI global reference count seen during the callback (sampled after each
+document), as an absolute count: **what an app sees**, since an app never forces the settles this benchmark
+does. *Peak over settled* is that peak minus the count at the last settle point (forced .NET and Java GC).
+Subtracting removes only the references that survive a full GC; references earlier callbacks left for the GC
+since that settle are still included, so the figure grows with the number of callbacks since the settle.
+Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the
+single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come
+straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached
+java.lang.Class references that ART's own table (below) includes. n/a: this run predates peak sampling.
 
 | phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|
 | warmup | 10 | initial | 1 | 440 | 0.9 [0.9–0.9] | 0.7 [0.7–0.7] | 0.0 [0.0–0.0] | 0 | 40 | 87.0 [87.0–87.0] | 9.0 [9.0–9.0] |  |
-| warmup | 10 | update | 3 | 440 | 0.5 [0.5–0.7] | 0.5 [0.5–0.6] | 0.0 [0.0–0.0] | 0 | 40 | 97.0 [96.0–98.0] | 6.0 [6.0–7.0] | 16 |
+| warmup | 10 | update, after a settle | 3 | 440 | 0.5 [0.5–0.7] | 0.5 [0.5–0.6] | 0.0 [0.0–0.0] | 0 | 40 | 97.0 [96.0–98.0] | 6.0 [6.0–7.0] | 16 |
 | query | 10 | initial | 1 | 440 | 0.7 [0.7–0.7] | 0.7 [0.7–0.7] | 0.0 [0.0–0.0] | 0 | 40 | 92.0 [92.0–92.0] | 3.0 [3.0–3.0] |  |
-| query | 10 | update | 20 | 440 | 0.4 [0.3–1.4] | 0.4 [0.3–1.1] | 0.0 [0.0–0.0] | 0 | 40 | 115.5 [98.0–135.0] | 18.0 [6.0–30.0] | 16 |
+| query | 10 | update, after a settle | 4 | 440 | 0.4 [0.3–1.4] | 0.4 [0.3–1.1] | 0.0 [0.0–0.0] | 0 | 40 | 103.5 [98.0–111.0] | 6.0 [6.0–6.0] | 14 |
+| query | 10 | update | 16 | 440 | 0.4 [0.3–1.0] | 0.4 [0.3–0.9] | 0.0 [0.0–0.0] | 0 | 40 | 118.5 [103.0–135.0] | 20.0 [11.0–30.0] | 16 |
 | query | 100 | initial | 1 | 4400 | 5.8 [5.8–5.8] | 4.8 [4.8–4.8] | 0.0 [0.0–0.0] | 0 | 349 | 114.0 [114.0–114.0] | 3.0 [3.0–3.0] |  |
-| query | 100 | update | 20 | 4400 | 1.4 [0.9–2.5] | 1.3 [0.0–2.3] | 0.0 [0.0–0.0] | 0 | 349 | 130.0 [120.0–140.0] | 15.0 [5.0–26.0] | 18 |
+| query | 100 | update, after a settle | 4 | 4400 | 1.1 [0.9–2.5] | 1.1 [0.9–2.3] | 0.0 [0.0–0.0] | 0 | 349 | 120.0 [120.0–120.0] | 5.0 [5.0–6.0] | 17 |
+| query | 100 | update | 16 | 4400 | 1.5 [1.0–2.4] | 1.4 [0.0–2.3] | 0.0 [0.0–0.0] | 0 | 349 | 132.5 [125.0–140.0] | 18.0 [10.0–26.0] | 19 |
 | query | 500 | initial | 1 | 22000 | 4.8 [4.8–4.8] | 4.6 [4.6–4.6] | 0.0 [0.0–0.0] | 0 | 1728 | 117.0 [117.0–117.0] | 3.0 [3.0–3.0] |  |
-| query | 500 | update | 20 | 22000 | 4.2 [3.1–24.2] | 4.1 [3.1–12.7] | 0.0 [0.0–3.3] | 0 | 1728 | 123.0 [118.0–133.0] | 6.0 [0.0–16.0] | 56 |
+| query | 500 | update, after a settle | 4 | 22000 | 4.3 [3.5–11.2] | 4.1 [3.4–6.5] | 0.0 [0.0–0.0] | 0 | 1728 | 123.0 [123.0–123.0] | 5.0 [5.0–6.0] | 73 |
+| query | 500 | update | 16 | 22000 | 4.2 [3.1–24.2] | 4.1 [3.1–12.7] | 0.0 [0.0–3.3] | 0 | 1728 | 128.0 [118.0–133.0] | 10.0 [0.0–16.0] | 55 |
 | query | 1000 | initial | 1 | 44000 | 6.7 [6.7–6.7] | 6.5 [6.5–6.5] | 0.0 [0.0–0.0] | 0 | 3453 | 122.0 [122.0–122.0] | 3.0 [3.0–3.0] |  |
-| query | 1000 | update | 20 | 44000 | 10.8 [6.0–21.3] | 10.4 [5.8–18.1] | 3.2 [0.0–5.3] | 1 | 3453 | 123.0 [123.0–133.0] | 1.0 [0.0–10.0] | 120 |
+| query | 1000 | update, after a settle | 4 | 44000 | 6.6 [6.0–7.4] | 6.5 [5.8–7.3] | 0.0 [0.0–0.0] | 0 | 3453 | 128.0 [128.0–128.0] | 5.0 [5.0–6.0] | 111 |
+| query | 1000 | update | 16 | 44000 | 11.6 [6.7–21.3] | 10.9 [6.7–18.1] | 3.4 [0.0–5.3] | 1 | 3453 | 123.0 [123.0–133.0] | 0.5 [0.0–10.0] | 126 |
 | document | 1 | initial | 1 | 44 | 0.1 [0.1–0.1] | 0.1 [0.1–0.1] | 0.0 [0.0–0.0] | 0 | 9 | 123.0 [123.0–123.0] | 4.0 [4.0–4.0] |  |
-| document | 1 | update | 50 | 44 | 0.1 [0.1–5.0] | 0.1 [0.0–0.3] | 0.0 [0.0–0.0] | 0 | 9 | 162.0 [128.0–209.0] | 35.5 [5.0–72.0] | 16 |
+| document | 1 | update, after a settle | 5 | 44 | 0.1 [0.1–0.1] | 0.1 [0.1–0.1] | 0.0 [0.0–0.0] | 0 | 9 | 133.0 [128.0–155.0] | 6.0 [5.0–6.0] | 17 |
+| document | 1 | update | 45 | 44 | 0.1 [0.1–5.0] | 0.1 [0.0–0.3] | 0.0 [0.0–0.0] | 0 | 9 | 163.0 [133.0–209.0] | 36.0 [10.0–72.0] | 16 |
 
 ## Where the time goes (Peerless: Java side vs .NET side)
 
@@ -43,16 +53,21 @@ delivery buffer and the JNI call. *.NET* runs from there to the snapshot fully d
 | phase | docs | kind | frame KB | Java encode ms | Java encode CPU ms | Java→.NET ms | .NET decode ms | end-to-end ms |
 |---|---:|---|---:|---:|---:|---:|---:|---:|
 | warmup | 10 | initial | 7.1 | 0.72 | 0.61 | 0.79 | 0.07 | 0.86 |
-| warmup | 10 | update | 7.1 | 0.48 | 0.47 | 0.52 | 0.03 | 0.55 |
+| warmup | 10 | update, after a settle | 7.1 | 0.48 | 0.47 | 0.52 | 0.03 | 0.55 |
 | query | 10 | initial | 7.0 | 0.55 | 0.55 | 0.62 | 0.05 | 0.66 |
-| query | 10 | update | 7.0 | 0.34 | 0.30 | 0.38 | 0.04 | 0.42 |
+| query | 10 | update, after a settle | 7.0 | 0.27 | 0.27 | 0.33 | 0.03 | 0.37 |
+| query | 10 | update | 7.0 | 0.36 | 0.31 | 0.41 | 0.04 | 0.45 |
 | query | 100 | initial | 70.8 | 5.44 | 4.46 | 5.61 | 0.16 | 5.77 |
-| query | 100 | update | 70.8 | 1.03 | 0.94 | 1.14 | 0.22 | 1.45 |
+| query | 100 | update, after a settle | 70.8 | 0.74 | 0.74 | 0.86 | 0.22 | 1.08 |
+| query | 100 | update | 70.8 | 1.04 | 0.97 | 1.21 | 0.22 | 1.47 |
 | query | 500 | initial | 355.9 | 3.37 | 3.18 | 3.61 | 1.21 | 4.82 |
-| query | 500 | update | 355.9 | 2.92 | 2.75 | 3.18 | 1.00 | 4.18 |
+| query | 500 | update, after a settle | 355.9 | 3.27 | 3.10 | 3.47 | 1.00 | 4.29 |
+| query | 500 | update | 355.9 | 2.92 | 2.75 | 3.18 | 0.99 | 4.18 |
 | query | 1000 | initial | 713.4 | 5.29 | 5.20 | 5.60 | 1.15 | 6.74 |
-| query | 1000 | update | 713.4 | 5.85 | 5.42 | 6.18 | 4.53 | 10.82 |
+| query | 1000 | update, after a settle | 713.4 | 4.73 | 4.66 | 4.97 | 1.65 | 6.62 |
+| query | 1000 | update | 713.4 | 6.57 | 5.85 | 6.87 | 5.00 | 11.58 |
 | document | 1 | initial | 0.7 | 0.05 | 0.04 | 0.10 | 0.01 | 0.11 |
+| document | 1 | update, after a settle | 0.7 | 0.05 | 0.05 | 0.11 | 0.01 | 0.13 |
 | document | 1 | update | 0.7 | 0.06 | 0.06 | 0.10 | 0.02 | 0.12 |
 
 Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): 2 (e.g. "46080 outstanding GREFs. Performing a full GC!")

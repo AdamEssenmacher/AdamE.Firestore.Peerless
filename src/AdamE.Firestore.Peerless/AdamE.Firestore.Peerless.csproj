@@ -10,6 +10,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Tests" />
+    <!-- The platform listeners share ListenerGate, the listener concurrency contract. -->
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Android" />
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.iOS" />
     <!-- The decode benchmark builds frames with the tests' spec-derived encoder, which uses the wire constants. -->
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Decoder" />
     <!-- The benchmark's equality check builds this value model from the peered binding (PeeredConversion), through the
