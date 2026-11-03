@@ -10,5 +10,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Tests" />
+    <!-- The peered baseline builds the same value model through the owning constructors, so only transport differs. -->
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Android" />
   </ItemGroup>
 </Project>

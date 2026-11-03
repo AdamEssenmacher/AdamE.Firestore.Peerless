@@ -1,0 +1,35 @@
+package com.adame.firestore.peerless;
+
+import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
+
+import java.nio.ByteBuffer;
+
+/**
+ * Receives encoded frames. .NET implements this once per listener; each snapshot costs exactly one call into .NET,
+ * on the listener's thread (the main thread by default).
+ */
+public interface FrameSink {
+    /**
+     * Direct delivery only: the listener's direct buffer was created or replaced (it grows to fit the largest frame).
+     * Called before the {@link #onFrame} that first uses it, so .NET can resolve and cache its address once.
+     */
+    void onBuffer(@NonNull ByteBuffer buffer);
+
+    /**
+     * One encoded snapshot.
+     *
+     * @param frame          the frame, in byte-array delivery; {@code null} in direct delivery, where the frame is
+     *                       bytes {@code [0, length)} of the last buffer passed to {@link #onBuffer}
+     * @param length         the frame's length in bytes
+     * @param startNanos     {@code System.nanoTime()} when the Firestore callback began (CLOCK_MONOTONIC)
+     * @param startCpuNanos  {@code Debug.threadCpuTimeNanos()} when the Firestore callback began
+     * @param encodeNanos    wall time spent encoding, in nanoseconds
+     * @param encodeCpuNanos this thread's CPU time spent encoding, in nanoseconds
+     */
+    void onFrame(@Nullable byte[] frame, int length, long startNanos, long startCpuNanos, long encodeNanos,
+                 long encodeCpuNanos);
+
+    /** The listener failed; Firestore stops it. {@code code} is FirebaseFirestoreException.Code's ordinal value. */
+    void onError(int code, @NonNull String message);
+}

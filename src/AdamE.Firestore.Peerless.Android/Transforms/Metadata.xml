@@ -1,0 +1,8 @@
+<metadata>
+  <!-- The Java shim is an implementation detail: bind it internally, under its own namespace. -->
+  <attr path="/api/package[@name='com.adame.firestore.peerless']" name="managedName">AdamE.Firestore.Peerless.Android.Shim</attr>
+  <attr path="/api/package[@name='com.adame.firestore.peerless']/class" name="visibility">internal</attr>
+  <attr path="/api/package[@name='com.adame.firestore.peerless']/interface" name="visibility">internal</attr>
+  <!-- .NET never encodes; only the tests and the listener use the writer. -->
+  <remove-node path="/api/package[@name='com.adame.firestore.peerless']/class[@name='FrameWriter']" />
+</metadata>
