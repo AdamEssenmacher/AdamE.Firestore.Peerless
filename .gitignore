@@ -19,3 +19,6 @@ local.properties
 
 # The iOS app's raw console output, captured by scripts/run-ios-benchmark.sh (summaries keep what matters)
 results/**/ios-console.txt
+
+# The iOS shim build (ios/build-shim.sh)
+ios/build/

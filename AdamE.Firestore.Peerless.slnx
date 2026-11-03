@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/AdamE.Firestore.Peerless/AdamE.Firestore.Peerless.csproj" />
     <Project Path="src/AdamE.Firestore.Peerless.Android/AdamE.Firestore.Peerless.Android.csproj" />
+    <Project Path="src/AdamE.Firestore.Peerless.iOS/AdamE.Firestore.Peerless.iOS.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AdamE.Firestore.Peerless.Tests/AdamE.Firestore.Peerless.Tests.csproj" />
