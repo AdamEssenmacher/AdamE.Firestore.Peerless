@@ -88,3 +88,6 @@ Each document has 16 top-level fields, which come to 44 converted values.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
 - `scripts/run-android-peered.sh [serial] [am-start extras]`, then `scripts/summarize-peered.py <run-dir>`.
+- Each run's raw `logcat.txt` is captured by `scripts/run-android-peered.sh` but not committed (it's gitignored). The
+  ART reference-table and `monodroid-gc` sections of each `summary.md` were parsed from it, so re-running
+  `summarize-peered.py` on a committed run directory without its logcat drops those sections.
