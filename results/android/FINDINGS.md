@@ -137,7 +137,7 @@ It doesn't have step 1's open question: the peered path's roughly 4 retained `ja
 (about 4,000 here) don't exist in Peerless. Both modes gain about 0.5 per update in the single-document phase, from the
 seeder's cached `Long.valueOf` values (harness, not listener).
 
-## The peered map walk, made fair afterwards (`entrySet-check/`)
+## The peered map walk, made fair afterwards (`entryset-check/`)
 
 The peered conversion used to read nested Java maps with `keySet()` plus `get(new String(key))` per entry. It now walks
 `entrySet()` once. **Every number above predates that change.** The peered and Peerless pair was re-run back to back
