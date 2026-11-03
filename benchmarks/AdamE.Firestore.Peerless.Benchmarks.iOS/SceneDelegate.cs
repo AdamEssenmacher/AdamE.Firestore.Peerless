@@ -39,7 +39,10 @@ public sealed class SceneDelegate : UIResponder, IUIWindowSceneDelegate
             }
             catch (Exception exception)
             {
+                // Only reached when the result files couldn't even be opened. End the process, so the script reports
+                // process-died at once instead of waiting out its timeout.
                 Console.WriteLine($"{BenchmarkRunner.Tag} PEERLESS_DONE crashed: {exception}");
+                Environment.FailFast($"The benchmark could not start: {exception.Message}", exception);
             }
         });
     }

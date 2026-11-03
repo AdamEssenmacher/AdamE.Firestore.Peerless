@@ -47,7 +47,8 @@ echo "Waiting for the run to finish…"
 deadline=$((SECONDS + 1800))
 outcome="timeout"
 while ((SECONDS < deadline)); do
-  if grep -q "^outcome:" "$files/$mode-run.txt" 2>/dev/null; then outcome="done"; break; fi
+  # PEERLESS_DONE is the app's last line, logged after both outcome: and (on failure) failure: are in the run file.
+  if grep -q "PEERLESS_DONE" "$files/$mode-console.txt" 2>/dev/null; then outcome="done"; break; fi
   if ! pgrep -f "$udid/.*/AdamE.Firestore.Peerless.Benchmarks.iOS.app/" >/dev/null; then outcome="process-died"; break; fi
   sleep 5
 done
@@ -59,7 +60,6 @@ cp "$files/$mode-console.txt" "$out/ios-console.txt" 2>/dev/null || echo "missin
 xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
 { echo "outcome: $outcome"; echo "simulator: $(xcrun simctl list devices | grep "$udid" | sed 's/^ *//')";
   echo "build args: ${BUILD_ARGS:-none}"; echo "host load before: $load_before"; echo "host load after: $(uptime)"; } | tee -a "$out/host.txt"
-python3 -I "$root/scripts/summarize-ios-benchmark.py" "$out" >/dev/null
 echo "results: $out"
 
 # The run only counts if it finished, as NativeAOT, with its own checks (calibration, verify) passed.
@@ -67,3 +67,5 @@ echo "results: $out"
 grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
+# Only a finished, passing run is summarized; a summarizer error still fails the script.
+python3 -I "$root/scripts/summarize-ios-benchmark.py" "$out" >/dev/null

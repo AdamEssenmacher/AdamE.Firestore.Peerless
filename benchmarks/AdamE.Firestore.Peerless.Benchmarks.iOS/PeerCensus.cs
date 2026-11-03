@@ -12,8 +12,9 @@ namespace AdamE.Firestore.Peerless.Benchmarks;
 /// Read through <see cref="UnsafeAccessorAttribute"/>, which NativeAOT compiles to a direct field access (no
 /// reflection). It is private API of the Microsoft.iOS version this was built with (27.1.10018); if the field were
 /// renamed the accessor would throw <see cref="MissingFieldException"/> on first use rather than miscount.
-/// Two counts: <see cref="Count"/> is the live entries, which a GC (through finalizers) lowers as it goes, so its delta
-/// over a callback undercounts once a GC runs. <see cref="Created"/> is the table's private <c>_version</c>, which .NET's
+/// Two counts: <see cref="Count"/> is the table's entries. A collected peer's entry is removed only when
+/// NSObject_Disposer drains on the main queue (or at once on explicit Dispose), so on the main queue the count is the
+/// native retains held, not live managed peers, and its delta over a callback misses peers disposed within it. <see cref="Created"/> is the table's private <c>_version</c>, which .NET's
 /// <c>Dictionary</c> increments on every insertion of a new key and never on removal or overwrite (since .NET Core
 /// 3.0), and the runtime inserts a key exactly once per registered peer, so its delta is every peer created,
 /// whatever was collected meanwhile.

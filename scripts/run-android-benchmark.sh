@@ -88,7 +88,6 @@ for name in "$mode-samples.csv" "$mode-settled.csv" "$mode-run.txt"; do
 done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 { echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load before: $load_before"; echo "host load after: $(uptime)"; } | tee -a "$out/host.txt"
-python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null
 echo "results: $out"
 
 # The run only counts if it finished, as NativeAOT, with its own checks (verify, dispose race) passed.
@@ -96,3 +95,5 @@ echo "results: $out"
 grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
+# Only a finished, passing run is summarized; a summarizer error still fails the script.
+python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null

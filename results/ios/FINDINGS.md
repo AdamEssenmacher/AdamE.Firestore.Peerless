@@ -37,7 +37,7 @@ the Mac's memory and caches. It is not an iPhone. See *What makes these numbers 
 
 Each document has 16 top-level fields, which come to 44 converted values.
 
-| docs | kind | n | wall ms | main-queue CPU ms | gen0 GCs | GC pause ms | managed alloc | peers created | live peers peak (Δ) |
+| docs | kind | n | wall ms | main-queue CPU ms | gen0 GCs | GC pause ms | managed alloc | peers created | peer table entries added (peak Δ) |
 |---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | 10 | initial | 2 | 2.3 | 2.3 | 0 | 0 | 1.4 MB | 511 | 431 |
 | 10 | update ×20 | 40 | 1.8 | 1.8 | 0 | 0 | 0.96 MB | 395 | 315 |
@@ -54,23 +54,32 @@ Each document has 16 top-level fields, which come to 44 converted values.
   runs: both runs created exactly 511, 4,741, 47,129 and 81 peers for the initial 10-, 100- and 1000-document
   snapshots and the document listener's initial snapshot. Others vary slightly: the 500-document initial snapshot
   created 23,562 and then 23,576 peers, and updates vary by up to about 0.3% (for example 47,027–47,247 at 1000
-  docs). The likely cause, unconfirmed, is that when a GC lands inside the callback, peers for native objects that
-  Firestore hands over more than once can die and be created again.
+  docs). One possible cause is untested: a GC inside the callback collects a peer whose table entry stays until the
+  main queue drains, so the next time Firestore hands over the same native object, the runtime makes a new peer and
+  overwrites the entry (which counts as created).
 - **About 3 KB of managed allocation per converted value** (2.9–3.0 KB at 100–1000 docs, 3.2 KB at 10). Android's
   peered path allocates about 4 KB per value. The cost has the same shape on both platforms: a peer per value, plus
   the binding's marshalling (`NSDictionary` enumeration, `NSString`→`string`, and `ObjCType` strings for every
   `NSNumber`). Not profiled further.
-- **Up to about 38,000 peers are live at once** in a 1000-document callback (the live-table delta). GCs run inside the
-  callback (15–19 of them, 46–80 ms of pause at 1000 docs) but can't free peers whose conversion is still running.
+- **The peer table grows by about 38,000 entries during a 1000-document callback, and never shrinks while it runs**,
+  even though 15–19 GCs (46–80 ms of pause) run inside it. On every one of the 278 peered callbacks, the table's
+  highest count equals its count at the end. That's how Microsoft.iOS releases a collected peer: its finalizer only
+  queues it on `NSObject_Disposer`, which drains through `performSelectorOnMainThread:`. Only that drain removes the
+  table entry and releases the native object. (This is from Microsoft.iOS 27.1.10018's `NSObject` code.) The callback
+  occupies the main queue, so every entry it adds, and the native retain behind each, is held at least until the
+  callback returns, however many of the managed peers a GC has already collected. The column counts table entries
+  (native retains held), not live managed peers; how many of those were still reachable wasn't measured inside the
+  callback.
 - **Updates can be cheaper than initial snapshots, depending on GC timing.** At 10 docs an update creates 395 peers
   against 511 for the initial snapshot, because no GC has run since the previous snapshot. When Firestore hands over
   the same native object again (unchanged documents, shared keys, tagged-pointer `NSNumber`s), the runtime returns its
   existing peer instead of making a new one. The first update after each settle is back at 509–517. From 100 docs up,
   a GC runs inside every callback and that reuse mostly disappears.
-- **About 8 peers per document are created and gone again within the callback, without a GC** (10 docs: 511 created,
-  431 live). Eight is the number of maps in a document (the data plus `location`, `stats`, 3 `history` entries and
-  2 `attachments`). The likely cause is a temporary the binding creates and disposes per `NSDictionary` enumeration.
-  That's unconfirmed.
+- **About 8 peers per document are created and removed again within the callback** (10 docs: 511 created, 431 table
+  entries added). A GC can't do that, as the previous point shows, so these are peers disposed explicitly
+  (`Dispose()` removes the entry at once). Eight is the number of maps in a document (the data plus `location`,
+  `stats`, 3 `history` entries and 2 `attachments`). The likely source is a temporary the binding creates and
+  disposes per `NSDictionary` enumeration. That's unconfirmed.
 - **Write→callback latency** (seeder write to fully converted): 6 ms at 10 docs, 44 ms at 100, 171 ms at 500, 365 ms
   at 1000.
 
@@ -91,7 +100,7 @@ the sampler keeps the latest plain conversion alive, as a view model would.
 For orientation only. The platforms ran on different hardware: Android's numbers come from an emulated arm64 device
 with a minimum gen0 budget, iOS's from a simulator running natively on the Mac.
 
-| docs | kind | main-thread CPU ms (Android / iOS) | managed alloc | references held at peak (GREFs / live peers) |
+| docs | kind | main-thread CPU ms (Android / iOS) | managed alloc | references held at peak (GREFs / peer table entries) |
 |---:|---|---|---|---|
 | 10 | initial | 6.45 / 2.3 | 1.7 MB / 1.4 MB | 308 / 431 |
 | 100 | initial | 62.8 / 20 | 16.3 MB / 12 MB | 1,370 / 3,884 |
@@ -100,8 +109,8 @@ with a minimum gen0 budget, iOS's from a simulator running natively on the Mac.
 
 Both paths allocate the same order of memory per value and hold a native reference per object while converting. On
 Android that is a scarce resource (ART's 51,200-GREF limit), and a GC inside the callback releases some of it as it
-goes. On iOS a peer costs a GC handle and a retain, which have no hard limit, but 38,000 of them are live at the peak
-of one callback.
+goes. On iOS a peer costs a table entry, a GC handle and a native retain. None of these has a hard limit, but all
+38,000 of them are held until the callback returns, because a GC can't release them on the main queue while it runs.
 
 ## What makes these numbers unreliable
 
@@ -126,7 +135,7 @@ of one callback.
    - It depends on Microsoft.iOS 27.1.10018's private field names. A rename would throw `MissingFieldException` rather
      than return a wrong number.
    - It counts peers registered in the table. A wrapper type that never registers would be missed, though none showed
-     up in the live census.
+     up in the census at the settle points.
 4. **The callback measurement starts after the binding's trampoline.** The `QuerySnapshot`/`DocumentSnapshot` peer and
    the block invocation happen before the .NET listener's first line, so they are outside wall/CPU/alloc (on Android
    the same holds for the snapshot's peer). Firestore's own work before the callback is outside too, except in
@@ -138,7 +147,13 @@ of one callback.
    but there's no cross-process variance. Updates have n=40 and single-document updates n=100.
 7. **Android wasn't re-run after the shared-code refactor.** The seeded documents, phases and settle points moved
    into `benchmarks/Shared`. Android builds unchanged (same four `IL3050` warnings). Its seeded values come from the
-   same random draws in the same order, but no Android run has been done since.
+   same random draws in the same order, but no Android run has been done since. (Step 5 later re-ran it:
+   [../android-step5/FINDINGS.md](../android-step5/FINDINGS.md).)
+8. **Write→callback latency changed definition after these runs, on both platforms.** In review, the shared phases
+   started building the update's document reference and values before taking the timestamp (step 3's original
+   definition), where these runs built them after it. Latency in these runs therefore includes building the
+   reference. Android's latency numbers before and after that change aren't comparable either, though the difference
+   should be well under a millisecond.
 
 ## How it was run
 
