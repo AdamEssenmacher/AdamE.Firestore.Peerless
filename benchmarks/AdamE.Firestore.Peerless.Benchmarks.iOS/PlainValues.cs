@@ -11,8 +11,9 @@ namespace AdamE.Firestore.Peerless.Benchmarks;
 internal static class PlainValues
 {
     /// <summary>
-    /// Converts every document. <paramref name="peakPeers"/> is raised to the highest peer count seen after each
-    /// document, because a GC during a large conversion can release peers before it ends.
+    /// Converts every document. <paramref name="peakPeers"/> is raised to the highest peer-table count seen after each
+    /// document. (On the main queue a GC can't lower that count mid-callback, since collected peers are unregistered
+    /// by NSObject_Disposer on the main queue, but explicit disposal can, so the peak is sampled rather than assumed.)
     /// </summary>
     public static List<PlainDocument> Query(QuerySnapshot snapshot, ref int peakPeers)
     {

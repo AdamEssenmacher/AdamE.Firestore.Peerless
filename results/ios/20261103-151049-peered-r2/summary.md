@@ -26,10 +26,12 @@ host load after: 15:11  up 4 days, 9 hrs, 1 user, load averages: 177.51 141.34 9
 
 Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *Peers created* counts every NSObject
 peer the runtime registered during the callback (the peer table's insertion count), whatever a GC collected
-meanwhile. *Live peak* is the table's highest live count sampled after each document, minus the count at
-entry; *live end* the same at the end of the callback. A GC inside the callback (see *gen0 GCs*) lowers both.
+meanwhile. *Table peak* is the peer table's highest entry count sampled after each document, minus the count
+at entry; *table end* the same at the end of the callback. Entries are native retains held, not live managed
+peers: a GC can't remove one while a main-queue callback runs (a collected peer is unregistered by
+NSObject_Disposer, which drains on the main queue), so only explicit disposal lowers them inside a callback.
 
-| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KB | peers created | live peak | live end | write→callback ms |
+| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KB | peers created | table peak | table end | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---|---:|
 | warmup | 10 | initial | 1 | 440 | 2.0 [2.0–2.0] | 2.0 [2.0–2.0] | 0.0 [0.0–0.0] | 0 | 1394 | 511.0 [511.0–511.0] | 431.0 [431.0–431.0] | 431.0 [431.0–431.0] |  |
 | warmup | 10 | update | 3 | 440 | 2.4 [1.9–2.6] | 2.4 [1.9–2.6] | 0.0 [0.0–0.0] | 0 | 1387 | 510.0 [509.0–511.0] | 430.0 [429.0–431.0] | 430.0 [429.0–431.0] | 19 |

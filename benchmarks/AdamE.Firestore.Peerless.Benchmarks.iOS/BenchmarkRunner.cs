@@ -78,36 +78,41 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     {
         using var writer = new ResultWriter(ResultsDirectory, options.ModeName);
         results = writer;
-        writer.Note("mode", options.ModeName);
-        writer.Note("project", BenchmarkPlan.ProjectId);
-        writer.Note("emulator", $"{options.Host}:{options.Port}");
-        writer.Note("runtime", RuntimeInformation.FrameworkDescription);
-        writer.Note("nativeAot", (!RuntimeFeature.IsDynamicCodeSupported).ToString());
-        writer.Note("microsoftIos", typeof(NSObject).Assembly.GetName().Version?.ToString() ?? "unknown");
-        writer.Note("firebase", App.FirebaseVersion);
-        writer.Note("shimCompiledAgainstFirebase", PeerlessListener.CompiledFirebaseVersion);
-        writer.Note("device", $"{UIDevice.CurrentDevice.Model} {UIDevice.CurrentDevice.SystemName} "
-            + $"{UIDevice.CurrentDevice.SystemVersion} {RuntimeInformation.ProcessArchitecture} "
-            + $"simulator={ObjCRuntime.Runtime.Arch == ObjCRuntime.Arch.SIMULATOR} "
-            + $"model={Environment.GetEnvironmentVariable("SIMULATOR_MODEL_IDENTIFIER") ?? "device"}");
-        writer.Note("processors", Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture));
-        writer.Note("sizes", string.Join(',', options.Plan.Sizes));
-        writer.Note("updatesPerSize", options.Plan.UpdatesPerSize.ToString(CultureInfo.InvariantCulture));
-        writer.Note("stopwatchFrequency", Stopwatch.Frequency.ToString(CultureInfo.InvariantCulture));
-        GCMemoryInfo memory = GC.GetGCMemoryInfo();
-        writer.Note("gc", $"server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} "
-            + $"available={memory.TotalAvailableMemoryBytes}");
-        writer.Note("gcConfig", string.Join(' ', GC.GetConfigurationVariables()
-            .Where(static pair => pair.Key.Contains("Gen0", StringComparison.Ordinal) || pair.Key is "GCRegionSize" or "GCConserveMem")
-            .Select(static pair => $"{pair.Key}={pair.Value}")));
-
+        // Everything after the writer exists runs inside the try, so a startup failure is recorded as outcome: failed
+        // (which the script reads) instead of leaving it to time out.
         try
         {
+            writer.Note("mode", options.ModeName);
+            writer.Note("project", BenchmarkPlan.ProjectId);
+            writer.Note("emulator", $"{options.Host}:{options.Port}");
+            writer.Note("runtime", RuntimeInformation.FrameworkDescription);
+            writer.Note("nativeAot", (!RuntimeFeature.IsDynamicCodeSupported).ToString());
+            writer.Note("microsoftIos", typeof(NSObject).Assembly.GetName().Version?.ToString() ?? "unknown");
+            writer.Note("firebase", App.FirebaseVersion);
+            writer.Note("shimCompiledAgainstFirebase", PeerlessListener.CompiledFirebaseVersion);
+            writer.Note("device", $"{UIDevice.CurrentDevice.Model} {UIDevice.CurrentDevice.SystemName} "
+                + $"{UIDevice.CurrentDevice.SystemVersion} {RuntimeInformation.ProcessArchitecture} "
+                + $"simulator={ObjCRuntime.Runtime.Arch == ObjCRuntime.Arch.SIMULATOR} "
+                + $"model={Environment.GetEnvironmentVariable("SIMULATOR_MODEL_IDENTIFIER") ?? "device"}");
+            writer.Note("processors", Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture));
+            writer.Note("sizes", string.Join(',', options.Plan.Sizes));
+            writer.Note("updatesPerSize", options.Plan.UpdatesPerSize.ToString(CultureInfo.InvariantCulture));
+            writer.Note("stopwatchFrequency", Stopwatch.Frequency.ToString(CultureInfo.InvariantCulture));
+            GCMemoryInfo memory = GC.GetGCMemoryInfo();
+            writer.Note("gc", $"server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} "
+                + $"available={memory.TotalAvailableMemoryBytes}");
+            writer.Note("gcConfig", string.Join(' ', GC.GetConfigurationVariables()
+                .Where(static pair => pair.Key.Contains("Gen0", StringComparison.Ordinal) || pair.Key is "GCRegionSize" or "GCConserveMem")
+                .Select(static pair => $"{pair.Key}={pair.Value}")));
+
             // A build that fell back from NativeAOT to Mono would still run, and its numbers would mean something else.
             if (RuntimeFeature.IsDynamicCodeSupported)
                 throw new BenchmarkCheckException("Dynamic code is supported: this is not a NativeAOT build.");
 
-            (int live, int liveAfterDispose, int created, int createdAfterDispose) = PeerCensus.Calibrate();
+            // On the main queue: NSObject_Disposer drains there, so no finalized peer can leave the table mid-count.
+            (int live, int liveAfterDispose, int created, int createdAfterDispose) = (0, 0, 0, 0);
+            await Probes.OnMainQueueAsync(() => (live, liveAfterDispose, created, createdAfterDispose) = PeerCensus.Calibrate())
+                .ConfigureAwait(false);
             writer.Note("peerCounterCalibration", $"100 new NSObject: live {live:+0;-0}, created {created:+0;-0}; "
                 + $"then disposed: live {liveAfterDispose:+0;-0}, created {createdAfterDispose:+0;-0}");
             // Every peer number in the run rests on the counter; one that doesn't count known peers exactly is useless.
@@ -129,8 +134,9 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         }
         catch (Exception exception)
         {
-            writer.Note("outcome", "failed");
+            // The failure first: the script stops reading at the outcome line.
             writer.Note("failure", exception.ToString().ReplaceLineEndings(" | "));
+            writer.Note("outcome", "failed");
             Report($"PEERLESS_DONE failed: {exception}");
         }
     }
