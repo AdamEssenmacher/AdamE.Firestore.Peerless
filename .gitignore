@@ -1,0 +1,9 @@
+bin/
+obj/
+.idea/
+.vs/
+*.user
+*.DotSettings.user
+.DS_Store
+# Firebase emulator logs
+*-debug.log

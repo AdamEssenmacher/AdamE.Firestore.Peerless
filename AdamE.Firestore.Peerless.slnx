@@ -1,0 +1,5 @@
+<Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android/AdamE.Firestore.Peerless.Benchmarks.Android.csproj" />
+  </Folder>
+</Solution>

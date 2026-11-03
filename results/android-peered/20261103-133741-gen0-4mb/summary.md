@@ -1,0 +1,81 @@
+# Peered baseline summary
+
+project: demo-peerless  
+emulator: 10.0.2.2:8181  
+runtime: .NET 10.0.14  
+nativeAot: True  
+device: sdk_gphone64_arm64 API 36 arm64-v8a  
+sizes: 10,100,500,1000  
+updatesPerSize: 20  
+gc: server=False latency=Interactive available=2592632832 gen0size=0x400000  
+outcome: completed
+
+Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. GREF peak is the highest .NET-side JNI
+global reference count sampled after each document, minus the count at callback entry; GREF end is the same at
+the end of the callback (GCs inside the callback release some). The .NET counter excludes ~435 cached
+java.lang.Class references that ART's own table (below) includes.
+
+| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | GREF end | write→callback ms |
+|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|
+| warmup | 10 | initial | 1 | 440 | 10.0 [10.0–10.0] | 9.7 [9.7–9.7] | 0.0 [0.0–0.0] | 0 | 1763 | 0.0 [0.0–0.0] | 351.0 [351.0–351.0] |  |
+| warmup | 10 | update | 3 | 440 | 6.6 [6.2–9.9] | 6.4 [6.1–9.7] | 0.0 [0.0–0.0] | 0 | 1561 | 0.0 [0.0–0.0] | 306.0 [306.0–306.0] | 15 |
+| query | 10 | initial | 1 | 440 | 15.0 [15.0–15.0] | 8.0 [8.0–8.0] | 0.9 [0.9–0.9] | 1 | 1794 | 0.0 [0.0–0.0] | 80.0 [80.0–80.0] |  |
+| query | 10 | update | 20 | 440 | 93.3 [14.1–156.0] | 14.5 [7.1–23.7] | 3.8 [0.7–9.9] | 10 | 2143 | 0.0 [0.0–0.0] | 24.5 [-170.0–236.0] | 17 |
+| query | 100 | initial | 1 | 4400 | 131.5 [131.5–131.5] | 93.5 [93.5–93.5] | 9.0 [9.0–9.0] | 3 | 16759 | 0.0 [0.0–0.0] | 761.0 [761.0–761.0] |  |
+| query | 100 | update | 20 | 4400 | 121.2 [82.4–226.1] | 78.0 [61.5–173.3] | 8.4 [4.9–24.4] | 3 | 15116 | 0.0 [0.0–0.0] | 258.5 [-667.0–969.0] | 29 |
+| query | 500 | initial | 1 | 22000 | 1649.5 [1649.5–1649.5] | 466.6 [466.6–466.6] | 80.2 [80.2–80.2] | 88 | 87953 | 0.0 [0.0–0.0] | 2922.0 [2922.0–2922.0] |  |
+| query | 500 | update | 20 | 22000 | 558.0 [446.0–11324.2] | 355.5 [291.1–1413.6] | 40.9 [30.2–658.6] | 14 | 75249 | 0.0 [0.0–0.0] | 908.0 [-1749.0–1455.0] | 84 |
+| query | 1000 | initial | 1 | 44000 | 13072.8 [13072.8–13072.8] | 1664.9 [1664.9–1664.9] | 595.4 [595.4–595.4] | 640 | 201982 | 0.0 [0.0–0.0] | 5613.0 [5613.0–5613.0] |  |
+| query | 1000 | update | 20 | 44000 | 1376.0 [983.1–13728.5] | 840.8 [533.3–1603.9] | 107.9 [70.6–627.7] | 25 | 150455 | 0.0 [0.0–0.0] | 949.5 [-3580.0–1926.0] | 154 |
+| document | 1 | initial | 1 | 44 | 0.6 [0.6–0.6] | 0.6 [0.6–0.6] | 0.0 [0.0–0.0] | 0 | 225 | 0.0 [0.0–0.0] | 34.0 [34.0–34.0] |  |
+| document | 1 | update | 50 | 44 | 1.2 [0.6–23.5] | 1.2 [0.6–4.4] | 0.0 [0.0–3.4] | 0 | 215 | 0.0 [0.0–0.0] | 34.0 [-368.0–34.0] | 13 |
+
+Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): 1 (e.g. "46080 outstanding GREFs. Performing a full GC!")
+
+Partial snapshots skipped: 0
+
+## Settled references (after forced .NET + Java GC)
+
+| phase | docs | point | GREF | weak GREF | surfaced peers |
+|---|---:|---|---:|---:|---:|
+| warmup | 10 | before-listen | 56 | 0 | 17 |
+| warmup | 10 | after-initial | 114 | 0 | 61 |
+| warmup | 10 | after-update-1 | 120 | 0 | 67 |
+| warmup | 10 | after-update-2 | 121 | 0 | 68 |
+| warmup | 10 | after-update-3 | 122 | 0 | 69 |
+| warmup | 10 | after-remove | 122 | 0 | 68 |
+| query | 10 | before-listen | 75 | 0 | 21 |
+| query | 10 | after-initial | 118 | 0 | 64 |
+| query | 10 | after-update-5 | 125 | 0 | 71 |
+| query | 10 | after-update-10 | 130 | 0 | 76 |
+| query | 10 | after-update-15 | 135 | 0 | 81 |
+| query | 10 | after-update-20 | 140 | 0 | 86 |
+| query | 10 | after-remove | 139 | 0 | 85 |
+| query | 100 | before-listen | 97 | 0 | 43 |
+| query | 100 | after-initial | 500 | 0 | 446 |
+| query | 100 | after-update-5 | 505 | 0 | 451 |
+| query | 100 | after-update-10 | 505 | 0 | 451 |
+| query | 100 | after-update-15 | 505 | 0 | 451 |
+| query | 100 | after-update-20 | 505 | 0 | 451 |
+| query | 100 | after-remove | 504 | 0 | 450 |
+| query | 500 | before-listen | 100 | 0 | 46 |
+| query | 500 | after-initial | 2103 | 0 | 2049 |
+| query | 500 | after-update-5 | 2108 | 0 | 2054 |
+| query | 500 | after-update-10 | 2108 | 0 | 2054 |
+| query | 500 | after-update-15 | 2108 | 0 | 2054 |
+| query | 500 | after-update-20 | 2108 | 0 | 2054 |
+| query | 500 | after-remove | 2107 | 0 | 2053 |
+| query | 1000 | before-listen | 105 | 0 | 51 |
+| query | 1000 | after-initial | 4108 | 0 | 4054 |
+| query | 1000 | after-update-5 | 4113 | 0 | 4059 |
+| query | 1000 | after-update-10 | 4113 | 0 | 4059 |
+| query | 1000 | after-update-15 | 4113 | 0 | 4059 |
+| query | 1000 | after-update-20 | 4113 | 0 | 4059 |
+| query | 1000 | after-remove | 4112 | 0 | 4058 |
+| document | 1 | before-listen | 105 | 0 | 51 |
+| document | 1 | after-initial | 112 | 0 | 58 |
+| document | 1 | after-update-12 | 117 | 0 | 63 |
+| document | 1 | after-update-24 | 121 | 0 | 67 |
+| document | 1 | after-update-36 | 131 | 0 | 77 |
+| document | 1 | after-update-48 | 143 | 0 | 89 |
+| document | 1 | after-remove | 144 | 0 | 90 |

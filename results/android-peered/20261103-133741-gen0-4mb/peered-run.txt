@@ -1,0 +1,9 @@
+project: demo-peerless
+emulator: 10.0.2.2:8181
+runtime: .NET 10.0.14
+nativeAot: True
+device: sdk_gphone64_arm64 API 36 arm64-v8a
+sizes: 10,100,500,1000
+updatesPerSize: 20
+gc: server=False latency=Interactive available=2592632832 gen0size=0x400000
+outcome: completed
