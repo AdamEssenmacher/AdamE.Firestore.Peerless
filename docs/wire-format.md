@@ -24,9 +24,9 @@ Golden frames that every encoder must reproduce byte for byte live in [`fixtures
 | `u32` | 4 bytes, unsigned, little-endian |
 | `i32` | 4 bytes, two's complement, little-endian |
 | `i64` | 8 bytes, two's complement, little-endian |
-| `f64` | 8 bytes, IEEE 754 binary64, little-endian. The bits are kept as-is: `-0.0`, NaN payloads and infinities round-trip. |
-| `varint` | unsigned LEB128 (7 bits per byte, low group first, high bit = more), at most 5 bytes, value ≤ 2³¹−1. Encoders must use the shortest form. |
-| `string` | `varint` byte length, then that many bytes of UTF-8. Encoders must write well-formed UTF-8. A lone UTF-16 surrogate in a source string is written as U+FFFD (what .NET's `Encoding.UTF8` does; Java's `String.getBytes(UTF_8)` writes `?` instead, so the Android encoder does its own UTF-8). |
+| `f64` | 8 bytes, IEEE 754 binary64, little-endian. The bits are kept as-is: `-0.0`, NaN payloads and infinities round-trip. Java encoders must use `Double.doubleToRawLongBits` (not `doubleToLongBits`, which collapses NaN payloads); Objective-C copies the `double`'s bytes. |
+| `varint` | unsigned LEB128 (7 bits per byte, low group first, high bit = more), at most 5 bytes, value ≤ 2³¹−1. Encoders must use the shortest form, and decoders **reject** anything else: a fifth byte above `0x07` (more than 5 bytes, or a value above 2³¹−1), and a final byte of `0x00` after the first byte (a padded, non-shortest form). |
+| `string` | `varint` byte length, then that many bytes of well-formed UTF-8 (RFC 3629). Decoders **reject** ill-formed UTF-8, including overlong forms such as modified UTF-8's `C0 80` for NUL, and encoded surrogates (CESU-8). A NUL character is written as the single byte `00`. A lone UTF-16 surrogate in a source string is written as U+FFFD (`EF BF BD`) on every encoder: .NET's `Encoding.UTF8` does that; Java's `String.getBytes(UTF_8)` writes `?` instead, so the Android encoder does its own UTF-8; CoreFoundation's conversion writes CESU-style `ED A0..BF xx`, so the iOS encoder detects that and re-encodes the string itself. |
 
 ## Frame
 
@@ -38,8 +38,9 @@ section = id:u8 length:u32 payload:u8[length]
 
 - `magic` is `50 4C 53 46` (ASCII `PLSF`).
 - `major` is `1`. A decoder rejects any other major version. A major bump means existing decoders can't read the frame.
-- `minor` is `0`. Minor versions only add things that 1.0 decoders can safely skip (new sections). Decoders accept any
-  minor within their major.
+- `minor` is `0`. Minor versions only add things that 1.0 decoders can safely skip: **new sections**. A minor version
+  can't add fields to the end of an existing section (or a document, or a value), because decoders require each
+  section's content to fill its declared length exactly. Decoders accept any minor within their major.
 - `reserved` is `0` in 1.0. Decoders ignore it.
 - `kind`:
 
@@ -72,7 +73,7 @@ document  = path:string flags:u8 fields
 fields    = (if flags & 0x01) map-body
 ```
 
-- `path` is the document's full path, for example `rooms/abc/messages/1`.
+- `path` is the document's full path, for example `rooms/abc/messages/1`. An empty path is rejected.
 - Flag bits: `0x01` = `exists`, `0x02` = `isFromCache`, `0x04` = `hasPendingWrites` (the document's own metadata).
 - A document that doesn't exist has no `fields` at all. Only a document snapshot frame (kind 2) can carry one.
 - Documents appear in the snapshot's order, which for a query is the query's order.
@@ -92,7 +93,7 @@ value = tag:u8 body
 | 4 | double | `f64` |
 | 5 | string | `string` |
 | 6 | bytes | `varint` length, raw bytes |
-| 7 | timestamp | `seconds:i64 nanoseconds:i32` (0 ≤ nanoseconds < 10⁹) |
+| 7 | timestamp | `seconds:i64 nanoseconds:i32`, within Firestore's range: 0 ≤ nanoseconds ≤ 999,999,999 and −62,135,596,800 ≤ seconds ≤ 253,402,300,799 (0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z). Decoders reject anything outside it. |
 | 8 | geo point | `latitude:f64 longitude:f64` |
 | 9 | reference | `path:string`, the referenced document's full path |
 | 10 | array | `count:varint value*count` |
@@ -103,13 +104,18 @@ value = tag:u8 body
 map-body = count:varint (key:string value)*count
 ```
 
-- Map keys are unique within a map (encoders read them from a native map, so this holds by construction). The .NET
-  decoder doesn't spend time checking: if a frame breaks the rule anyway, lookups find the first occurrence. Key order
-  is the encoder's iteration order and carries no meaning; decoders must not depend on it.
+- Map keys are unique within a map (encoders read them from a native map, so this holds by construction), and
+  decoders **reject** a map with a repeated key, including a document's fields. Key order is the encoder's iteration
+  order and carries no meaning; decoders must not depend on it.
 - A decoder rejects an unknown tag. Because a value carries no length, an unknown tag can't be skipped, so a new value
   kind needs a **major** version bump.
-- Nesting depth is limited to 100 (Firestore's own limit is 20). Deeper frames are rejected rather than
-  stack-overflowing the decoder.
+- Nesting is limited (Firestore's own limit is 20 levels), so a hostile frame can't overflow a decoder's stack. A
+  document's field values are at depth 1; the items of an array or map value at depth *d* are at depth *d* + 1. An
+  array or map value **at depth 100 or more is rejected**, so at most 99 containers can nest inside a document's
+  fields. (The document's own fields map isn't counted.)
+- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame, and decoders must not
+  allocate for a count before its items have actually been read: the .NET decoder grows each container as items
+  arrive, so memory stays proportional to the frame's size however deeply hostile counts are nested.
 
 ### What encoders write
 

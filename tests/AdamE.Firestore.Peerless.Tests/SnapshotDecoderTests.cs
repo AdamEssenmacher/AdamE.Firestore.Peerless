@@ -70,6 +70,27 @@ public sealed class SnapshotDecoderTests
         { "varint longer than 5 bytes", DocumentWith(raw => raw.Byte(Wire.Tag.String).Raw([0x80, 0x80, 0x80, 0x80, 0x80, 0x01])) },
         { "huge array count", DocumentWith(raw => raw.Byte(Wire.Tag.Array).Varint(1_000_000)) },
         { "nesting too deep", DocumentWith(raw => Nest(raw, Wire.MaxDepth + 1)) },
+        { "a container at exactly depth 100", DocumentWith(raw => Nest(raw, Wire.MaxDepth)) },
+        { "varint fifth byte above 0x07", DocumentWith(raw => raw.Byte(Wire.Tag.String).Raw([0xFF, 0xFF, 0xFF, 0xFF, 0x08])) },
+        { "varint with a sixth byte", DocumentWith(raw => raw.Byte(Wire.Tag.String).Raw([0x80, 0x80, 0x80, 0x80, 0x80, 0x00])) },
+        { "non-shortest varint", DocumentWith(raw => raw.Byte(Wire.Tag.String).Raw([0x81, 0x00]).Raw("a"u8)) },
+        { "non-shortest varint zero", DocumentWith(raw => raw.Byte(Wire.Tag.String).Raw([0x80, 0x00])) },
+        { "modified UTF-8 NUL", DocumentWith(raw => raw.Byte(Wire.Tag.String).Varint(2).Raw([0xC0, 0x80])) },
+        { "CESU-8 surrogate pair", DocumentWith(raw => raw.Byte(Wire.Tag.String).Varint(6).Raw([0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80])) },
+        { "invalid UTF-8 byte", DocumentWith(raw => raw.Byte(Wire.Tag.String).Varint(1).Raw([0xFF])) },
+        { "truncated UTF-8 sequence", DocumentWith(raw => raw.Byte(Wire.Tag.String).Varint(2).Raw([0xE2, 0x9C])) },
+        {
+            "invalid UTF-8 in a key", Frame(Wire.FrameKind.Document, section => section.Varint(1).String("a/1")
+                .Byte(Wire.DocumentFlags.Exists).Varint(1).Varint(2).Raw([0xC0, 0x80]).Byte(Wire.Tag.Null))
+        },
+        { "invalid UTF-8 in a path", Frame(Wire.FrameKind.Query, section => section.Varint(1).Varint(1).Raw([0xFF]).Byte(Wire.DocumentFlags.Exists).Varint(0)) },
+        { "duplicate field", Frame(Wire.FrameKind.Document, section => section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists)
+            .Varint(2).String("x").Byte(Wire.Tag.Null).String("x").Byte(Wire.Tag.True)) },
+        { "duplicate key in a nested map", DocumentWith(raw => raw.Byte(Wire.Tag.Map).Varint(2)
+            .String("k").Byte(Wire.Tag.Null).String("k").Byte(Wire.Tag.Null)) },
+        { "duplicate key in a large map", DocumentWith(raw => LargeMapWithDuplicate(raw)) },
+        { "timestamp after 9999", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MaxTimestampSeconds + 1).Int32(0)) },
+        { "timestamp before 0001", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MinTimestampSeconds - 1).Int32(0)) },
         {
             "document frame with two documents", Frame(Wire.FrameKind.Document, section => section.Varint(2)
                 .Document(Doc("a/1")).Document(Doc("a/2")))
@@ -106,6 +127,85 @@ public sealed class SnapshotDecoderTests
         }
 
         Assert.Equal(Wire.MaxDepth - 2, depth);
+    }
+
+    [Fact]
+    public void Timestamps_at_the_edges_of_firestores_range_decode()
+    {
+        byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.Array).Varint(2)
+            .Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MinTimestampSeconds).Int32(0)
+            .Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MaxTimestampSeconds).Int32(999_999_999));
+
+        FirestoreArray items = SnapshotDecoder.DecodeDocument(frame).Document.Fields["field"].AsArray();
+
+        Assert.Equal(new DateTimeOffset(1, 1, 1, 0, 0, 0, TimeSpan.Zero), items[0].AsTimestamp().ToDateTimeOffset());
+        Assert.Equal(9999, items[1].AsTimestamp().ToDateTimeOffset().Year);
+    }
+
+    [Fact]
+    public void Supplementary_plane_keys_and_nul_characters_round_trip()
+    {
+        var snapshot = new FirestoreDocumentSnapshot(Live, Doc("a/1",
+            ("😀 key", FirestoreValue.FromString("nul\0inside")),
+            (new string('k', 200), FirestoreValue.FromString("𝄞 music"))));
+        byte[] frame = TestFrameEncoder.Encode(snapshot);
+
+        FirestoreMap fields = SnapshotDecoder.DecodeDocument(frame).Document.Fields;
+
+        Assert.Equal("nul\0inside", fields["😀 key"].AsString());
+        Assert.Equal("𝄞 music", fields[new string('k', 200)].AsString());
+        Assert.Contains((byte)0x00, frame); // NUL is the single byte 00, not modified UTF-8's C0 80.
+    }
+
+    [Fact]
+    public void Hostile_nested_counts_cost_memory_in_proportion_to_the_frame()
+    {
+        // 98 arrays, each claiming almost the whole frame as its item count, then garbage. Allocating each declared
+        // count up front would cost about 98 x 1 MB x 32 bytes, roughly 3 GB.
+        const int padding = 1_000_000;
+        var raw = new TestFrameEncoder();
+        for (int level = 0; level < 98; level++)
+            raw.Byte(Wire.Tag.Array).Varint(padding - 1);
+        raw.Raw(Enumerable.Repeat((byte)0xFF, padding).ToArray()); // 0xFF: an unknown tag where the first item should be
+        byte[] nested = raw.ToArray();
+        byte[] frame = DocumentWith(field => field.Raw(nested));
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        // It got all the way down to the innermost array's first item, so every declared count was accepted.
+        Assert.Contains("tag 255", exception.Message, StringComparison.Ordinal);
+        Assert.True(allocated < 4L * 1024 * 1024, $"Decoding a hostile {frame.Length:N0}-byte frame allocated {allocated:N0} bytes.");
+    }
+
+    [Fact]
+    public void A_frame_full_of_real_items_allocates_a_bounded_multiple_of_its_size()
+    {
+        const int count = 200_000;
+        byte[] frame = DocumentWith(field =>
+        {
+            field.Byte(Wire.Tag.Array).Varint(count);
+            for (int index = 0; index < count; index++)
+                field.Byte(Wire.Tag.Null);
+        });
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        FirestoreValue decoded = SnapshotDecoder.DecodeDocument(frame).Document.Fields["field"];
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(count, decoded.AsArray().Count);
+        Assert.True(allocated < 80L * frame.Length, $"{allocated:N0} bytes for a {frame.Length:N0}-byte frame.");
+    }
+
+    [Fact]
+    public void Geo_points_compare_by_their_bits()
+    {
+        Assert.Equal(new FirestoreGeoPoint(double.NaN, 1), new FirestoreGeoPoint(double.NaN, 1));
+        Assert.NotEqual(new FirestoreGeoPoint(0.0, 1), new FirestoreGeoPoint(-0.0, 1));
+        Assert.Equal(
+            new FirestoreGeoPoint(double.NaN, 1).GetHashCode(),
+            new FirestoreGeoPoint(double.NaN, 1).GetHashCode());
     }
 
     [Fact]
@@ -164,6 +264,14 @@ public sealed class SnapshotDecoderTests
             section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(1).String("field");
             field(section);
         });
+
+    private static void LargeMapWithDuplicate(TestFrameEncoder raw)
+    {
+        raw.Byte(Wire.Tag.Map).Varint(20);
+        for (int index = 0; index < 19; index++)
+            raw.String($"key-{index}").Byte(Wire.Tag.Null);
+        raw.String("key-7").Byte(Wire.Tag.Null);
+    }
 
     // Arrays nested `levels` deep, the innermost empty.
     private static void Nest(TestFrameEncoder field, int levels)
