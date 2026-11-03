@@ -8,5 +8,6 @@
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android/AdamE.Firestore.Peerless.Benchmarks.Android.csproj" />
+    <Project Path="benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS/AdamE.Firestore.Peerless.Benchmarks.iOS.csproj" />
   </Folder>
 </Solution>

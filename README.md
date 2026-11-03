@@ -13,7 +13,7 @@ and decoding. Full NativeAOT on both platforms is required. Everything is measur
 compared with the naive peered approach.
 
 Status: the wire format, the .NET decoder and the Android shim exist and are benchmarked against the peered approach.
-iOS is next. Nothing is published as a NuGet yet.
+On iOS, the peered baseline is measured; the Objective-C shim is next. Nothing is published as a NuGet yet.
 
 | path | what |
 |---|---|
@@ -22,7 +22,9 @@ iOS is next. Nothing is published as a NuGet yet.
 | `src/AdamE.Firestore.Peerless.Android` | `PeerlessListener.Listen(query, onSnapshot)` on Android, binding the shim |
 | `android/peerless-shim` | The Java shim (AAR), with Kotlin tests against the golden frames |
 | `fixtures/wire` | Golden frames every encoder must reproduce byte for byte |
+| `benchmarks/Shared` | The platform-neutral half of both benchmark apps: seeded documents, phases, settle points |
 | `benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android` | NativeAOT benchmark app: peered vs Peerless |
+| `benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS` | NativeAOT benchmark app (simulator): peered baseline |
 
 ```bash
 dotnet test --project tests/AdamE.Firestore.Peerless.Tests        # decoder, properties, golden frames
@@ -66,6 +68,24 @@ Findings: [step 1, peered baseline](results/android-peered/FINDINGS.md) and
 
 The project ID is `demo-peerless`, so the app can never reach a real Firebase project. The emulator ports are
 deliberately not the defaults.
+
+## Benchmarks (iOS)
+
+The iOS app seeds the same documents and runs the same phases and settle points (`benchmarks/Shared`), listening
+through `AdamE.Firebase.iOS.CloudFirestore` and converting each snapshot into the same plain .NET values as Android's
+peered mode. For each callback it records wall time, main-queue CPU time, managed allocations, GC count and pause time,
+and `NSObject` peers: every peer created, and the live peer table. It also records the settled peer table after forced
+GCs. Each run first checks that a collection covering every value kind reads back exactly as it was written.
+
+Requirements: .NET SDK 10.0.403 with the `ios` workload (27.1), Xcode 27.1, the Firebase CLI, and an arm64 iOS
+Simulator of your own (the script installs over and terminates the app on it).
+
+```bash
+firebase emulators:start --only firestore --project demo-peerless     # Firestore on 8181 (see firebase.json)
+scripts/run-ios-benchmark.sh <simulator-udid>                          # extra launch args: -sizes 10,100 -updates 5
+```
+
+Findings: [step 4, iOS peered baseline](results/ios/FINDINGS.md).
 
 ## License
 
