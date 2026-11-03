@@ -35,15 +35,16 @@ internal static class Probes
     public static bool IsMainThread => Android.OS.Looper.MyLooper() == Android.OS.Looper.MainLooper;
 
     /// <summary>
-    /// Asks ART to log its own JNI reference tables, after a marker line, so the host can read the runtime's true
-    /// global reference count. The .NET-side counter does not see every reference under NativeAOT.
+    /// Asks ART to log its own JNI reference tables, after a marker line, so the host can read the runtime's own global
+    /// reference count (the .NET-side counter leaves out the ~435 java.lang.Class references Java.Interop caches).
     /// </summary>
     public static void DumpArtReferenceTables(string label)
     {
         Android.Util.Log.Info(BenchmarkRunner.Tag, $"ART_GREF_DUMP {label}");
         try
         {
-            // A hidden API; the benchmark emulator allows it with `settings put global hidden_api_policy 1`.
+            // A hidden API, reached through reflection. scripts/run-android-peered.sh sets
+            // `settings put global hidden_api_policy 1` on the emulator so this keeps working on stricter images.
             using Java.Lang.Class vmDebug = Java.Lang.Class.ForName("dalvik.system.VMDebug");
             using Java.Lang.Reflect.Method? dump = vmDebug.GetDeclaredMethod("dumpReferenceTables");
             _ = dump?.Invoke(null);

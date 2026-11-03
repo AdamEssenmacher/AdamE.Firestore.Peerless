@@ -6,17 +6,25 @@
 #   firebase emulators:start --only firestore --project demo-peerless
 #
 # Usage: scripts/run-android-peered.sh [adb-serial] [extra `am start` args, e.g. --es sizes 10,100 --ei updates 5]
+#   FIRESTORE_PORT  the Firestore emulator's host port (default 8181, as in firebase.json); the app reaches it at
+#                   10.0.2.2:<port>
+#
+# The emulator AVD (one-time setup; any arm64 API 36 Google APIs image works):
+#   sdkmanager "system-images;android-36;google_apis;arm64-v8a"
+#   avdmanager create avd -n Peerless_Bench_API36 -k "system-images;android-36;google_apis;arm64-v8a" -d pixel_7
+#   emulator -avd Peerless_Bench_API36 -port 5650 -no-window -no-snapshot -no-boot-anim -no-audio   # adb: emulator-5650
 set -euo pipefail
 
 serial="${1:-emulator-5650}"
 shift || true
+port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android"
 package="com.adame.firestore.peerless.benchmarks"
 files="/sdcard/Android/data/$package/files"
 out="$root/results/android-peered/$(date +%Y%m%d-%H%M%S)${RUN_LABEL:+-$RUN_LABEL}"
 
-curl -sf -o /dev/null "http://127.0.0.1:8181/" || { echo "Firestore emulator is not listening on 8181" >&2; exit 1; }
+curl -sf -o /dev/null "http://127.0.0.1:$port/" || { echo "Firestore emulator is not listening on $port" >&2; exit 1; }
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
@@ -26,10 +34,15 @@ adb -s "$serial" install -r "$apk"
 adb -s "$serial" shell am force-stop "$package"
 adb -s "$serial" shell rm -f "$files/peered-samples.csv" "$files/peered-settled.csv" "$files/peered-run.txt"
 # Start each run from an empty emulator database.
-curl -sf -X DELETE "http://127.0.0.1:8181/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
+curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
+# The app reads ART's JNI reference tables through a hidden API (dalvik.system.VMDebug). API 36 Google APIs images
+# allow it already; this keeps it working on stricter images. Emulator-only setting; it does not touch the host.
+adb -s "$serial" shell settings put global hidden_api_policy 1
+[ "$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')" = "1" ] \
+  || { echo "Could not set hidden_api_policy on $serial; ART reference-table dumps will be missing." >&2; }
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
-adb -s "$serial" shell am start -W -n "$activity" "$@"
+adb -s "$serial" shell am start -W -n "$activity" --ei port "$port" "$@"
 
 echo "Waiting for the run to finish…"
 deadline=$((SECONDS + 1800))

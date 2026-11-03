@@ -21,13 +21,14 @@ internal sealed class ResultWriter : IDisposable
         run = Open(Path.Combine(directory, "peered-run.txt"));
         Line(samples,
             "phase,size,seq,kind,from_cache,documents,values,main_thread,wall_us,thread_cpu_us,alloc_bytes,"
-            + "gref_before,gref_after,gref_delta,gref_peak,gref_peak_delta,wgref_before,wgref_after,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms");
+            + "gref_before,gref_after,gref_delta,gref_peak,gref_peak_delta,gref_last_settled,gref_peak_over_settled,wgref_before,wgref_after,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms");
         Line(settled, "phase,size,point,gref,wgref,surfaced_peers");
     }
 
     public void Note(string key, string value) => Line(run, $"{key}: {value}");
 
-    public void Sample(string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds) =>
+    public void Sample(
+        string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds, int lastSettled) =>
         Line(samples, string.Join(',',
             phase,
             Invariant(size),
@@ -45,6 +46,8 @@ internal sealed class ResultWriter : IDisposable
             Invariant(sample.GlobalReferencesAfter - sample.GlobalReferencesBefore),
             Invariant(sample.GlobalReferencesPeak),
             Invariant(sample.GlobalReferencesPeak - sample.GlobalReferencesBefore),
+            Invariant(lastSettled),
+            Invariant(sample.GlobalReferencesPeak - lastSettled),
             Invariant(sample.WeakGlobalReferencesBefore),
             Invariant(sample.WeakGlobalReferencesAfter),
             Invariant(sample.Gen0Collections),
