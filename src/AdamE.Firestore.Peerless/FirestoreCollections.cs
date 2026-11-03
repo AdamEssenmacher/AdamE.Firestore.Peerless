@@ -115,6 +115,10 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
     /// Gets the value at a dotted field path such as <c>stats.views</c>, walking nested maps. Returns
     /// <see langword="false"/> if any segment is missing or is not a map.
     /// </summary>
+    /// <remarks>
+    /// The path is split on every <c>.</c>, so this overload can't reach a key that itself contains a dot; use
+    /// <see cref="TryGetPath(ReadOnlySpan{string}, out FirestoreValue)"/> for those.
+    /// </remarks>
     public bool TryGetPath(string path, out FirestoreValue value)
     {
         ArgumentNullException.ThrowIfNull(path);
@@ -137,6 +141,33 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
             current = next;
             start = dot + 1;
         }
+    }
+
+    /// <summary>
+    /// Gets the value at a field path given as separate segments, such as <c>["stats", "views"]</c>, walking nested
+    /// maps. Segments may contain any character, including <c>.</c>. Returns <see langword="false"/> if any segment is
+    /// missing or is not a map, or if there are no segments.
+    /// </summary>
+    public bool TryGetPath(ReadOnlySpan<string> segments, out FirestoreValue value)
+    {
+        value = default;
+        FirestoreMap current = this;
+        for (int index = 0; index < segments.Length; index++)
+        {
+            if (!current.TryGetValue(segments[index], out value))
+                return false;
+            if (index == segments.Length - 1)
+                return true;
+            if (!value.TryGetMap(out FirestoreMap? next))
+            {
+                value = default;
+                return false;
+            }
+
+            current = next;
+        }
+
+        return false;
     }
 
     /// <inheritdoc />

@@ -35,18 +35,26 @@ def peak_over_settled(row):
     return None if base is None or not has_peak else f(row, "gref_peak") - base
 
 lines = [f"# {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().replace("\n", "  \n"), "",
-         "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *GREF peak* is the highest .NET-side",
-         "JNI global reference count seen during the callback (sampled after each document), as an absolute count.",
-         "*Peak over settled* is that peak minus the count at the last settle point before the callback (forced .NET",
-         "and Java GC), so references an earlier callback left for the GC are not charged to this one. The .NET counter",
-         "excludes ~435 cached java.lang.Class references that ART's own table (below) includes. n/a: this run predates",
-         "peak sampling.", "",
+         "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB.", "",
+         "*GREF peak* is the highest .NET-side JNI global reference count seen during the callback (sampled after each",
+         "document), as an absolute count: **what an app sees**, since an app never forces the settles this benchmark",
+         "does. *Peak over settled* is that peak minus the count at the last settle point (forced .NET and Java GC).",
+         "Subtracting removes only the references that survive a full GC; references earlier callbacks left for the GC",
+         "since that settle are still included, so the figure grows with the number of callbacks since the settle.",
+         "Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the",
+         "single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come",
+         "straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached",
+         "java.lang.Class references that ART's own table (below) includes. n/a: this run predates peak sampling.", "",
          "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|"]
+def after_settle(row):
+    seq = int(row["seq"])
+    return seq >= 1 and any(k == seq - 1 for k, _ in settles.get((row["phase"], int(row["size"])), []))
 groups = {}
 for row in rows:
     if row["phase"] == "skipped": continue
-    groups.setdefault((row["phase"], int(row["size"]), row["kind"]), []).append(row)
+    kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
+    groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
 def rng(values, scale=1.0):
     values = [v / scale for v in values if v is not None]
     if not values: return "n/a"
@@ -59,7 +67,7 @@ for (phase, size, kind), group in groups.items():
         f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}",
         rng([f(r, "gref_peak") for r in group]) if has_peak else "n/a",
         rng([peak_over_settled(r) for r in group]),
-        f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind == "update" else "",
+        f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
 skipped = [r for r in rows if r["phase"] == "skipped"]
 if any(r.get("java_encode_us") for r in rows):

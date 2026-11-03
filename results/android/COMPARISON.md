@@ -20,15 +20,20 @@ Callback start to fully converted.
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
 | 10 | initial | 15.19 | 0.81 | 0.66 | 19× |
-| 10 | update | 66.91 | 0.35 | 0.42 | 190× |
+| 10 | update | 65.96 | 0.35 | 0.47 | 187× |
+| 10 | update, after a settle | 78.34 | 0.36 | 0.33 | 219× |
 | 100 | initial | 89.63 | 5.88 | 4.10 | 15× |
-| 100 | update | 86.43 | 1.19 | 1.50 | 73× |
+| 100 | update | 91.24 | 1.24 | 1.52 | 74× |
+| 100 | update, after a settle | 82.88 | 1.02 | 1.08 | 82× |
 | 500 | initial | 1,249.26 | 5.02 | 4.98 | 249× |
-| 500 | update | 530.27 | 3.70 | 4.33 | 143× |
+| 500 | update | 535.18 | 3.73 | 4.18 | 143× |
+| 500 | update, after a settle | 469.24 | 3.44 | 4.60 | 136× |
 | 1000 | initial | 10,299.68 | 9.84 | 8.31 | 1,047× |
-| 1000 | update | 1,235.78 | 9.35 | 10.78 | 132× |
+| 1000 | update | 1,215.21 | 9.71 | 11.23 | 125× |
+| 1000 | update, after a settle | 1,249.59 | 6.13 | 7.11 | 204× |
 | 1 (doc) | initial | 0.76 | 0.11 | 0.11 | 7× |
-| 1 (doc) | update | 6.55 | 0.09 | 0.11 | 74× |
+| 1 (doc) | update | 4.79 | 0.09 | 0.11 | 54× |
+| 1 (doc) | update, after a settle | 9.52 | 0.09 | 0.12 | 104× |
 
 ## Main-thread CPU per snapshot (ms)
 
@@ -37,15 +42,20 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
 | 10 | initial | 6.45 | 0.80 | 0.60 | 8× |
-| 10 | update | 11.66 | 0.33 | 0.39 | 36× |
+| 10 | update | 11.66 | 0.33 | 0.39 | 35× |
+| 10 | update, after a settle | 11.45 | 0.32 | 0.33 | 36× |
 | 100 | initial | 62.84 | 5.09 | 3.38 | 12× |
-| 100 | update | 58.33 | 1.12 | 1.42 | 52× |
+| 100 | update | 59.20 | 1.15 | 1.46 | 52× |
+| 100 | update, after a settle | 56.94 | 1.01 | 1.08 | 56× |
 | 500 | initial | 410.70 | 4.88 | 4.73 | 84× |
-| 500 | update | 331.74 | 3.58 | 3.92 | 93× |
+| 500 | update | 334.39 | 3.67 | 3.92 | 91× |
+| 500 | update, after a settle | 268.53 | 3.38 | 3.81 | 79× |
 | 1000 | initial | 1,317.06 | 9.48 | 8.05 | 139× |
-| 1000 | update | 686.87 | 8.60 | 10.37 | 80× |
+| 1000 | update | 689.01 | 9.33 | 10.95 | 74× |
+| 1000 | update, after a settle | 676.75 | 6.03 | 7.00 | 112× |
 | 1 (doc) | initial | 0.76 | 0.11 | 0.11 | 7× |
-| 1 (doc) | update | 1.37 | 0.08 | 0.11 | 17× |
+| 1 (doc) | update | 1.33 | 0.08 | 0.11 | 16× |
+| 1 (doc) | update, after a settle | 1.64 | 0.08 | 0.11 | 20× |
 
 ## Managed allocation per snapshot (KB)
 
@@ -54,49 +64,64 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
 | 10 | initial | 1,787 | 40 | 40 | 44× |
-| 10 | update | 2,094 | 40 | 40 | 52× |
+| 10 | update | 2,083 | 40 | 40 | 52× |
+| 10 | update, after a settle | 2,226 | 40 | 40 | 55× |
 | 100 | initial | 16,697 | 349 | 349 | 48× |
-| 100 | update | 15,049 | 349 | 349 | 43× |
+| 100 | update | 15,032 | 349 | 349 | 43× |
+| 100 | update, after a settle | 15,091 | 349 | 349 | 43× |
 | 500 | initial | 86,066 | 1,728 | 1,728 | 50× |
 | 500 | update | 74,977 | 1,728 | 1,728 | 43× |
+| 500 | update, after a settle | 74,998 | 1,728 | 1,728 | 43× |
 | 1000 | initial | 198,739 | 3,453 | 3,453 | 58× |
-| 1000 | update | 149,824 | 3,453 | 3,453 | 43× |
+| 1000 | update | 149,810 | 3,453 | 3,453 | 43× |
+| 1000 | update, after a settle | 149,842 | 3,453 | 3,453 | 43× |
 | 1 (doc) | initial | 224 | 9 | 9 | 24× |
-| 1 (doc) | update | 209 | 9 | 9 | 23× |
-
-## JNI global references at peak during a snapshot, over the last settle point
-
-The highest .NET-side count seen during the callback (sampled per document in peered mode) minus the count at the last settle point (forced .NET and Java GC) before it, so references earlier callbacks left for the GC are not charged to this one. Earlier versions subtracted the count at callback entry, which understated updates.
-
-| docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
-|---:|---|---:|---:|---:|---:|
-| 10 | initial | 312 | 4 | 3 | 78× |
-| 10 | update | 303 | 18 | 18 | 17× |
-| 100 | initial | 1,374 | 4 | 3 | 344× |
-| 100 | update | 1,401 | 15 | 15 | 93× |
-| 500 | initial | 3,094 | 4 | 3 | 774× |
-| 500 | update | 2,515 | 6 | 6 | 419× |
-| 1000 | initial | 5,588 | 4 | 3 | 1,397× |
-| 1000 | update | 4,496 | 1 | 1 | 4,496× |
-| 1 (doc) | initial | 39 | 5 | 4 | 8× |
-| 1 (doc) | update | 186 | 36 | 36 | 5× |
+| 1 (doc) | update | 203 | 9 | 9 | 22× |
+| 1 (doc) | update, after a settle | 252 | 9 | 9 | 27× |
 
 ## JNI global references at peak during a snapshot (absolute)
 
-The .NET-side count, which leaves out ~435 java.lang.Class references Java.Interop caches.
+The highest .NET-side count seen during the callback (sampled per document in peered mode): what an app sees, since an app never forces the settles this benchmark does. The .NET counter leaves out ~435 java.lang.Class references Java.Interop caches.
 
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
 | 10 | initial | 403 | 93 | 92 | 4× |
-| 10 | update | 439 | 116 | 116 | 4× |
+| 10 | update | 454 | 120 | 118 | 4× |
+| 10 | update, after a settle | 384 | 104 | 104 | 4× |
 | 100 | initial | 1,488 | 115 | 114 | 13× |
-| 100 | update | 1,922 | 131 | 130 | 15× |
+| 100 | update | 1,963 | 134 | 132 | 15× |
+| 100 | update, after a settle | 1,528 | 121 | 120 | 13× |
 | 500 | initial | 3,210 | 118 | 117 | 27× |
-| 500 | update | 4,639 | 124 | 123 | 37× |
+| 500 | update | 5,035 | 129 | 128 | 39× |
+| 500 | update, after a settle | 3,867 | 124 | 123 | 31× |
 | 1000 | initial | 5,708 | 123 | 122 | 46× |
-| 1000 | update | 8,624 | 124 | 123 | 70× |
+| 1000 | update | 9,149 | 124 | 123 | 74× |
+| 1000 | update, after a settle | 6,742 | 129 | 128 | 52× |
 | 1 (doc) | initial | 160 | 124 | 123 | 1× |
-| 1 (doc) | update | 326 | 163 | 162 | 2× |
+| 1 (doc) | update | 341 | 164 | 163 | 2× |
+| 1 (doc) | update, after a settle | 173 | 134 | 133 | 1× |
+
+## JNI global references at peak during a snapshot, over the last settle point
+
+The peak minus the count at the last settle point (forced .NET and Java GC). That removes only references that survive a full GC; references earlier callbacks left for the GC since the settle are still included, so the figure grows with the callbacks since it. Cadence: a settle before listening, after the initial snapshot and after every 5th update (every 12th in the single-document phase).
+
+| docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
+|---:|---|---:|---:|---:|---:|
+| 10 | initial | 312 | 4 | 3 | 78× |
+| 10 | update | 312 | 20 | 20 | 16× |
+| 10 | update, after a settle | 242 | 6 | 6 | 40× |
+| 100 | initial | 1,374 | 4 | 3 | 344× |
+| 100 | update | 1,442 | 18 | 18 | 80× |
+| 100 | update, after a settle | 1,010 | 5 | 5 | 202× |
+| 500 | initial | 3,094 | 4 | 3 | 774× |
+| 500 | update | 2,912 | 10 | 10 | 291× |
+| 500 | update, after a settle | 1,743 | 5 | 5 | 349× |
+| 1000 | initial | 5,588 | 4 | 3 | 1,397× |
+| 1000 | update | 5,022 | 0 | 0 | – |
+| 1000 | update, after a settle | 2,613 | 5 | 5 | 523× |
+| 1 (doc) | initial | 39 | 5 | 4 | 8× |
+| 1 (doc) | update | 202 | 36 | 36 | 6× |
+| 1 (doc) | update, after a settle | 35 | 6 | 6 | 6× |
 
 ## GCs during a snapshot
 
@@ -106,14 +131,19 @@ Collections of any generation that started inside the callback.
 |---:|---|---:|---:|---:|---:|
 | 10 | initial | 1 | 0 | 0 | – |
 | 10 | update | 9 | 0 | 0 | – |
+| 10 | update, after a settle | 11 | 0 | 0 | – |
 | 100 | initial | 3 | 0 | 0 | – |
-| 100 | update | 3 | 0 | 0 | – |
+| 100 | update | 2 | 0 | 0 | – |
+| 100 | update, after a settle | 3 | 0 | 0 | – |
 | 500 | initial | 62 | 0 | 0 | – |
 | 500 | update | 14 | 0 | 0 | – |
+| 500 | update, after a settle | 12 | 0 | 0 | – |
 | 1000 | initial | 600 | 0 | 0 | – |
 | 1000 | update | 26 | 1 | 1 | 26× |
+| 1000 | update, after a settle | 25 | 0 | 0 | – |
 | 1 (doc) | initial | 0 | 0 | 0 | – |
 | 1 (doc) | update | 0 | 0 | 0 | – |
+| 1 (doc) | update, after a settle | 1 | 0 | 0 | – |
 
 ## Settled JNI global references (after forced .NET + Java GC)
 
@@ -149,22 +179,32 @@ Medians. *Encode* is the Java writer alone. *Java→.NET* is Java callback entry
 |---|---:|---|---:|---:|---:|---:|---:|---:|
 | peerless-direct | 10 | initial | 7.0 | 0.59 | 0.58 | 0.73 | 0.08 | 0.81 |
 | peerless-direct | 10 | update | 7.0 | 0.29 | 0.28 | 0.31 | 0.04 | 0.35 |
+| peerless-direct | 10 | update, after a settle | 7.0 | 0.31 | 0.27 | 0.32 | 0.04 | 0.36 |
 | peerless-direct | 100 | initial | 70.8 | 2.35 | 4.71 | 5.76 | 0.12 | 5.88 |
-| peerless-direct | 100 | update | 70.8 | 0.95 | 0.88 | 0.97 | 0.20 | 1.19 |
+| peerless-direct | 100 | update | 70.8 | 0.97 | 0.88 | 1.01 | 0.20 | 1.24 |
+| peerless-direct | 100 | update, after a settle | 70.8 | 0.81 | 0.81 | 0.82 | 0.20 | 1.02 |
 | peerless-direct | 500 | initial | 355.9 | 3.86 | 3.72 | 4.08 | 0.94 | 5.02 |
-| peerless-direct | 500 | update | 355.9 | 2.54 | 2.49 | 2.58 | 0.86 | 3.70 |
+| peerless-direct | 500 | update | 355.9 | 2.53 | 2.49 | 2.57 | 0.88 | 3.73 |
+| peerless-direct | 500 | update, after a settle | 355.9 | 2.57 | 2.51 | 2.62 | 0.83 | 3.44 |
 | peerless-direct | 1000 | initial | 713.4 | 6.99 | 6.84 | 7.81 | 2.03 | 9.84 |
-| peerless-direct | 1000 | update | 713.4 | 5.27 | 4.98 | 5.32 | 4.10 | 9.35 |
+| peerless-direct | 1000 | update | 713.4 | 5.42 | 5.10 | 5.48 | 4.58 | 9.71 |
+| peerless-direct | 1000 | update, after a settle | 713.4 | 4.66 | 4.56 | 4.72 | 1.61 | 6.13 |
 | peerless-direct | 1 (doc) | initial | 0.7 | 0.02 | 0.02 | 0.10 | 0.01 | 0.11 |
 | peerless-direct | 1 (doc) | update | 0.7 | 0.05 | 0.05 | 0.07 | 0.02 | 0.09 |
+| peerless-direct | 1 (doc) | update, after a settle | 0.7 | 0.05 | 0.04 | 0.06 | 0.02 | 0.09 |
 | peerless-bytes | 10 | initial | 7.0 | 0.55 | 0.50 | 0.61 | 0.05 | 0.66 |
-| peerless-bytes | 10 | update | 7.0 | 0.32 | 0.28 | 0.35 | 0.04 | 0.42 |
+| peerless-bytes | 10 | update | 7.0 | 0.36 | 0.31 | 0.41 | 0.04 | 0.47 |
+| peerless-bytes | 10 | update, after a settle | 7.0 | 0.26 | 0.25 | 0.30 | 0.03 | 0.33 |
 | peerless-bytes | 100 | initial | 70.8 | 3.72 | 3.06 | 3.87 | 0.23 | 4.10 |
-| peerless-bytes | 100 | update | 70.8 | 1.07 | 1.00 | 1.20 | 0.22 | 1.50 |
+| peerless-bytes | 100 | update | 70.8 | 1.09 | 1.03 | 1.27 | 0.22 | 1.52 |
+| peerless-bytes | 100 | update, after a settle | 70.8 | 0.74 | 0.74 | 0.86 | 0.18 | 1.08 |
 | peerless-bytes | 500 | initial | 355.9 | 3.63 | 3.44 | 3.86 | 1.12 | 4.98 |
-| peerless-bytes | 500 | update | 355.9 | 2.78 | 2.72 | 3.00 | 0.95 | 4.33 |
+| peerless-bytes | 500 | update | 355.9 | 2.63 | 2.49 | 2.85 | 0.95 | 4.18 |
+| peerless-bytes | 500 | update, after a settle | 355.9 | 3.57 | 2.85 | 3.76 | 0.92 | 4.60 |
 | peerless-bytes | 1000 | initial | 713.4 | 6.55 | 6.35 | 6.91 | 1.41 | 8.31 |
-| peerless-bytes | 1000 | update | 713.4 | 5.37 | 5.27 | 5.84 | 4.72 | 10.78 |
+| peerless-bytes | 1000 | update | 713.4 | 5.49 | 5.32 | 5.95 | 5.09 | 11.23 |
+| peerless-bytes | 1000 | update, after a settle | 713.4 | 4.92 | 4.85 | 5.29 | 1.97 | 7.11 |
 | peerless-bytes | 1 (doc) | initial | 0.7 | 0.04 | 0.04 | 0.09 | 0.02 | 0.11 |
 | peerless-bytes | 1 (doc) | update | 0.7 | 0.06 | 0.05 | 0.09 | 0.02 | 0.11 |
+| peerless-bytes | 1 (doc) | update, after a settle | 0.7 | 0.05 | 0.04 | 0.11 | 0.01 | 0.12 |
 

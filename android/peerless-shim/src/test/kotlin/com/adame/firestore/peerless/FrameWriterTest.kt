@@ -59,6 +59,20 @@ class FrameWriterTest {
         assertEquals(0, writer.length())
     }
 
+    @Test
+    fun aGrownBufferCanBeShrunkBetweenFrames() {
+        val writer = FrameWriter(64)
+        writer.writeString("x".repeat(3_000_000))
+        val grown = writer.capacity()
+        writer.reset()
+        writer.shrinkTo(64 * 1024)
+        assertEquals(64 * 1024, writer.capacity())
+        assertEquals(0, writer.length())
+        writer.writeString("still works")
+        assertEquals(12, writer.length())
+        assert(grown > 3_000_000)
+    }
+
     private fun encodeString(value: String) = encode { it.writeString(value) }.toList()
 
     private fun encode(write: (FrameWriter) -> Unit): ByteArray = FrameWriter().also(write).toByteArray()

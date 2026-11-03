@@ -9,10 +9,20 @@ public readonly record struct SnapshotMetadata(bool IsFromCache, bool HasPending
 public sealed class FirestoreDocument
 {
     /// <summary>Creates a document. A document that does not exist must have empty <paramref name="fields"/>.</summary>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="path"/> is empty or has an empty segment (a leading, trailing or doubled <c>/</c>).
+    /// </exception>
     public FirestoreDocument(string path, bool exists, SnapshotMetadata metadata, FirestoreMap fields)
+        : this(path, exists, metadata, fields, validated: false)
     {
-        ArgumentException.ThrowIfNullOrEmpty(path);
+    }
+
+    internal FirestoreDocument(string path, bool exists, SnapshotMetadata metadata, FirestoreMap fields, bool validated)
+    {
+        ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(fields);
+        if (!validated && !IsValidPath(path))
+            throw new ArgumentException($"\"{path}\" is not a document path: it is empty or has an empty segment.", nameof(path));
         if (!exists && fields.Count != 0)
             throw new ArgumentException("A document that does not exist has no fields.", nameof(fields));
 
@@ -21,6 +31,10 @@ public sealed class FirestoreDocument
         Metadata = metadata;
         Fields = fields;
     }
+
+    // Non-empty, and no empty segment: no leading or trailing '/', no "//".
+    internal static bool IsValidPath(string path) =>
+        path.Length > 0 && path[0] != '/' && path[^1] != '/' && !path.Contains("//", StringComparison.Ordinal);
 
     /// <summary>The document's full path, for example <c>rooms/abc/messages/1</c>.</summary>
     public string Path { get; }
