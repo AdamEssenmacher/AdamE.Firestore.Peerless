@@ -151,9 +151,11 @@ internal sealed class PeerlessSampler : IFrameObserver, ISampler
 
     public void OnSnapshot(FirestoreSnapshot snapshot) => pending = snapshot;
 
-    public void OnError(FirestoreListenException exception)
+    public void OnError(Exception exception)
     {
-        failure = $"{exception.Code}: {exception.Message}";
+        failure = exception is FirestoreListenException firestore
+            ? $"{firestore.Code}: {firestore.Message}"
+            : $"{exception.GetType().Name}: {exception.Message}";
         _ = samples.Writer.TryWrite(Samplers.Build(false, 0, 0, ProbeReading.Take(), ProbeReading.Take(), 0, 0, 0, null, failure));
     }
 

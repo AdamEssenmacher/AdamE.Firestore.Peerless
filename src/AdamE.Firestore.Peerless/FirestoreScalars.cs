@@ -21,8 +21,21 @@ public readonly record struct FirestoreTimestamp(long Seconds, int Nanoseconds)
 /// <summary>A Firestore geo point.</summary>
 /// <param name="Latitude">Latitude in degrees, from -90 to 90.</param>
 /// <param name="Longitude">Longitude in degrees, from -180 to 180.</param>
+/// <remarks>
+/// Equality compares the doubles' bits, like <see cref="FirestoreValue"/>: NaN equals the same NaN, and 0.0 differs
+/// from -0.0.
+/// </remarks>
 public readonly record struct FirestoreGeoPoint(double Latitude, double Longitude)
 {
+    /// <inheritdoc />
+    public bool Equals(FirestoreGeoPoint other) =>
+        BitConverter.DoubleToInt64Bits(Latitude) == BitConverter.DoubleToInt64Bits(other.Latitude)
+        && BitConverter.DoubleToInt64Bits(Longitude) == BitConverter.DoubleToInt64Bits(other.Longitude);
+
+    /// <inheritdoc />
+    public override int GetHashCode() =>
+        HashCode.Combine(BitConverter.DoubleToInt64Bits(Latitude), BitConverter.DoubleToInt64Bits(Longitude));
+
     /// <inheritdoc />
     public override string ToString() => string.Create(CultureInfo.InvariantCulture, $"({Latitude}, {Longitude})");
 }

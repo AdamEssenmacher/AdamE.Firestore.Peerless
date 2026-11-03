@@ -1,6 +1,7 @@
 package com.adame.firestore.peerless
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class FrameWriterTest {
@@ -41,6 +42,21 @@ class FrameWriterTest {
         val text = "x".repeat(100_000)
         writer.writeString(text)
         assertEquals(3 + 100_000, writer.length())
+    }
+
+    @Test
+    fun growingPastTheCapThrowsInsteadOfOverflowing() {
+        val writer = FrameWriter(64, 1_000)
+        writer.writeString("x".repeat(900))
+        assertThrows(FrameWriter.FrameTooLargeException::class.java) { writer.writeString("y".repeat(200)) }
+    }
+
+    @Test
+    fun aStringTooLargeForAFrameIsRejectedBeforeItsLengthOverflows() {
+        val writer = FrameWriter(64, 1_000)
+        // 400 chars x 3 UTF-8 bytes is past the cap; the length is computed as a long, so it can't wrap.
+        assertThrows(FrameWriter.FrameTooLargeException::class.java) { writer.writeString("✓".repeat(400)) }
+        assertEquals(0, writer.length())
     }
 
     private fun encodeString(value: String) = encode { it.writeString(value) }.toList()

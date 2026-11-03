@@ -13,25 +13,27 @@ gc: server=False latency=Interactive available=2592632832
 verify: identical (11 documents, 465 values)  
 outcome: completed
 
-Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. GREF peak is the highest .NET-side JNI
-global reference count sampled after each document, minus the count at callback entry; GREF end is the same at
-the end of the callback (GCs inside the callback release some). The .NET counter excludes ~435 cached
-java.lang.Class references that ART's own table (below) includes.
+Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *GREF peak* is the highest .NET-side
+JNI global reference count seen during the callback (sampled after each document), as an absolute count.
+*Peak over settled* is that peak minus the count at the last settle point before the callback (forced .NET
+and Java GC), so references an earlier callback left for the GC are not charged to this one. The .NET counter
+excludes ~435 cached java.lang.Class references that ART's own table (below) includes. n/a: this run predates
+peak sampling.
 
-| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | GREF end | write→callback ms |
+| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|
-| warmup | 10 | initial | 1 | 440 | 6.9 [6.9–6.9] | 6.6 [6.6–6.6] | 0.0 [0.0–0.0] | 0 | 1730 | 342.0 [342.0–342.0] | 342.0 [342.0–342.0] |  |
-| warmup | 10 | update | 3 | 440 | 5.7 [5.1–6.1] | 5.6 [5.1–5.9] | 0.0 [0.0–0.0] | 0 | 1555 | 306.0 [306.0–306.0] | 306.0 [306.0–306.0] | 22 |
-| query | 10 | initial | 1 | 440 | 12.4 [12.4–12.4] | 6.9 [6.9–6.9] | 0.8 [0.8–0.8] | 1 | 1788 | 308.0 [308.0–308.0] | 80.0 [80.0–80.0] |  |
-| query | 10 | update | 20 | 440 | 76.6 [22.5–139.0] | 12.9 [6.9–29.8] | 3.5 [0.5–9.1] | 9 | 2094 | 164.0 [0.0–236.0] | 39.0 [-171.0–236.0] | 88 |
-| query | 100 | initial | 1 | 4400 | 93.4 [93.4–93.4] | 65.0 [65.0–65.0] | 6.8 [6.8–6.8] | 3 | 16697 | 1390.0 [1390.0–1390.0] | 587.0 [587.0–587.0] |  |
-| query | 100 | update | 20 | 4400 | 91.2 [71.3–145.4] | 61.4 [51.4–99.4] | 6.6 [4.0–34.6] | 2 | 15028 | 951.0 [62.0–1243.0] | 476.0 [-885.0–1056.0] | 114 |
-| query | 500 | initial | 1 | 22000 | 1290.1 [1290.1–1290.1] | 410.3 [410.3–410.3] | 65.6 [65.6–65.6] | 58 | 85952 | 3006.0 [3006.0–3006.0] | 3006.0 [3006.0–3006.0] |  |
-| query | 500 | update | 20 | 22000 | 557.9 [399.4–4716.2] | 344.5 [257.9–588.8] | 40.1 [25.0–190.2] | 14 | 75047 | 1313.5 [472.0–1811.0] | 863.5 [-1799.0–1598.0] | 756 |
-| query | 1000 | initial | 1 | 44000 | 10487.1 [10487.1–10487.1] | 1290.7 [1290.7–1290.7] | 457.6 [457.6–457.6] | 589 | 198085 | 5550.0 [5550.0–5550.0] | 5535.0 [5535.0–5535.0] |  |
-| query | 1000 | update | 20 | 44000 | 1057.0 [763.9–11080.6] | 598.4 [450.6–1257.4] | 76.7 [45.8–482.5] | 28 | 149951 | 2069.0 [730.0–2791.0] | 1234.0 [-3350.0–2636.0] | 1157 |
-| document | 1 | initial | 1 | 44 | 0.7 [0.7–0.7] | 0.6 [0.6–0.6] | 0.0 [0.0–0.0] | 0 | 224 | 34.0 [34.0–34.0] | 34.0 [34.0–34.0] |  |
-| document | 1 | update | 50 | 44 | 3.9 [0.5–16.8] | 1.2 [0.5–3.9] | 0.0 [0.0–2.7] | 0 | 214 | 34.0 [0.0–34.0] | 34.0 [-328.0–34.0] | 16 |
+| warmup | 10 | initial | 1 | 440 | 6.9 [6.9–6.9] | 6.6 [6.6–6.6] | 0.0 [0.0–0.0] | 0 | 1730 | 432.0 [432.0–432.0] | 354.0 [354.0–354.0] |  |
+| warmup | 10 | update | 3 | 440 | 5.7 [5.1–6.1] | 5.6 [5.1–5.9] | 0.0 [0.0–0.0] | 0 | 1555 | 450.0 [445.0–451.0] | 313.0 [313.0–314.0] | 22 |
+| query | 10 | initial | 1 | 440 | 12.4 [12.4–12.4] | 6.9 [6.9–6.9] | 0.8 [0.8–0.8] | 1 | 1788 | 403.0 [403.0–403.0] | 312.0 [312.0–312.0] |  |
+| query | 10 | update | 20 | 440 | 76.6 [22.5–139.0] | 12.9 [6.9–29.8] | 3.5 [0.5–9.1] | 9 | 2094 | 451.5 [323.0–505.0] | 308.5 [189.0–364.0] | 88 |
+| query | 100 | initial | 1 | 4400 | 93.4 [93.4–93.4] | 65.0 [65.0–65.0] | 6.8 [6.8–6.8] | 3 | 16697 | 1507.0 [1507.0–1507.0] | 1394.0 [1394.0–1394.0] |  |
+| query | 100 | update | 20 | 4400 | 91.2 [71.3–145.4] | 61.4 [51.4–99.4] | 6.6 [4.0–34.6] | 2 | 15028 | 1922.0 [1518.0–2237.0] | 1401.0 [997.0–1716.0] | 114 |
+| query | 500 | initial | 1 | 22000 | 1290.1 [1290.1–1290.1] | 410.3 [410.3–410.3] | 65.6 [65.6–65.6] | 58 | 85952 | 3126.0 [3126.0–3126.0] | 3010.0 [3010.0–3010.0] |  |
+| query | 500 | update | 20 | 22000 | 557.9 [399.4–4716.2] | 344.5 [257.9–588.8] | 40.1 [25.0–190.2] | 14 | 75047 | 4826.0 [3420.0–6039.0] | 2702.0 [1301.0–3918.0] | 756 |
+| query | 1000 | initial | 1 | 44000 | 10487.1 [10487.1–10487.1] | 1290.7 [1290.7–1290.7] | 457.6 [457.6–457.6] | 589 | 198085 | 5675.0 [5675.0–5675.0] | 5554.0 [5554.0–5554.0] |  |
+| query | 1000 | update | 20 | 44000 | 1057.0 [763.9–11080.6] | 598.4 [450.6–1257.4] | 76.7 [45.8–482.5] | 28 | 149951 | 8430.0 [5881.0–10683.0] | 4303.5 [1752.0–6554.0] | 1157 |
+| document | 1 | initial | 1 | 44 | 0.7 [0.7–0.7] | 0.6 [0.6–0.6] | 0.0 [0.0–0.0] | 0 | 224 | 160.0 [160.0–160.0] | 39.0 [39.0–39.0] |  |
+| document | 1 | update | 50 | 44 | 3.9 [0.5–16.8] | 1.2 [0.5–3.9] | 0.0 [0.0–2.7] | 0 | 214 | 297.5 [169.0–609.0] | 160.5 [35.0–481.0] | 16 |
 
 Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): 3 (e.g. "46080 outstanding GREFs. Performing a full GC!")
 
