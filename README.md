@@ -18,6 +18,7 @@ below.
 
 ```bash
 dotnet test --project tests/AdamE.Firestore.Peerless.Tests
+dotnet run -c Release --project benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder   # decode time and allocation
 ```
 
 ## Step 1: Android peered baseline under NativeAOT

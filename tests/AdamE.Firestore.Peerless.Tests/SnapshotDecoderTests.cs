@@ -50,6 +50,13 @@ public sealed class SnapshotDecoderTests
                 .Section(Wire.Section.Metadata, section => section.Byte(0)).ToArray()
         },
         {
+            "repeated unknown section", new TestFrameEncoder().Header(Wire.FrameKind.Query)
+                .Section(9, section => section.Byte(1))
+                .Section(Wire.Section.Metadata, section => section.Byte(0))
+                .Section(9, section => section.Byte(2))
+                .Section(Wire.Section.Documents, section => section.Varint(0)).ToArray()
+        },
+        {
             "duplicate metadata", ValidSections(new TestFrameEncoder().Header(Wire.FrameKind.Query)
                 .Section(Wire.Section.Metadata, section => section.Byte(0)))
         },
@@ -157,45 +164,143 @@ public sealed class SnapshotDecoderTests
         Assert.Contains((byte)0x00, frame); // NUL is the single byte 00, not modified UTF-8's C0 80.
     }
 
-    [Fact]
-    public void Hostile_nested_counts_cost_memory_in_proportion_to_the_frame()
-    {
-        // 98 arrays, each claiming almost the whole frame as its item count, then garbage. Allocating each declared
-        // count up front would cost about 98 x 1 MB x 32 bytes, roughly 3 GB.
-        const int padding = 1_000_000;
-        var raw = new TestFrameEncoder();
-        for (int level = 0; level < 98; level++)
-            raw.Byte(Wire.Tag.Array).Varint(padding - 1);
-        raw.Raw(Enumerable.Repeat((byte)0xFF, padding).ToArray()); // 0xFF: an unknown tag where the first item should be
-        byte[] nested = raw.ToArray();
-        byte[] frame = DocumentWith(field => field.Raw(nested));
+    // The real worst case: a legitimate frame can't cost more than about 40 bytes of .NET memory per frame byte (a
+    // one-item array or map in 3-4 bytes costs ~120-160 bytes of objects), plus the decoder's fixed working memory.
+    private const int BytesPerFrameByte = 48;
+    private const int FixedOverhead = 16 * 1024;
 
+    public static TheoryData<string, int> AllocationShapes => new()
+    {
+        { "nulls", 1 }, { "nulls", 16 }, { "nulls", 17 }, { "nulls", 1_000 }, { "nulls", 131_073 },
+        { "one-item arrays", 1 }, { "one-item arrays", 17 }, { "one-item arrays", 20_000 },
+        { "one-entry maps", 1 }, { "one-entry maps", 17 }, { "one-entry maps", 20_000 },
+        { "hostile nested counts", 98 },
+    };
+
+    [Theory]
+    [MemberData(nameof(AllocationShapes))]
+    public void Allocation_stays_within_a_fixed_multiple_of_the_frame(string shape, int size)
+    {
+        byte[] frame = DocumentWith(field =>
+        {
+            switch (shape)
+            {
+                case "nulls":
+                    field.Byte(Wire.Tag.Array).Varint(size);
+                    for (int index = 0; index < size; index++)
+                        field.Byte(Wire.Tag.Null);
+                    break;
+                case "one-item arrays":
+                    field.Byte(Wire.Tag.Array).Varint(size);
+                    for (int index = 0; index < size; index++)
+                        field.Byte(Wire.Tag.Array).Varint(1).Byte(Wire.Tag.Null);
+                    break;
+                case "one-entry maps":
+                    field.Byte(Wire.Tag.Array).Varint(size);
+                    for (int index = 0; index < size; index++)
+                        field.Byte(Wire.Tag.Map).Varint(1).Varint(0).Byte(Wire.Tag.Null);
+                    break;
+                default:
+                    // `size` arrays, each claiming almost the whole frame as its item count, then garbage. Allocating
+                    // every declared count up front would cost about size x 1 MB x 32 bytes, roughly 3 GB.
+                    const int padding = 1_000_000;
+                    for (int level = 0; level < size; level++)
+                        field.Byte(Wire.Tag.Array).Varint(padding - 1);
+                    field.Raw(Enumerable.Repeat((byte)0xFF, padding).ToArray()); // 0xFF: an unknown tag
+                    break;
+            }
+        });
+
+        _ = Record.Exception(() => SnapshotDecoder.Decode(frame)); // warm the per-thread scratch
         long before = GC.GetAllocatedBytesForCurrentThread();
-        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        // It got all the way down to the innermost array's first item, so every declared count was accepted.
-        Assert.Contains("tag 255", exception.Message, StringComparison.Ordinal);
-        Assert.True(allocated < 4L * 1024 * 1024, $"Decoding a hostile {frame.Length:N0}-byte frame allocated {allocated:N0} bytes.");
+        if (shape == "hostile nested counts")
+        {
+            // It got all the way down to the innermost array's first item, so every declared count was accepted.
+            Assert.Contains("tag 255", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Null(failure);
+        }
+
+        long bound = (long)BytesPerFrameByte * frame.Length + FixedOverhead;
+        Assert.True(allocated <= bound, $"{shape} x {size}: {allocated:N0} bytes for a {frame.Length:N0}-byte frame (bound {bound:N0}).");
+    }
+
+    // A fixed budget for a typical frame, so decode allocation can't regress silently. 100 documents x 20 fields
+    // allocated 188 KB when this was written (192 KB before the bounded-allocation work); the budget leaves ~5%.
+    [Fact]
+    public void A_typical_frame_decodes_within_its_allocation_budget()
+    {
+        byte[] frame = TestFrameEncoder.Encode(TypicalSnapshot());
+        _ = SnapshotDecoder.Decode(frame);
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        _ = SnapshotDecoder.Decode(frame);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(allocated <= 198 * 1024, $"Decoding the typical frame allocated {allocated:N0} bytes (budget 198 KB).");
+    }
+
+    internal static FirestoreQuerySnapshot TypicalSnapshot() => new(Live, [.. Enumerable.Range(0, 100).Select(document =>
+        new FirestoreDocument($"items/doc-{document:D5}", true, Live, new FirestoreMap(Enumerable.Range(0, 20).Select(field =>
+            KeyValuePair.Create($"field-{field:D2}", (field % 4) switch
+            {
+                0 => FirestoreValue.FromString($"value {document} {field}"),
+                1 => FirestoreValue.FromInteger(document * 1000 + field),
+                2 => FirestoreValue.FromDouble(document + field / 10.0),
+                _ => FirestoreValue.FromArray(new FirestoreArray([FirestoreValue.FromString("a"), FirestoreValue.FromInteger(field)])),
+            })))))]);
+
+    [Fact]
+    public void Many_long_distinct_keys_decode_correctly()
+    {
+        (string, FirestoreValue)[] fields = [.. Enumerable.Range(0, 2_000)
+            .Select(index => ($"{new string('k', 200)}-{index}", FirestoreValue.FromInteger(index)))];
+        byte[] frame = TestFrameEncoder.Encode(new FirestoreDocumentSnapshot(Live, Doc("a/1", fields)));
+
+        FirestoreMap decoded = SnapshotDecoder.DecodeDocument(frame).Document.Fields;
+
+        Assert.Equal(2_000, decoded.Count);
+        Assert.Equal(1_999, decoded[$"{new string('k', 200)}-1999"].AsInteger());
+    }
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/a/b")]
+    [InlineData("a/b/")]
+    [InlineData("a//b")]
+    public void Document_paths_with_an_empty_segment_are_rejected(string path)
+    {
+        byte[] frame = Frame(Wire.FrameKind.Query, section => section.Varint(1).String(path).Byte(Wire.DocumentFlags.Exists).Varint(0));
+
+        Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+        Assert.Throws<ArgumentException>(() => new FirestoreDocument(path, true, Live, FirestoreMap.Empty));
     }
 
     [Fact]
-    public void A_frame_full_of_real_items_allocates_a_bounded_multiple_of_its_size()
+    public void Timestamps_outside_firestores_range_cannot_be_built()
     {
-        const int count = 200_000;
-        byte[] frame = DocumentWith(field =>
-        {
-            field.Byte(Wire.Tag.Array).Varint(count);
-            for (int index = 0; index < count; index++)
-                field.Byte(Wire.Tag.Null);
-        });
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreTimestamp(FirestoreTimestamp.MaxSeconds + 1, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreTimestamp(FirestoreTimestamp.MinSeconds - 1, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreTimestamp(0, -1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreTimestamp(0, 1_000_000_000));
+        Assert.Equal(new FirestoreTimestamp(0, 0), default);
+    }
 
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        FirestoreValue decoded = SnapshotDecoder.DecodeDocument(frame).Document.Fields["field"];
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+    [Fact]
+    public void Field_paths_can_be_given_as_segments_to_reach_keys_containing_dots()
+    {
+        var fields = new FirestoreMap([KeyValuePair.Create("a.b", FirestoreValue.FromMap(new FirestoreMap(
+            [KeyValuePair.Create("c", FirestoreValue.FromInteger(7))])))]);
 
-        Assert.Equal(count, decoded.AsArray().Count);
-        Assert.True(allocated < 80L * frame.Length, $"{allocated:N0} bytes for a {frame.Length:N0}-byte frame.");
+        Assert.False(fields.TryGetPath("a.b.c", out _));
+        Assert.True(fields.TryGetPath(["a.b", "c"], out FirestoreValue value));
+        Assert.Equal(7, value.AsInteger());
+        Assert.False(fields.TryGetPath(ReadOnlySpan<string>.Empty, out _));
     }
 
     [Fact]

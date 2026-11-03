@@ -53,7 +53,7 @@ section = id:u8 length:u32 payload:u8[length]
   A decoder rejects any kind it doesn't know.
 
 Sections follow the header until the end of the frame. The frame's length is known from the buffer it arrives in; there
-is no trailing marker. Each section ID appears at most once. A decoder skips any section ID it doesn't know (that's
+is no trailing marker. Each section ID, known or not, appears at most once, and decoders reject a repeat. A decoder skips any section ID it doesn't know (that's
 what the `u32` length is for), and rejects a frame that is missing a required section or repeats one. Sections may
 come in any order, and encoders write them in ascending ID order.
 
@@ -73,7 +73,8 @@ document  = path:string flags:u8 fields
 fields    = (if flags & 0x01) map-body
 ```
 
-- `path` is the document's full path, for example `rooms/abc/messages/1`. An empty path is rejected.
+- `path` is the document's full path, for example `rooms/abc/messages/1`. A path that is empty or has an empty
+  segment (a leading, trailing or doubled `/`, including `/` alone) is rejected.
 - Flag bits: `0x01` = `exists`, `0x02` = `isFromCache`, `0x04` = `hasPendingWrites` (the document's own metadata).
 - A document that doesn't exist has no `fields` at all. Only a document snapshot frame (kind 2) can carry one.
 - Documents appear in the snapshot's order, which for a query is the query's order.
@@ -113,9 +114,12 @@ map-body = count:varint (key:string value)*count
   document's field values are at depth 1; the items of an array or map value at depth *d* are at depth *d* + 1. An
   array or map value **at depth 100 or more is rejected**, so at most 99 containers can nest inside a document's
   fields. (The document's own fields map isn't counted.)
-- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame, and decoders must not
-  allocate for a count before its items have actually been read: the .NET decoder grows each container as items
-  arrive, so memory stays proportional to the frame's size however deeply hostile counts are nested.
+- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame, since every item takes
+  at least one byte. Decoders must keep memory proportional to the frame's size even when counts are nested to claim
+  the same bytes over and over. The .NET decoder's guarantee: it allocates a container at its declared size up front
+  only while the declared-but-unread items of all open up-front containers fit in the bytes left to read, which real
+  data always does. Other containers are read onto a scratch stack and allocated when they end, so they cost only
+  the items actually read. Its total allocation stays within about 48 bytes per frame byte, plus a fixed few KB.
 
 ### What encoders write
 
