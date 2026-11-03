@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Builds the iOS benchmark under NativeAOT, runs it on an iOS Simulator against the Firestore emulator, and copies the
-# files it writes into results/ios/<timestamp>-peered/ (the app's console output stays local, uncommitted).
+# files it writes into results/ios/<timestamp>-<mode>/ (the app's console output stays local, uncommitted).
 #
 # Start the Firestore emulator first, from the repo root (alternate ports; see firebase.json):
 #   firebase emulators:start --only firestore --project demo-peerless
 #
-# Usage: scripts/run-ios-benchmark.sh <simulator-udid> [extra launch arguments, e.g. -sizes 10,100 -updates 5]
+# Usage: scripts/run-ios-benchmark.sh <simulator-udid> [peered|peerless] [extra launch arguments, e.g. -sizes 10,100]
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 set -euo pipefail
 
-udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [launch args]}"
-shift
-mode="peered"
+udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [peered|peerless] [launch args]}"
+mode="${2:-peered}"
+shift 2 || shift $# || true
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS"
 bundle="com.adame.firestore.peerless.benchmarks"
@@ -34,7 +34,7 @@ curl -sf -X DELETE "http://127.0.0.1:8181/emulator/v1/projects/demo-peerless/dat
 mkdir -p "$out"
 files="$container/Library/Caches/peerless"
 load_before="$(uptime)"
-xcrun simctl launch --terminate-running-process "$udid" "$bundle" "$@"
+xcrun simctl launch --terminate-running-process "$udid" "$bundle" -mode "$mode" "$@"
 
 # A simulator app is an ordinary host process, so pgrep finds it (by this simulator's path) without simctl.
 echo "Waiting for the run to finish…"

@@ -3,19 +3,27 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using AdamE.Firestore.Peerless.iOS;
 using Firebase.CloudFirestore;
 using FirebaseFirestore = Firebase.CloudFirestore.Firestore;
 using Firebase.Core;
 
 namespace AdamE.Firestore.Peerless.Benchmarks;
 
-/// <summary>
-/// Where the run reaches the FirebaseFirestore emulator and how much it does. Read from the launch arguments, which
-/// NSUserDefaults exposes as keys: <c>-port 8181 -sizes 10,100 -updates 5 -singleUpdates 10 -verify NO</c>.
-/// </summary>
-internal sealed record BenchmarkOptions(string Host, int Port, BenchmarkPlan Plan, bool Verify)
+/// <summary>How a run listens: the ordinary peered binding, or Peerless through the Objective-C shim.</summary>
+internal enum ListenMode
 {
-    public const string ModeName = "peered";
+    Peered,
+    Peerless,
+}
+
+/// <summary>
+/// Where the run reaches the Firestore emulator, how it listens and how much it does. Read from the launch arguments,
+/// which NSUserDefaults exposes as keys: <c>-mode peerless -port 8181 -sizes 10,100 -updates 5 -verify NO</c>.
+/// </summary>
+internal sealed record BenchmarkOptions(string Host, int Port, ListenMode Mode, BenchmarkPlan Plan, bool Verify)
+{
+    public string ModeName => Mode == ListenMode.Peered ? "peered" : "peerless";
 
     public static BenchmarkOptions FromLaunchArguments()
     {
@@ -24,12 +32,15 @@ internal sealed record BenchmarkOptions(string Host, int Port, BenchmarkPlan Pla
         int Number(string key, int fallback) =>
             Text(key) is { } text ? int.Parse(text, CultureInfo.InvariantCulture) : fallback;
 
-        string mode = Text("mode") ?? ModeName;
-        if (mode != ModeName)
-            throw new ArgumentException($"Unknown mode '{mode}'. iOS has only '{ModeName}' so far.");
         return new BenchmarkOptions(
             Text("host") ?? "127.0.0.1",
             Number("port", 8181),
+            (Text("mode") ?? "peered") switch
+            {
+                "peered" => ListenMode.Peered,
+                "peerless" => ListenMode.Peerless,
+                var other => throw new ArgumentException($"Unknown mode '{other}'."),
+            },
             new BenchmarkPlan(
                 BenchmarkPlan.ParseSizes(Text("sizes")) ?? BenchmarkPlan.DefaultSizes,
                 Number("updates", BenchmarkPlan.DefaultUpdatesPerSize),
@@ -65,9 +76,9 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
     public async Task RunAsync()
     {
-        using var writer = new ResultWriter(ResultsDirectory, BenchmarkOptions.ModeName);
+        using var writer = new ResultWriter(ResultsDirectory, options.ModeName);
         results = writer;
-        writer.Note("mode", BenchmarkOptions.ModeName);
+        writer.Note("mode", options.ModeName);
         writer.Note("project", BenchmarkPlan.ProjectId);
         writer.Note("emulator", $"{options.Host}:{options.Port}");
         writer.Note("runtime", RuntimeInformation.FrameworkDescription);
@@ -149,6 +160,30 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         return (new Registration(listen(sampler), sampler), sampler);
     }
 
+    private (IDisposable Registration, ChannelReader<Sample> Samples) Listen(Query query)
+    {
+        if (options.Mode == ListenMode.Peered)
+        {
+            (IDisposable registration, PeeredSampler sampler) = Listen(sampler => query.AddSnapshotListener(sampler.OnQuery));
+            return (registration, sampler.Samples);
+        }
+
+        var peerless = new PeerlessSampler();
+        return (PeerlessListener.Listen(query, peerless.OnSnapshot, peerless.OnError, peerless), peerless.Samples);
+    }
+
+    private (IDisposable Registration, ChannelReader<Sample> Samples) Listen(DocumentReference document)
+    {
+        if (options.Mode == ListenMode.Peered)
+        {
+            (IDisposable registration, PeeredSampler sampler) = Listen(sampler => document.AddSnapshotListener(sampler.OnDocument));
+            return (registration, sampler.Samples);
+        }
+
+        var peerless = new PeerlessSampler();
+        return (PeerlessListener.Listen(document, peerless.OnSnapshot, peerless.OnError, peerless), peerless.Samples);
+    }
+
     // Keeps the sampler (and its latest conversion) alive until removal, as an app's view model would.
     private sealed class Registration(IListenerRegistration registration, PeeredSampler sampler) : IDisposable
     {
@@ -160,9 +195,10 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     }
 
     /// <summary>
-    /// Proves the peered conversion is complete and exact on real FirebaseFirestore data: what the listener reads back must
-    /// equal <see cref="SeedSpec"/>, which wrote it. Covers every value kind, including ones the benchmark documents
-    /// don't use. (On Android the same documents check peered against Peerless.)
+    /// Proves both paths are complete and exact on real Firestore data, covering every value kind, including ones the
+    /// benchmark documents don't use: what the peered listener reads back must equal <see cref="SeedSpec"/>, which
+    /// wrote it, and the same snapshot through Peerless must equal the peered binding's, value for value (as on
+    /// Android).
     /// </summary>
     private async Task VerifyAsync()
     {
@@ -182,8 +218,27 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         expected[$"{collection}/every-kind"] = SeedSpec.EveryKind();
         await batch.CommitAsync().ConfigureAwait(false);
 
+        Query query = Listening.GetCollection(collection).OrderedBy(FieldPath.GetDocumentId());
+        var model = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var peerless = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         (IDisposable registration, PeeredSampler sampler) = Listen(sampler =>
-            Listening.GetCollection(collection).OrderedBy(FieldPath.GetDocumentId()).AddSnapshotListener(sampler.OnQuery));
+            query.AddSnapshotListener(sampler.OnQuery));
+        IListenerRegistration modelRegistration = query.AddSnapshotListener((snapshot, error) =>
+        {
+            try
+            {
+                if (snapshot is null)
+                    model.TrySetException(new InvalidOperationException(error?.LocalizedDescription ?? "No snapshot."));
+                else
+                    model.TrySetResult(PeeredConversion.Query(snapshot));
+            }
+            catch (Exception exception)
+            {
+                model.TrySetException(exception);
+            }
+        });
+        using IDisposable peerlessRegistration = PeerlessListener.Listen(
+            query, snapshot => peerless.TrySetResult(snapshot), error => peerless.TrySetException(error));
         try
         {
             using var timeout = new CancellationTokenSource(VerifyTimeout);
@@ -203,11 +258,49 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                 : $"DIFFERENT {difference}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
+
+            FirestoreSnapshot expectedModel = await model.Task.WaitAsync(VerifyTimeout).ConfigureAwait(false);
+            FirestoreSnapshot actual = await peerless.Task.WaitAsync(VerifyTimeout).ConfigureAwait(false);
+            string? peerlessDifference = SnapshotAssertions.Difference(expectedModel, actual);
+            string comparison = peerlessDifference is null
+                ? $"identical ({SnapshotAssertions.DocumentCount(expectedModel)} documents, {PeeredConversion.CountValues(expectedModel)} values)"
+                : $"DIFFERENT {peerlessDifference}";
+            results?.Note("verifyPeerless", comparison.ReplaceLineEndings(" | "));
+            Report($"verify peered vs Peerless: {comparison}");
+            await VerifyRemovalAsync(collection).ConfigureAwait(false);
         }
         finally
         {
             registration.Dispose();
+            modelRegistration.Remove();
         }
+    }
+
+    /// <summary>
+    /// Removal must mute a Peerless listener at once: after Dispose returns, a write that Firestore would deliver must
+    /// not reach .NET. Disposed from the main queue, as an app's view would.
+    /// </summary>
+    private async Task VerifyRemovalAsync(string collection)
+    {
+        DocumentReference document = Listening.GetCollection(collection).GetDocument(BenchmarkPlan.DocumentId(0));
+        int callbacks = 0;
+        var first = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable listener = PeerlessListener.Listen(document, _ =>
+        {
+            Interlocked.Increment(ref callbacks);
+            first.TrySetResult();
+        });
+        await first.Task.WaitAsync(VerifyTimeout).ConfigureAwait(false);
+        await Probes.OnMainQueueAsync(listener.Dispose).ConfigureAwait(false);
+        int before = Volatile.Read(ref callbacks);
+        await UpdateAsync(collection, BenchmarkPlan.DocumentId(0), 99).ConfigureAwait(false);
+        await Task.Delay(1000).ConfigureAwait(false);
+        int after = Volatile.Read(ref callbacks);
+        string verdict = after == before
+            ? $"no callback after removal ({before} before it)"
+            : $"FAILED: {after - before} callback(s) after removal";
+        results?.Note("verifyRemoval", verdict);
+        Report($"verify removal: {verdict}");
     }
 
     // IBenchmarkPlatform: the shared phases drive these.
@@ -223,16 +316,12 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
     public (IDisposable Registration, ChannelReader<Sample> Samples) ListenToCollection(string collection)
     {
-        (IDisposable registration, PeeredSampler sampler) =
-            Listen(sampler => Listening.GetCollection(collection).AddSnapshotListener(sampler.OnQuery));
-        return (registration, sampler.Samples);
+        return Listen(Listening.GetCollection(collection));
     }
 
     public (IDisposable Registration, ChannelReader<Sample> Samples) ListenToDocument(string collection, string documentId)
     {
-        (IDisposable registration, PeeredSampler sampler) = Listen(sampler =>
-            Listening.GetCollection(collection).GetDocument(documentId).AddSnapshotListener(sampler.OnDocument));
-        return (registration, sampler.Samples);
+        return Listen(Listening.GetCollection(collection).GetDocument(documentId));
     }
 
     public Task UpdateAsync(string collection, string documentId, long version) =>

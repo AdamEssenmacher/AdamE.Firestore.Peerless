@@ -1,0 +1,19 @@
+mode: peered
+project: demo-peerless
+emulator: 127.0.0.1:8181
+runtime: .NET 10.0.14
+nativeAot: True
+microsoftIos: 27.1.0.0
+firebase: 12.18.0
+device: iPhone iOS 27.0 Arm64 simulator=True model=iPhone19,2
+processors: 18
+sizes: 10,100,500,1000
+updatesPerSize: 20
+stopwatchFrequency: 1000000000
+gc: server=False latency=Interactive available=51539607552
+gcConfig: GCGen0MaxBudget=8388608 GCRegionSize=0 GCConserveMem=0 GCDGen0GrowthPercent=0 GCDGen0GrowthMinFactor=0 GCDGen0GrowthMaxFactor=0
+peerCounterCalibration: 100 new NSObject: live +100, created +100; then disposed: live -100, created +0
+verify: read back as written (11 documents, 465 values)
+verifyPeerless: identical (11 documents, 465 values)
+verifyRemoval: no callback after removal (1 before it)
+outcome: completed

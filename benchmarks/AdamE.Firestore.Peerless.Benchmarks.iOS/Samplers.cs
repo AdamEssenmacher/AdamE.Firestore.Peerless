@@ -1,11 +1,13 @@
 using System.Threading.Channels;
+using AdamE.Firestore.Peerless.iOS;
 using Firebase.CloudFirestore;
 
 namespace AdamE.Firestore.Peerless.Benchmarks;
 
 /// <summary>
-/// One snapshot, measured from entry into the .NET listener (the binding has already made the snapshot's own peer)
-/// to the snapshot fully converted into plain .NET values.
+/// One snapshot, measured. Wall and CPU run from the earliest point each mode can see (peered: entry into the .NET
+/// listener, after the binding has made the snapshot's own peer; Peerless: entry into the Objective-C listener) to
+/// the snapshot fully converted into .NET values.
 /// </summary>
 internal sealed record Sample(
     bool FromCache,
@@ -24,18 +26,28 @@ internal sealed record Sample(
     int Gen1Collections,
     int Gen2Collections,
     double GcPauseMicroseconds,
+    NativeSide? Native,
     string? Error) : IBenchmarkSample
 {
     public static Sample Build(
-        bool fromCache, int documents, int values, ProbeReading before, ProbeReading after, int peak, string? error) =>
+        bool fromCache,
+        int documents,
+        int values,
+        ProbeReading before,
+        ProbeReading after,
+        int peak,
+        string? error,
+        NativeSide? native = null,
+        double? wallMicroseconds = null,
+        double? threadCpuMicroseconds = null) =>
         new(
             fromCache,
             documents,
             values,
             Probes.IsMainThread,
             after.Timestamp,
-            Probes.Microseconds(before.Timestamp, after.Timestamp),
-            (after.ThreadCpuNanos - before.ThreadCpuNanos) / 1000.0,
+            wallMicroseconds ?? Probes.Microseconds(before.Timestamp, after.Timestamp),
+            threadCpuMicroseconds ?? (after.ThreadCpuNanos - before.ThreadCpuNanos) / 1000.0,
             after.AllocatedBytes - before.AllocatedBytes,
             before.Peers,
             after.Peers,
@@ -45,8 +57,24 @@ internal sealed record Sample(
             after.Gen1 - before.Gen1,
             after.Gen2 - before.Gen2,
             (after.GcPause - before.GcPause).TotalMicroseconds,
+            native,
             error);
 }
+
+/// <summary>Peerless only: what happened before .NET was entered, and the .NET side's share.</summary>
+/// <param name="ToDotnetMicroseconds">Objective-C callback entry to .NET entry: encoding and the call.</param>
+/// <param name="EncodeMicroseconds">Wall time encoding the frame.</param>
+/// <param name="EncodeCpuMicroseconds">Thread CPU time encoding the frame.</param>
+/// <param name="DataMicroseconds">Of the encoding, the time inside Firestore's <c>snapshot.data</c>.</param>
+/// <param name="DotnetMicroseconds">.NET entry to fully decoded.</param>
+/// <param name="FrameBytes">The frame's size.</param>
+internal sealed record NativeSide(
+    double ToDotnetMicroseconds,
+    double EncodeMicroseconds,
+    double EncodeCpuMicroseconds,
+    double DataMicroseconds,
+    double DotnetMicroseconds,
+    int FrameBytes);
 
 /// <summary>
 /// The peered listener an ordinary app registers, converting each snapshot eagerly on the callback's queue (the main
@@ -101,5 +129,59 @@ internal sealed class PeeredSampler
             after,
             peak,
             failure));
+    }
+}
+
+/// <summary>A Peerless listener: the Objective-C shim encodes, .NET decodes one frame per snapshot.</summary>
+internal sealed class PeerlessSampler : IFrameObserver
+{
+    private readonly Channel<Sample> samples = Channel.CreateUnbounded<Sample>();
+    private FrameArrival arrival;
+    private ProbeReading before;
+    private FirestoreSnapshot? pending;
+    private string? failure;
+
+    public FirestoreSnapshot? Latest { get; private set; }
+
+    public ChannelReader<Sample> Samples => samples.Reader;
+
+    public void OnSnapshot(FirestoreSnapshot snapshot) => pending = snapshot;
+
+    public void OnError(FirestoreListenException exception)
+    {
+        failure = $"{exception.Code}: {exception.Message}";
+        _ = samples.Writer.TryWrite(Sample.Build(false, 0, 0, ProbeReading.Take(), ProbeReading.Take(), 0, failure));
+    }
+
+    public void Arrived(in FrameArrival frame)
+    {
+        before = ProbeReading.Take();
+        arrival = frame;
+        pending = null;
+    }
+
+    public void Completed()
+    {
+        ProbeReading after = ProbeReading.Take();
+        long done = PeerlessListener.NowNanoseconds();
+        var native = new NativeSide(
+            (arrival.ArrivedNanos - arrival.StartNanos) / 1000.0,
+            arrival.EncodeNanos / 1000.0,
+            arrival.EncodeCpuNanos / 1000.0,
+            arrival.DataNanos / 1000.0,
+            (done - arrival.ArrivedNanos) / 1000.0,
+            arrival.Length);
+        Latest = pending ?? Latest;
+        _ = samples.Writer.TryWrite(Sample.Build(
+            pending?.Metadata.IsFromCache ?? false,
+            pending is null ? 0 : SnapshotAssertions.DocumentCount(pending),
+            pending is null ? 0 : PeeredConversion.CountValues(pending),
+            before,
+            after,
+            after.Peers,
+            pending is null ? failure ?? "The frame did not decode." : null,
+            native,
+            wallMicroseconds: (done - arrival.StartNanos) / 1000.0,
+            threadCpuMicroseconds: (PeerlessListener.ThreadCpuNanoseconds() - arrival.StartCpuNanos) / 1000.0));
     }
 }
