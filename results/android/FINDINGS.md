@@ -8,8 +8,8 @@ file. The step-1 baseline is [../android-peered/FINDINGS.md](../android-peered/F
 
 On the same documents, sizes, settle points, AVD and ports, Peerless delivers a snapshot as plain .NET values with:
 
-- **no JNI global references at all** (peered: about 31–35 per document; 5,584 at the peak of a 1000-document
-  snapshot),
+- **no JNI global references per snapshot** (peered: about 31–35 per document over the settled count; 5,588 at
+  the peak of a 1000-document snapshot),
 - **43–58× less managed allocation** (about 80 bytes per value instead of about 4 KB),
 - **80–140× less main-thread CPU** for collections of 500–1000 documents (1000 docs: 9.5 ms instead of 1.3 s), and
 - **no GCs inside the callback** (peered: up to 600 in one 1000-document snapshot on this emulator).
@@ -24,17 +24,32 @@ Mono.Android/Java.Interop. Nothing crashed.
 
 ## Numbers (medians over both rounds)
 
-| docs | kind | wall ms (peered / Peerless) | main-thread CPU ms | managed alloc | GREF peak | GCs in callback |
+| docs | kind | wall ms (peered / Peerless) | main-thread CPU ms | managed alloc | GREF peak over settled | GCs in callback |
 |---:|---|---|---|---|---|---|
-| 10 | initial | 15.2 / 0.81 | 6.45 / 0.80 | 1.7 MB / 40 KB | 308 / 0 | 1 / 0 |
-| 10 | update | 66.9 / 0.35 | 11.7 / 0.33 | 2.0 MB / 40 KB | 152 / 0 | 9 / 0 |
-| 100 | initial | 89.6 / 5.88 | 62.8 / 5.09 | 16.3 MB / 349 KB | 1,370 / 0 | 3 / 0 |
-| 100 | update | 86.4 / 1.19 | 58.3 / 1.12 | 14.7 MB / 349 KB | 830 / 0 | 3 / 0 |
-| 500 | initial | 1,249 / 5.02 | 411 / 4.88 | 84 MB / 1.7 MB | 3,090 / 0 | 62 / 0 |
-| 500 | update | 530 / 3.70 | 332 / 3.58 | 73 MB / 1.7 MB | 1,212 / 0 | 14 / 0 |
-| 1000 | initial | 10,300 / 9.84 | 1,317 / 9.48 | 194 MB / 3.4 MB | 5,584 / 0 | 600 / 0 |
-| 1000 | update | 1,236 / 9.35 | 687 / 8.60 | 146 MB / 3.4 MB | 2,102 / 0 | 26 / 1 |
-| 1 (doc listener) | update ×50 | 6.55 / 0.09 | 1.37 / 0.08 | 209 KB / 9 KB | 34 / 0 | 0 / 0 |
+| 10 | initial | 15.2 / 0.81 | 6.45 / 0.80 | 1.7 MB / 40 KB | 312 / 4 | 1 / 0 |
+| 10 | update | 66.9 / 0.35 | 11.7 / 0.33 | 2.0 MB / 40 KB | 303 / 18 | 9 / 0 |
+| 100 | initial | 89.6 / 5.88 | 62.8 / 5.09 | 16.3 MB / 349 KB | 1,374 / 4 | 3 / 0 |
+| 100 | update | 86.4 / 1.19 | 58.3 / 1.12 | 14.7 MB / 349 KB | 1,401 / 15 | 3 / 0 |
+| 500 | initial | 1,249 / 5.02 | 411 / 4.88 | 84 MB / 1.7 MB | 3,094 / 4 | 62 / 0 |
+| 500 | update | 530 / 3.70 | 332 / 3.58 | 73 MB / 1.7 MB | 2,515 / 6 | 14 / 0 |
+| 1000 | initial | 10,300 / 9.84 | 1,317 / 9.48 | 194 MB / 3.4 MB | 5,588 / 4 | 600 / 0 |
+| 1000 | update | 1,236 / 9.35 | 687 / 8.60 | 146 MB / 3.4 MB | 4,496 / 1 | 26 / 1 |
+| 1 (doc listener) | update ×50 | 6.55 / 0.09 | 1.37 / 0.08 | 209 KB / 9 KB | 186 / 36 | 0 / 0 |
+
+**GREF peak over settled** is the highest .NET-side count during the callback minus the count at the last settle point
+(forced .NET and Java GC) before it. An earlier version of this table subtracted the count at callback entry, which
+already included references earlier callbacks had left for the GC, and understated the peered updates (1000 docs:
+2,102 then, 4,496 now). Recomputed from the committed CSVs; no re-run was needed.
+
+The Peerless figures are **not references its snapshots create**: decoding creates none and the direct-buffer
+callback carries no object. They are references created around the listener: 3–4 for registering it (see *Settled
+references*) and, on updates, the seeder's writes since the last settle point (each `Update` call creates a few peers
+for its arguments, its Task and its completion listener; settles come every 5 updates, or every 12 in the
+single-document phase). Peered updates carry the same harness references inside their larger numbers.
+
+**Every snapshot is converted in full on both sides**, including one caused by a single-document update: the peered
+listener converts all of `getDocuments()`, and Peerless encodes and decodes the whole snapshot. A changes-only frame
+is specified as future work but not built, so both paths do the same amount of work per snapshot.
 
 Peerless here means `peerless-direct`, the chosen delivery. Wall and CPU cover the whole path each mode has: peered
 from entry into the .NET listener, Peerless from entry into the *Java* listener, so Peerless includes encoding. Both
@@ -71,7 +86,8 @@ of `getData()`'s maps. That means internal API, so it isn't worth it at these nu
 | 1000 | initial | 9.84 ms | 8.31 ms |
 
 The two are within noise of each other at small sizes. The direct buffer is ahead on updates at 100+ documents.
-**Direct is the default (`FrameDelivery.DirectBuffer`)** because the structure favours it:
+**Direct is the only public delivery.** `FrameDelivery` is internal; the byte array stays for this comparison. The
+structure favours direct:
 
 - **byte[] copies the frame three times** on every snapshot. `toByteArray()` copies it on the Java side; the generated
   marshaller then copies it into a new managed array (`JNIEnv.GetArray`) and, after the callback, copies it *back*
@@ -80,8 +96,10 @@ The two are within noise of each other at small sizes. The direct buffer is ahea
 - **byte[] allocates a frame-sized managed array per snapshot** (713 KB at 1000 docs), which goes on the Large Object
   Heap above 85 KB. **This allocation is missing from the byte[] column of the allocation table:** the marshaller
   makes it before .NET code runs, so the probe can't see it. Add the frame size to that column.
-- **Direct copies once (Java writer → reused direct buffer), and nothing is allocated per snapshot on either side.**
-  The callback carries only primitives, so it creates no peer. .NET resolves the buffer's address once with
+- **Direct copies once (Java writer → reused direct buffer), with no transport allocation per snapshot on either
+  side**: no array, no buffer and no Java object for the delivery itself. (Encoding still allocates in Java, through
+  `getData()`'s maps, and decoding allocates the .NET values.) The callback carries only primitives, so it creates no
+  peer. .NET resolves the buffer's address once with
   `GetDirectBufferAddress` and keeps its peer (one GREF per listener) only for as long as the buffer is the current one.
 
 One more copy could go: the writer encodes into a `byte[]` and then copies that into the direct buffer. Writing into
@@ -99,10 +117,47 @@ ART's own table after forced .NET and Java GCs. Medians.
 | 1000 | after 20 updates | 4,563 | 556 |
 | 1000 | after removing the listener | 4,562 | 552 |
 
-Peerless holds about 4 references per listener (its `FrameSink`, the listener, the direct buffer), released on removal.
+Peerless holds about 4 global references per listener, released on removal: the .NET `FrameReceiver`'s peer (the
+Java `FrameSink` that Firestore's listener calls), the direct `ByteBuffer`'s peer that .NET keeps while the buffer is
+current, the `ListenerRegistration`'s peer, and, most likely, the peer of the `Query` the app passed in, which the GC
+bridge keeps alive while Firestore holds the Java query. The anonymous Java `EventListener` inside the shim has no
+peer. (The fourth is inferred from the count, not from ART's table.)
 It doesn't have step 1's open question: the peered path's roughly 4 retained `java.lang.String` GREFs per document
 (about 4,000 here) don't exist in Peerless. Both modes gain about 0.5 per update in the single-document phase, from the
 seeder's cached `Long.valueOf` values (harness, not listener).
+
+## Listener lifecycle and errors
+
+These came out of review, after the runs above. None of them changes how a frame is encoded, delivered or decoded;
+the only change on the measured path is a per-listener lock taken once per callback, so the runs weren't repeated. A
+short check run on the same emulator (`peerless-direct`, all sizes, 5 updates each) completed with identical values.
+It was taken at a host load of 62 rather than 12–32, so its timings aren't comparable and aren't committed.
+
+- **Removal is safe from any thread.** Once `Dispose()` returns, no `onSnapshot` or `onError` starts, and one already
+  running has finished: every callback runs under the listener's lock and checks a `closed` flag, so `Dispose()` from
+  another thread waits for it. `Dispose()` from inside a callback (same thread) re-enters the lock, closes the
+  listener and returns at once; the direct buffer is released when that callback ends, never under it. Each run's
+  verification phase now checks this: 20 disposals from a thread-pool thread while updates keep frames arriving (half
+  of them timed to land in the middle of a callback that sleeps 50 ms, alternating deliveries), plus one disposal
+  from inside a callback. Result on the emulator, under NativeAOT: `ok (20 disposals from the thread pool while frames
+  arrived, 10 of them while a callback was running; one from inside a callback)`.
+- **The first error stops the listener.** A frame that fails to decode, or a snapshot the shim fails to encode (for
+  example, one that would pass the 2 GB frame cap), closes the listener, removes the Firestore registration, and
+  reports a `PeerlessFormatException`; a Firestore error reports a `FirestoreListenException` with Firestore's code.
+  Only decoding is guarded, so a `PeerlessFormatException` thrown by the app's own `onSnapshot` is not mistaken for a
+  frame failure.
+- **`onError` is required.** A listener that fails silently is worse than an API with one more argument, and
+  Firestore's own listener receives errors through the same callback.
+- **Exceptions from the app's callbacks are not caught**: as with an ordinary Firestore listener, they reach the Java
+  callback and crash the process. This is documented on `PeerlessListener`.
+- **Frames are capped at `Integer.MAX_VALUE - 8` bytes.** The Java writer and the direct buffer's growth both check
+  sizes in `long` arithmetic and fail cleanly, rather than overflowing `int`.
+- **R8:** the shim's consumer rules keep the names of Firestore's value classes (`VectorValue`, `Blob`, `GeoPoint`,
+  `DocumentReference`, `Timestamp`), so an unsupported value's type name stays readable in an app that minifies. A
+  value class added by a future SDK and not listed would be reported under its obfuscated name.
+- **Public API:** `PeerlessListener.Listen(query | document, onSnapshot, onError)`. The delivery choice and the
+  timing hook are internal. The timings still travel as arguments of the shim's Java `FrameSink.onFrame`, which is
+  the shim's internal JNI contract rather than public .NET API.
 
 ## Things found on the way
 
@@ -111,9 +166,10 @@ seeder's cached `Long.valueOf` values (harness, not listener).
    modes would produce the same type. At 100 docs it ran **~140 GCs per snapshot instead of 3–5, allocated 27 MB
    instead of 16 MB, and used 2.5–3× the CPU**. Rebuilding the exact step-1 commit on the same emulator at the same
    time gave step-1 numbers, which rules out the environment. Peer counts were the same.
-   - My unconfirmed hypothesis: with less surviving data per GC, the GC keeps gen0 at the emulator's minimum budget
-     (no cache sizes reported). Each GC then drives a ~15 ms Java GC through the bridge, and bridge bookkeeping
-     allocates on the callback thread.
+   - Why is not known. A "minimum gen0 budget" explanation doesn't hold (step 1's warmup allocates 6.4 MB without a
+     GC; see its FINDINGS), so something else decides when these collections run. What is visible: each GC drives a
+     ~15 ms Java GC through the bridge, and the extra allocation tracks the GC count, which suggests bridge
+     bookkeeping allocating on the callback thread. Unconfirmed.
    - To keep the baseline exactly step 1's, peered mode uses step 1's conversion unchanged. The model-producing
      peered conversion is used only for the equality check. That diagnostic run's data is not committed.
    - The point stands either way: in the peered world, a seemingly harmless change to the output type can swing cost
@@ -129,10 +185,14 @@ seeder's cached `Long.valueOf` values (harness, not listener).
 
 ## What makes these numbers unreliable
 
-- **Same emulator caveat as step 1.** No reported CPU cache sizes means a minimum gen0 budget, so the peered path GCs
-  far more than it would on a phone. That inflates **peered wall time** most (10.3 s vs 1.3 s CPU at 1000 docs). Read
-  the CPU, allocation and GREF ratios rather than the wall-time ratios, and confirm on a real arm64 device. Peerless is
-  barely affected because it barely allocates.
+- **Same GC caveat as step 1.** The peered path runs far more GCs inside its callbacks than its allocation volume
+  alone explains, for a reason not identified yet (step 1's FINDINGS withdraws the earlier "minimum gen0 budget"
+  explanation). That inflates **peered wall time** most (10.3 s vs 1.3 s CPU at 1000 docs). Read the CPU, allocation
+  and GREF ratios rather than the wall-time ratios, and confirm on a real arm64 device. Peerless is barely affected
+  because it barely allocates.
+- **The 10-doc peered rows are the most distorted.** Step 1's warmup does the same 10-document work with no GC in
+  about 6 ms per callback; the measured 10-doc updates take 67 ms with about 9 GCs each. Most of that is GC and bridge
+  work, so the 190× wall ratio for 10-doc updates says more about the GC than about conversion.
 - **Host load** during the six runs was a 1-minute load average of **12–32 on 18 cores** (recorded before and after
   each run in `host.txt`). That's much calmer than step 1 (34–172), and similar across modes because they alternated.
 - **n is small for initial snapshots** (2 per mode), so in some cells encode CPU exceeds encode wall; that's median

@@ -62,6 +62,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
     private ResultWriter? results;
 
+    // The .NET-side global reference count at the most recent settle point. A sample's "peak over settled" is measured
+    // from here, so references a previous callback left for the GC are not charged to this one.
+    private int lastSettledGlobal;
+
     public async Task RunAsync()
     {
         string directory = context.GetExternalFilesDir(null)?.AbsolutePath ?? context.FilesDir?.AbsolutePath
@@ -87,7 +91,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             FirebaseFirestore seeding = Connect("seeder");
 
             if (options.Verify)
+            {
                 await VerifyAsync(listening, seeding).ConfigureAwait(false);
+                await DisposeRaceAsync(listening, seeding).ConfigureAwait(false);
+            }
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
                 await QueryPhaseAsync("query", listening, seeding, size, options.UpdatesPerSize).ConfigureAwait(false);
@@ -177,9 +184,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         var peered = new ModelListener();
         IListenerRegistration peeredRegistration = query.AddSnapshotListener(peered);
         using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => direct.TrySetResult(snapshot),
-            error => direct.TrySetException(error), FrameDelivery.DirectBuffer);
+            error => direct.TrySetException(error), FrameDelivery.DirectBuffer, observer: null);
         using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => bytes.TrySetResult(snapshot),
-            error => bytes.TrySetException(error), FrameDelivery.ByteArray);
+            error => bytes.TrySetException(error), FrameDelivery.ByteArray, observer: null);
         try
         {
             FirestoreSnapshot expected = await peered.First.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
@@ -197,6 +204,115 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
     }
 
+    /// <summary>
+    /// Checks PeerlessListener's removal contract under load: disposed from a thread-pool thread while frames keep
+    /// arriving (both deliveries), no callback may still be running when Dispose returns, and none may start after it.
+    /// Then one listener disposes itself from inside its callback, which must neither deadlock nor see another frame.
+    /// </summary>
+    private async Task DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    {
+        const string collection = "dispose-race";
+        const int iterations = 20;
+        Report("dispose race: seeding");
+        await SeedAsync(seeding, collection, 50).ConfigureAwait(false);
+        CollectionReference target = seeding.Collection(collection);
+        Query query = listening.Collection(collection);
+        int violations = 0;
+        int disposedMidCallback = 0;
+
+        for (int iteration = 0; iteration < iterations; iteration++)
+        {
+            int inside = 0;
+            int returned = 0;
+            int frames = 0;
+            bool forceMidCallback = iteration % 2 == 0; // every other round disposes while a callback is certainly running
+            var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable registration = PeerlessListener.Listen(
+                query,
+                _ =>
+                {
+                    if (Volatile.Read(ref returned) == 1)
+                        Interlocked.Increment(ref violations); // started after Dispose returned
+                    Volatile.Write(ref inside, 1);
+                    int frame = Interlocked.Increment(ref frames);
+                    if (forceMidCallback && frame >= 2)
+                    {
+                        started.TrySetResult();
+                        Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
+                    }
+                    else
+                    {
+                        Thread.Sleep(3); // widen the window a disposal can land in
+                    }
+
+                    if (frame >= 2)
+                        flowing.TrySetResult();
+                    Volatile.Write(ref inside, 0);
+                },
+                error => flowing.TrySetException(error),
+                iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
+                observer: null);
+
+            using var stop = new CancellationTokenSource();
+            Task writes = Task.Run(async () =>
+            {
+                for (int write = 0; !stop.IsCancellationRequested; write++)
+                {
+                    await target.Document(DocumentId(write % 50)).Update(
+                            "version", Java.Lang.Long.ValueOf(write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+                        .AsTask()
+                        .ConfigureAwait(false);
+                }
+            });
+
+            await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                if (Volatile.Read(ref inside) == 1)
+                    Interlocked.Increment(ref disposedMidCallback);
+                registration.Dispose();
+                if (Volatile.Read(ref inside) == 1)
+                    Interlocked.Increment(ref violations); // still running after Dispose returned
+                Volatile.Write(ref returned, 1);
+            }).ConfigureAwait(false);
+
+            await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+            await stop.CancelAsync().ConfigureAwait(false);
+            await writes.ConfigureAwait(false);
+        }
+
+        // Disposal from inside a callback, on the callback thread.
+        int selfCallbacks = 0;
+        var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable? self = null;
+        self = PeerlessListener.Listen(
+            query,
+            _ =>
+            {
+                if (Interlocked.Increment(ref selfCallbacks) > 1)
+                    Interlocked.Increment(ref violations);
+                self?.Dispose();
+                selfDisposed.TrySetResult();
+            },
+            error => selfDisposed.TrySetException(error));
+        await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+        for (int write = 0; write < 5; write++)
+        {
+            await target.Document(DocumentId(write)).Update(
+                    "version", Java.Lang.Long.ValueOf(1000 + write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+                .AsTask()
+                .ConfigureAwait(false);
+        }
+
+        await Task.Delay(300).ConfigureAwait(false);
+        string verdict = violations == 0
+            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
+            : $"VIOLATED {violations} times";
+        results?.Note("disposeRace", verdict);
+        Report($"dispose race: {verdict}");
+    }
+
     private async Task QueryPhaseAsync(
         string phase, FirebaseFirestore listening, FirebaseFirestore seeding, int size, int updates)
     {
@@ -210,7 +326,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         try
         {
             Sample initial = await NextAsync(sampler, size).ConfigureAwait(false);
-            results?.Sample(phase, size, 0, "initial", initial, writeToCallbackMilliseconds: null);
+            results?.Sample(phase, size, 0, "initial", initial, writeToCallbackMilliseconds: null, lastSettledGlobal);
             Probes.DumpArtReferenceTables($"{phase},{size},after-initial-unsettled");
             await SettledAsync(phase, size, "after-initial").ConfigureAwait(false);
 
@@ -235,7 +351,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         try
         {
             Sample initial = await NextAsync(sampler, 1).ConfigureAwait(false);
-            results?.Sample(phase, 1, 0, "initial", initial, writeToCallbackMilliseconds: null);
+            results?.Sample(phase, 1, 0, "initial", initial, writeToCallbackMilliseconds: null, lastSettledGlobal);
             await SettledAsync(phase, 1, "after-initial").ConfigureAwait(false);
             await UpdatesAsync(phase, 1, options.SingleDocumentUpdates, sampler, seeding.Collection(collection), 1)
                 .ConfigureAwait(false);
@@ -267,7 +383,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 .ConfigureAwait(false);
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
             double latency = Probes.Microseconds(written, sample.DoneTimestamp) / 1000.0;
-            results?.Sample(phase, size, update, "update", sample, latency);
+            results?.Sample(phase, size, update, "update", sample, latency, lastSettledGlobal);
             if (update % settleEvery == 0)
                 await SettledAsync(phase, size, $"after-update-{update}").ConfigureAwait(false);
         }
@@ -284,13 +400,14 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 throw new InvalidOperationException($"Listener failed: {sample.Error}");
             if (sample.Documents == expectedDocuments)
                 return sample;
-            results?.Sample("skipped", expectedDocuments, -1, "partial", sample, writeToCallbackMilliseconds: null);
+            results?.Sample("skipped", expectedDocuments, -1, "partial", sample, writeToCallbackMilliseconds: null, lastSettledGlobal);
         }
     }
 
     private async Task SettledAsync(string phase, int size, string point)
     {
         (int global, int weak, int peers) = await Probes.SettleAsync().ConfigureAwait(false);
+        lastSettledGlobal = global;
         results?.Settled(phase, size, point, global, weak, peers);
         Log.Info(Tag, $"settled {phase} {size} {point}: gref={global} wgref={weak} peers={peers}");
         Probes.DumpArtReferenceTables($"{phase},{size},{point}");

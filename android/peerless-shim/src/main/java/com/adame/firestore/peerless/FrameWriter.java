@@ -43,6 +43,10 @@ public final class FrameWriter {
     static final byte TAG_MAP = 11;
     static final byte TAG_UNSUPPORTED = 12;
 
+    /** The largest frame a writer produces: about the largest array a JVM allocates. */
+    public static final int MAX_FRAME_LENGTH = Integer.MAX_VALUE - 8;
+
+    private final int maxLength;
     private byte[] buffer;
     private int length;
     private int sectionStart = -1;
@@ -52,7 +56,13 @@ public final class FrameWriter {
     }
 
     public FrameWriter(int initialCapacity) {
-        buffer = new byte[Math.max(64, initialCapacity)];
+        this(initialCapacity, MAX_FRAME_LENGTH);
+    }
+
+    // A lower cap, for tests of what happens at the cap.
+    FrameWriter(int initialCapacity, int maxLength) {
+        this.maxLength = Math.min(maxLength, MAX_FRAME_LENGTH);
+        buffer = new byte[Math.max(1, Math.min(Math.max(64, initialCapacity), this.maxLength))];
     }
 
     /** Encodes a whole query snapshot: every document, in query order. */
@@ -222,7 +232,7 @@ public final class FrameWriter {
     /** UTF-8, length-prefixed. A lone surrogate becomes U+FFFD, as in .NET (Java's own encoder writes '?'). */
     public void writeString(@NonNull String value) {
         int chars = value.length();
-        int bytes = 0;
+        long bytes = 0; // up to 3 per char: can pass Integer.MAX_VALUE for a huge string
         boolean ascii = true;
         for (int index = 0; index < chars; index++) {
             char c = value.charAt(index);
@@ -242,8 +252,10 @@ public final class FrameWriter {
             }
         }
 
-        writeVarint(bytes);
-        ensure(bytes);
+        if (bytes > maxLength)
+            throw new FrameTooLargeException("A string of " + bytes + " UTF-8 bytes can't fit in a frame.");
+        writeVarint((int) bytes);
+        ensure((int) bytes);
         byte[] out = buffer;
         int position = length;
         if (ascii) {
@@ -329,13 +341,23 @@ public final class FrameWriter {
     }
 
     private void ensure(int extra) {
-        if (length + extra <= buffer.length)
+        long needed = (long) length + extra;
+        if (needed <= buffer.length)
             return;
-        int capacity = buffer.length;
-        while (capacity < length + extra)
-            capacity = capacity * 2;
-        byte[] grown = new byte[capacity];
+        if (needed > maxLength)
+            throw new FrameTooLargeException("The frame would be larger than " + maxLength + " bytes.");
+        long capacity = buffer.length;
+        while (capacity < needed)
+            capacity *= 2; // long: can't overflow before passing maxLength
+        byte[] grown = new byte[(int) Math.min(capacity, maxLength)];
         System.arraycopy(buffer, 0, grown, 0, length);
         buffer = grown;
+    }
+
+    /** The snapshot doesn't fit in one frame. */
+    public static final class FrameTooLargeException extends IllegalStateException {
+        FrameTooLargeException(String message) {
+            super(message);
+        }
     }
 }

@@ -8,30 +8,57 @@ mode = next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
 rows = list(csv.DictReader(open(run / f"{mode}-samples.csv")))
 settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
 
-def f(row, key): return float(row.get(key) or 0.0)  # older runs lack some columns
+def f(row, key): return float(row.get(key) or 0.0)
 def med(values): return statistics.median(values) if values else 0.0
+has_peak = bool(rows) and "gref_peak" in rows[0]
+
+# The settle point before each sample: before-listen for an initial snapshot, otherwise the latest of after-initial /
+# after-update-N that came before it. Older runs did not record it per sample, so it is reconstructed from the order.
+def settle_key(point):
+    if point == "before-listen": return -1
+    if point == "after-initial": return 0
+    if point.startswith("after-update-"): return int(point.rsplit("-", 1)[1])
+    return None
+settles = {}
+for row in settled:
+    key = settle_key(row["point"])
+    if key is not None:
+        settles.setdefault((row["phase"], int(row["size"])), []).append((key, int(row["gref"])))
+def last_settled(row):
+    if row.get("gref_last_settled"): return float(row["gref_last_settled"])
+    seq = int(row["seq"])
+    earlier = [g for k, g in settles.get((row["phase"], int(row["size"])), []) if k < seq or (seq == 0 and k == -1)]
+    return float(earlier[-1]) if earlier else None
+def peak_over_settled(row):
+    if row.get("gref_peak_over_settled"): return float(row["gref_peak_over_settled"])
+    base = last_settled(row)
+    return None if base is None or not has_peak else f(row, "gref_peak") - base
 
 lines = [f"# {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().replace("\n", "  \n"), "",
-         "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. GREF peak is the highest .NET-side JNI",
-         "global reference count sampled after each document, minus the count at callback entry; GREF end is the same at",
-         "the end of the callback (GCs inside the callback release some). The .NET counter excludes ~435 cached",
-         "java.lang.Class references that ART's own table (below) includes.", "",
-         "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | GREF end | write→callback ms |",
+         "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *GREF peak* is the highest .NET-side",
+         "JNI global reference count seen during the callback (sampled after each document), as an absolute count.",
+         "*Peak over settled* is that peak minus the count at the last settle point before the callback (forced .NET",
+         "and Java GC), so references an earlier callback left for the GC are not charged to this one. The .NET counter",
+         "excludes ~435 cached java.lang.Class references that ART's own table (below) includes. n/a: this run predates",
+         "peak sampling.", "",
+         "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|"]
 groups = {}
 for row in rows:
     if row["phase"] == "skipped": continue
     groups.setdefault((row["phase"], int(row["size"]), row["kind"]), []).append(row)
 def rng(values, scale=1.0):
-    values = [v / scale for v in values]
+    values = [v / scale for v in values if v is not None]
+    if not values: return "n/a"
     return f"{med(values):.1f} [{min(values):.1f}–{max(values):.1f}]"
 for (phase, size, kind), group in groups.items():
     lines.append("| " + " | ".join([
         phase, str(size), kind, str(len(group)), str(int(med([f(r, "values") for r in group]))),
         rng([f(r, "wall_us") for r in group], 1000), rng([f(r, "thread_cpu_us") for r in group], 1000),
         rng([f(r, "gc_pause_us") for r in group], 1000), f"{med([f(r, 'gen0') for r in group]):.0f}",
-        f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}", rng([f(r, "gref_peak_delta") for r in group]),
-        rng([f(r, "gref_delta") for r in group]),
+        f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}",
+        rng([f(r, "gref_peak") for r in group]) if has_peak else "n/a",
+        rng([peak_over_settled(r) for r in group]),
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind == "update" else "",
     ]) + " |")
 skipped = [r for r in rows if r["phase"] == "skipped"]
@@ -46,10 +73,15 @@ if any(r.get("java_encode_us") for r in rows):
         lines.append(f"| {phase} | {size} | {kind} | {m('frame_bytes', 1024):.1f} | {m('java_encode_us'):.2f} | "
                      f"{m('java_encode_cpu_us'):.2f} | {m('java_to_dotnet_us'):.2f} | {m('dotnet_us'):.2f} | {m('wall_us'):.2f} |")
 
+previous = (run / "summary.md").read_text() if (run / "summary.md").exists() else ""
+have_logcat = (run / "logcat.txt").exists()
 forced = [l.split("monodroid-gc: ", 1)[1].strip() for l in ((run / "logcat.txt").read_text(errors="replace").splitlines()
-          if (run / "logcat.txt").exists() else []) if "outstanding GREFs" in l]
-lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): {len(forced)}"
-          + (f" (e.g. \"{forced[0]}\")" if forced else "")]
+          if have_logcat else []) if "outstanding GREFs" in l]
+if have_logcat or "Emergency GCs" not in previous:
+    lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): {len(forced)}"
+              + (f" (e.g. \"{forced[0]}\")" if forced else "")]
+else:
+    lines += ["", next(l for l in previous.splitlines() if l.startswith("Emergency GCs"))]
 lines += ["", f"Partial snapshots skipped: {len(skipped)}", "", "## Settled references (after forced .NET + Java GC)", "",
           "| phase | docs | point | GREF | weak GREF | surfaced peers |", "|---|---:|---|---:|---:|---:|"]
 lines += [f"| {s['phase']} | {s['size']} | {s['point']} | {s['gref']} | {s['wgref']} | {s['surfaced_peers']} |" for s in settled]
@@ -70,7 +102,9 @@ for line in logcat:
         elif table == "global" and (m := re.search(r":\s+(\d+) of (\S+)", line)) and len(current["top"]) < 6:
             current["top"].append(f"{m.group(1)} {m.group(2)}")
         elif table == "weak" and "Summary:" in line: table = "weak-summary"
-if dumps:
+if not have_logcat and "## ART's JNI tables" in previous:
+    lines += ["", "## ART's JNI tables" + previous.split("## ART's JNI tables", 1)[1].rstrip("\n")]
+elif dumps:
     lines += ["", "## ART's JNI tables (ground truth)", "",
               "| phase | docs | point | ART global refs | ART weak global refs | largest global kinds |", "|---|---:|---|---:|---:|---|"]
     for d in dumps:

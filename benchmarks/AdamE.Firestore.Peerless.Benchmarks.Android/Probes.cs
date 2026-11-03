@@ -43,7 +43,8 @@ internal static class Probes
         global::Android.Util.Log.Info(BenchmarkRunner.Tag, $"ART_GREF_DUMP {label}");
         try
         {
-            // A hidden API, reached through reflection; API 36 allows it for this app without any policy change.
+            // A hidden API, reached through reflection. scripts/run-android-benchmark.sh sets
+            // `settings put global hidden_api_policy 1` on the emulator so this keeps working on stricter images.
             using Java.Lang.Class vmDebug = Java.Lang.Class.ForName("dalvik.system.VMDebug");
             using Java.Lang.Reflect.Method? dump = vmDebug.GetDeclaredMethod("dumpReferenceTables");
             _ = dump?.Invoke(null);
