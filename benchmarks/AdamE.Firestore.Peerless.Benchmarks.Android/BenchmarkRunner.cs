@@ -58,6 +58,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     private static readonly TimeSpan VerifyTimeout = TimeSpan.FromSeconds(60);
 
     private ResultWriter? results;
+
+    // The .NET-side global reference count at the most recent settle point (see ResultWriter's gref_peak_over_settled).
+    private int lastSettledGlobal;
     private FirebaseFirestore? listening;
     private FirebaseFirestore? seeding;
 
@@ -177,9 +180,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         var peered = new ModelListener();
         IListenerRegistration peeredRegistration = query.AddSnapshotListener(peered);
         using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => direct.TrySetResult(snapshot),
-            error => direct.TrySetException(error), FrameDelivery.DirectBuffer);
+            error => direct.TrySetException(error), FrameDelivery.DirectBuffer, observer: null);
         using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => bytes.TrySetResult(snapshot),
-            error => bytes.TrySetException(error), FrameDelivery.ByteArray);
+            error => bytes.TrySetException(error), FrameDelivery.ByteArray, observer: null);
         try
         {
             FirestoreSnapshot expected = await peered.First.WaitAsync(VerifyTimeout).ConfigureAwait(false);
@@ -232,6 +235,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     public async Task SettleAsync(string phase, int size, string point)
     {
         (int global, int weak, int peers) = await Probes.SettleAsync().ConfigureAwait(false);
+        lastSettledGlobal = global;
         results?.Settled(phase, size, point, global, weak, peers);
         Log.Info(Tag, $"settled {phase} {size} {point}: gref={global} wgref={weak} peers={peers}");
         Probes.DumpArtReferenceTables($"{phase},{size},{point}");
@@ -240,7 +244,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     public void Unsettled(string phase, int size, string point) => Probes.DumpArtReferenceTables($"{phase},{size},{point}");
 
     public void Record(string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds) =>
-        results?.Sample(phase, size, sequence, kind, sample, writeToCallbackMilliseconds);
+        results?.Sample(phase, size, sequence, kind, sample, writeToCallbackMilliseconds, lastSettledGlobal);
 
 
     public void Report(string message)

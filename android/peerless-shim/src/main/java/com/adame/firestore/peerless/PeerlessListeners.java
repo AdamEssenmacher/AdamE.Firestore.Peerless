@@ -29,6 +29,9 @@ public final class PeerlessListeners {
     /** Deliver each frame in a reused direct buffer whose address .NET reads in place: no copy, no object per frame. */
     public static final int DELIVERY_DIRECT_BUFFER = 1;
 
+    /** {@link FrameSink#onError} code for the shim's own failure to encode a snapshot (Firestore's codes are ≥ 0). */
+    public static final int ERROR_ENCODING_FAILED = -1;
+
     private PeerlessListeners() {
     }
 
@@ -44,7 +47,12 @@ public final class PeerlessListeners {
                     encoder.fail(error);
                     return;
                 }
-                encoder.writer.writeQuery(snapshot);
+                try {
+                    encoder.writer.writeQuery(snapshot);
+                } catch (RuntimeException | OutOfMemoryError failure) {
+                    encoder.encodingFailed(failure);
+                    return;
+                }
                 encoder.deliver(start, cpu);
             }
         });
@@ -62,7 +70,12 @@ public final class PeerlessListeners {
                     encoder.fail(error);
                     return;
                 }
-                encoder.writer.writeDocumentSnapshot(snapshot);
+                try {
+                    encoder.writer.writeDocumentSnapshot(snapshot);
+                } catch (RuntimeException | OutOfMemoryError failure) {
+                    encoder.encodingFailed(failure);
+                    return;
+                }
                 encoder.deliver(start, cpu);
             }
         });
@@ -87,20 +100,43 @@ public final class PeerlessListeners {
             long encodeCpuNanos = Debug.threadCpuTimeNanos() - cpuAtStart;
             int length = writer.length();
             if (delivery == DELIVERY_BYTE_ARRAY) {
-                sink.onFrame(writer.toByteArray(), length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
+                byte[] copy;
+                try {
+                    copy = writer.toByteArray();
+                } catch (OutOfMemoryError failure) {
+                    encodingFailed(failure);
+                    return;
+                }
+                sink.onFrame(copy, length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
                 return;
             }
 
             ByteBuffer buffer = direct;
             if (buffer == null || buffer.capacity() < length) {
-                int capacity = Math.max(64 * 1024, Integer.highestOneBit(Math.max(1, length - 1)) << 1);
-                buffer = ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN);
+                // The next power of two, without overflowing: above 2^30 the buffer is exactly the frame's size.
+                int capacity = length > (1 << 30)
+                        ? length
+                        : Math.max(64 * 1024, Integer.highestOneBit(Math.max(1, length - 1)) << 1);
+                try {
+                    buffer = ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN);
+                } catch (RuntimeException | OutOfMemoryError failure) {
+                    encodingFailed(failure);
+                    return;
+                }
                 direct = buffer;
                 sink.onBuffer(buffer);
             }
             buffer.clear();
             buffer.put(writer.buffer(), 0, length);
             sink.onFrame(null, length, start, cpuAtStart, encodeNanos, encodeCpuNanos);
+        }
+
+        // .NET stops the listener when it hears this. Exceptions thrown by .NET callbacks are not caught here: like an
+        // exception from an ordinary Firestore listener, they propagate and crash the process.
+        void encodingFailed(Throwable failure) {
+            writer.reset();
+            String message = failure.getMessage();
+            sink.onError(ERROR_ENCODING_FAILED, failure.getClass().getSimpleName() + (message == null ? "" : ": " + message));
         }
 
         void fail(@Nullable FirebaseFirestoreException error) {

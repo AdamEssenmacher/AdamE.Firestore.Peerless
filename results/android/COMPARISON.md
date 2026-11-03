@@ -64,22 +64,39 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 | 1 (doc) | initial | 224 | 9 | 9 | 24× |
 | 1 (doc) | update | 209 | 9 | 9 | 23× |
 
-## JNI global references held at peak during a snapshot
+## JNI global references at peak during a snapshot, over the last settle point
 
-Peak minus the count at callback entry (.NET-side counter; sampled per document in peered mode).
+The highest .NET-side count seen during the callback (sampled per document in peered mode) minus the count at the last settle point (forced .NET and Java GC) before it, so references earlier callbacks left for the GC are not charged to this one. Earlier versions subtracted the count at callback entry, which understated updates.
 
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
-| 10 | initial | 308 | 0 | 0 | – |
-| 10 | update | 152 | 0 | 0 | – |
-| 100 | initial | 1,370 | 0 | 0 | – |
-| 100 | update | 830 | 0 | 0 | – |
-| 500 | initial | 3,090 | 0 | 0 | – |
-| 500 | update | 1,212 | 0 | 0 | – |
-| 1000 | initial | 5,584 | 0 | 0 | – |
-| 1000 | update | 2,102 | -5 | -5 | -420× |
-| 1 (doc) | initial | 34 | 0 | 0 | – |
-| 1 (doc) | update | 34 | 0 | 0 | – |
+| 10 | initial | 312 | 4 | 3 | 78× |
+| 10 | update | 303 | 18 | 18 | 17× |
+| 100 | initial | 1,374 | 4 | 3 | 344× |
+| 100 | update | 1,401 | 15 | 15 | 93× |
+| 500 | initial | 3,094 | 4 | 3 | 774× |
+| 500 | update | 2,515 | 6 | 6 | 419× |
+| 1000 | initial | 5,588 | 4 | 3 | 1,397× |
+| 1000 | update | 4,496 | 1 | 1 | 4,496× |
+| 1 (doc) | initial | 39 | 5 | 4 | 8× |
+| 1 (doc) | update | 186 | 36 | 36 | 5× |
+
+## JNI global references at peak during a snapshot (absolute)
+
+The .NET-side count, which leaves out ~435 java.lang.Class references Java.Interop caches.
+
+| docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
+|---:|---|---:|---:|---:|---:|
+| 10 | initial | 403 | 93 | 92 | 4× |
+| 10 | update | 439 | 116 | 116 | 4× |
+| 100 | initial | 1,488 | 115 | 114 | 13× |
+| 100 | update | 1,922 | 131 | 130 | 15× |
+| 500 | initial | 3,210 | 118 | 117 | 27× |
+| 500 | update | 4,639 | 124 | 123 | 37× |
+| 1000 | initial | 5,708 | 123 | 122 | 46× |
+| 1000 | update | 8,624 | 124 | 123 | 70× |
+| 1 (doc) | initial | 160 | 124 | 123 | 1× |
+| 1 (doc) | update | 326 | 163 | 162 | 2× |
 
 ## GCs during a snapshot
 

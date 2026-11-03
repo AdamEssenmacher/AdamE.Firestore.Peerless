@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Numerics;
 using System.Text;
 
 namespace AdamE.Firestore.Peerless;
@@ -9,6 +10,16 @@ namespace AdamE.Firestore.Peerless;
 /// </summary>
 public static class SnapshotDecoder
 {
+    // Firestore's timestamp range: 0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z.
+    internal const long MinTimestampSeconds = -62_135_596_800;
+    internal const long MaxTimestampSeconds = 253_402_300_799;
+
+    // Containers start this small and double as their items actually arrive, so a declared count costs memory only in
+    // proportion to the bytes that back it, however deeply hostile counts are nested.
+    private const int InitialCapacity = 16;
+
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+
     /// <summary>Decodes a query or document snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or uses an unsupported version.</exception>
     public static FirestoreSnapshot Decode(ReadOnlySpan<byte> frame)
@@ -34,6 +45,7 @@ public static class SnapshotDecoder
         private readonly ReadOnlySpan<byte> frame = frame;
         private int position;
         private KeyCache keys = new();
+        private string?[] seen = [];
 
         public FirestoreSnapshot ReadFrame()
         {
@@ -102,9 +114,11 @@ public static class SnapshotDecoder
         private FirestoreDocument[] ReadDocuments(byte kind)
         {
             int count = ReadCount(minimumBytesEach: 2);
-            var documents = new FirestoreDocument[count];
+            var documents = new FirestoreDocument[Math.Min(count, InitialCapacity)];
             for (int index = 0; index < count; index++)
             {
+                if (index == documents.Length)
+                    Array.Resize(ref documents, Math.Min(count, documents.Length * 2));
                 int start = position;
                 string path = ReadString();
                 if (path.Length == 0)
@@ -151,6 +165,8 @@ public static class SnapshotDecoder
                     int nanoseconds = BinaryPrimitives.ReadInt32LittleEndian(Take(4));
                     if (nanoseconds is < 0 or > 999_999_999)
                         throw Fail($"Timestamp nanoseconds {nanoseconds} are out of range.", start);
+                    if (seconds is < MinTimestampSeconds or > MaxTimestampSeconds)
+                        throw Fail($"Timestamp seconds {seconds} are outside Firestore's range (years 0001 to 9999).", start);
                     return FirestoreValue.FromTimestamp(new FirestoreTimestamp(seconds, nanoseconds));
                 }
 
@@ -167,9 +183,14 @@ public static class SnapshotDecoder
                 {
                     CheckDepth(depth, start);
                     int count = ReadCount(minimumBytesEach: 1);
-                    FirestoreValue[] items = count == 0 ? [] : new FirestoreValue[count];
+                    FirestoreValue[] items = count == 0 ? [] : new FirestoreValue[Math.Min(count, InitialCapacity)];
                     for (int index = 0; index < count; index++)
+                    {
+                        if (index == items.Length)
+                            Array.Resize(ref items, Math.Min(count, items.Length * 2));
                         items[index] = ReadValue(depth + 1);
+                    }
+
                     return FirestoreValue.FromArray(FirestoreArray.Owning(items));
                 }
 
@@ -189,15 +210,67 @@ public static class SnapshotDecoder
             if (count == 0)
                 return FirestoreMap.Empty;
 
-            var names = new string[count];
-            var values = new FirestoreValue[count];
+            int start = position;
+            var names = new string[Math.Min(count, InitialCapacity)];
+            var values = new FirestoreValue[names.Length];
             for (int index = 0; index < count; index++)
             {
+                if (index == names.Length)
+                {
+                    int capacity = Math.Min(count, names.Length * 2);
+                    Array.Resize(ref names, capacity);
+                    Array.Resize(ref values, capacity);
+                }
+
                 names[index] = ReadKey();
                 values[index] = ReadValue(depth);
             }
 
+            RejectDuplicateKeys(names, start);
             return FirestoreMap.Owning(names, values);
+        }
+
+        // Small maps compare pairwise; larger ones go through an open-addressing table reused for the whole frame, so
+        // the check allocates nothing per map.
+        private void RejectDuplicateKeys(string[] names, int start)
+        {
+            if (names.Length <= 8)
+            {
+                for (int left = 1; left < names.Length; left++)
+                {
+                    for (int right = 0; right < left; right++)
+                    {
+                        if (string.Equals(names[left], names[right], StringComparison.Ordinal))
+                            throw Fail($"The map key \"{names[left]}\" appears twice.", start);
+                    }
+                }
+
+                return;
+            }
+
+            int size = (int)BitOperations.RoundUpToPowerOf2((uint)names.Length * 2);
+            if (seen.Length < size)
+                seen = new string?[size];
+            int mask = size - 1;
+            try
+            {
+                foreach (string name in names)
+                {
+                    int slot = StringComparer.Ordinal.GetHashCode(name) & mask;
+                    while (seen[slot] is { } occupied)
+                    {
+                        if (string.Equals(occupied, name, StringComparison.Ordinal))
+                            throw Fail($"The map key \"{name}\" appears twice.", start);
+                        slot = (slot + 1) & mask;
+                    }
+
+                    seen[slot] = name;
+                }
+            }
+            finally
+            {
+                Array.Clear(seen, 0, size);
+            }
         }
 
         private readonly void CheckDepth(int depth, int start)
@@ -209,14 +282,30 @@ public static class SnapshotDecoder
         // Field names repeat across every document of a snapshot, so they are decoded once per frame.
         private string ReadKey()
         {
+            int start = position;
             ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
-            return keys.GetOrAdd(bytes);
+            try
+            {
+                return keys.GetOrAdd(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                throw Fail("A map key is not valid UTF-8.", start);
+            }
         }
 
         private string ReadString()
         {
+            int start = position;
             ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
-            return bytes.IsEmpty ? string.Empty : Encoding.UTF8.GetString(bytes);
+            try
+            {
+                return Utf8(bytes);
+            }
+            catch (DecoderFallbackException)
+            {
+                throw Fail("A string is not valid UTF-8.", start);
+            }
         }
 
         // A count can never exceed the bytes left, which stops a corrupt count from forcing a huge allocation.
@@ -224,14 +313,21 @@ public static class SnapshotDecoder
         {
             int start = position;
             uint value = 0;
-            for (int shift = 0; ; shift += 7)
+            for (int index = 0; ; index++)
             {
-                if (shift > 28)
-                    throw Fail("A varint is longer than 5 bytes.", start);
                 byte next = ReadByte();
-                value |= (uint)(next & 0x7F) << shift;
+
+                // The fifth byte holds bits 28-30 of a value no larger than 2^31-1, so it is at most 0x07 and ends
+                // the varint; anything above that is an over-long or out-of-range encoding.
+                if (index == 4 && next > 0x07)
+                    throw Fail("A varint is longer than 5 bytes or larger than 2^31-1.", start);
+                value |= (uint)(next & 0x7F) << (7 * index);
                 if ((next & 0x80) == 0)
+                {
+                    if (index > 0 && next == 0)
+                        throw Fail("A varint is not in its shortest form.", start);
                     break;
+                }
             }
 
             if (value > int.MaxValue || value > (uint)(frame.Length - position) / (uint)minimumBytesEach)
@@ -257,6 +353,10 @@ public static class SnapshotDecoder
         private static PeerlessFormatException Fail(string message, int offset) => new(message, offset);
     }
 
+    // Strict: invalid UTF-8 (including overlong forms such as modified UTF-8's C0 80, and encoded surrogates) throws
+    // DecoderFallbackException, which the reader turns into a PeerlessFormatException.
+    private static string Utf8(ReadOnlySpan<byte> bytes) => bytes.IsEmpty ? string.Empty : StrictUtf8.GetString(bytes);
+
     // A small open-addressing table from UTF-8 bytes to the string decoded from them, for one frame.
     private struct KeyCache()
     {
@@ -280,7 +380,7 @@ public static class SnapshotDecoder
                 int slot = (int)((hash + (uint)probe) % Capacity);
                 if (encoded[slot] is not { } existing)
                 {
-                    string text = Encoding.UTF8.GetString(bytes);
+                    string text = Utf8(bytes);
                     if (count >= Capacity / 2)
                         return text; // Full enough: stop caching, keep decoding.
                     encoded[slot] = bytes.ToArray();
@@ -293,7 +393,7 @@ public static class SnapshotDecoder
                     return decoded[slot] ?? string.Empty;
             }
 
-            return Encoding.UTF8.GetString(bytes);
+            return Utf8(bytes);
         }
     }
 }

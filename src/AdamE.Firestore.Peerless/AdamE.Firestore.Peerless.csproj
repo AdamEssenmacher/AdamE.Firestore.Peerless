@@ -10,7 +10,8 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Tests" />
-    <!-- The peered baseline builds the same value model through the owning constructors, so only transport differs. -->
+    <!-- The benchmark's equality check builds this value model from the peered binding (PeeredConversion), through the
+         owning constructors, to compare it with what Peerless decodes. -->
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Android" />
   </ItemGroup>
 </Project>

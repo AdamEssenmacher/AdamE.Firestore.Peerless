@@ -3,9 +3,10 @@ using Firebase.Firestore;
 namespace AdamE.Firestore.Peerless.Benchmarks;
 
 /// <summary>
-/// The naive, peered conversion an ordinary app does: walk each snapshot through the binding and copy every value into
-/// the Peerless value model, so both modes produce identical output and only the transport differs. Every Java object
-/// touched on the way gets a managed peer, which is the cost being measured. Modelled on Scavos's FirestoreValues.
+/// Converts a snapshot into the Peerless value model through the peered binding, for the benchmark's equality check:
+/// what Peerless decodes must equal what this produces. It is not the measured peered path; that is
+/// <see cref="PlainValues"/>, step 1's conversion, unchanged so the baseline stays step 1's. Modelled on Scavos's
+/// FirestoreValues.
 /// </summary>
 internal static class PeeredConversion
 {

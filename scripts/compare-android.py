@@ -23,11 +23,27 @@ art = defaultdict(list)      # (mode, phase, size, point) -> ART global refs
 notes = []
 for run in runs:
     mode = mode_of(run)
-    for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
-        if row["phase"] in ("query", "document"):
-            samples[(mode, row["phase"], int(row["size"]), row["kind"])].append(row)
-    for row in csv.DictReader(open(run / f"{mode}-settled.csv")):
+    run_settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
+    for row in run_settled:
         settled[(mode, row["phase"], int(row["size"]), row["point"])].append(int(row["gref"]))
+
+    # Peak over the last settle point before the sample (recorded by newer runs, reconstructed for older ones).
+    order = defaultdict(list)
+    for row in run_settled:
+        point = row["point"]
+        key = -1 if point == "before-listen" else 0 if point == "after-initial" else (
+            int(point.rsplit("-", 1)[1]) if point.startswith("after-update-") else None)
+        if key is not None:
+            order[(row["phase"], int(row["size"]))].append((key, int(row["gref"])))
+    for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
+        if row["phase"] not in ("query", "document"):
+            continue
+        if not row.get("gref_peak_over_settled") and row.get("gref_peak"):
+            seq = int(row["seq"])
+            earlier = [g for k, g in order[(row["phase"], int(row["size"]))] if k < seq or (seq == 0 and k == -1)]
+            if earlier:
+                row["gref_peak_over_settled"] = str(float(row["gref_peak"]) - earlier[-1])
+        samples[(mode, row["phase"], int(row["size"]), row["kind"])].append(row)
     summary = (run / "summary.md").read_text() if (run / "summary.md").exists() else ""
     summary = summary.split("## ART's JNI tables", 1)[1] if "## ART's JNI tables" in summary else ""
     for m in re.finditer(r"^\| (\w+) \| (\d+) \| ([\w-]+) \| (\d+) \| (\d+) \|", summary, re.M):
@@ -82,8 +98,12 @@ table("Main-thread CPU per snapshot (ms)", "thread_cpu_us", 1000, 2,
       "Thread CPU time on the callback (main) thread over the same span; for Peerless this includes Java encoding.")
 table("Managed allocation per snapshot (KB)", "alloc_bytes", 1024, 0,
       ".NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode.")
-table("JNI global references held at peak during a snapshot", "gref_peak_delta", 1, 0,
-      "Peak minus the count at callback entry (.NET-side counter; sampled per document in peered mode).")
+table("JNI global references at peak during a snapshot, over the last settle point", "gref_peak_over_settled", 1, 0,
+      "The highest .NET-side count seen during the callback (sampled per document in peered mode) minus the count at "
+      "the last settle point (forced .NET and Java GC) before it, so references earlier callbacks left for the GC are "
+      "not charged to this one. Earlier versions subtracted the count at callback entry, which understated updates.")
+table("JNI global references at peak during a snapshot (absolute)", "gref_peak", 1, 0,
+      "The .NET-side count, which leaves out ~435 java.lang.Class references Java.Interop caches.")
 table("GCs during a snapshot", "gen0", 1, 0, "Collections of any generation that started inside the callback.")
 
 lines += ["## Settled JNI global references (after forced .NET + Java GC)", "",
