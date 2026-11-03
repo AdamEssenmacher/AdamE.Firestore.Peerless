@@ -10,7 +10,7 @@ using Firebase.Core;
 namespace AdamE.Firestore.Peerless.Benchmarks;
 
 /// <summary>
-/// Where the run reaches the FirebaseFirestore emulator and how much it does. Read from the launch arguments, which
+/// Where the run reaches the Firestore emulator and how much it does. Read from the launch arguments, which
 /// NSUserDefaults exposes as keys: <c>-port 8181 -sizes 10,100 -updates 5 -singleUpdates 10 -verify NO</c>.
 /// </summary>
 internal sealed record BenchmarkOptions(string Host, int Port, BenchmarkPlan Plan, bool Verify)
@@ -91,9 +91,16 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
         try
         {
+            // A build that fell back from NativeAOT to Mono would still run, and its numbers would mean something else.
+            if (RuntimeFeature.IsDynamicCodeSupported)
+                throw new BenchmarkCheckException("Dynamic code is supported: this is not a NativeAOT build.");
+
             (int live, int liveAfterDispose, int created, int createdAfterDispose) = PeerCensus.Calibrate();
             writer.Note("peerCounterCalibration", $"100 new NSObject: live {live:+0;-0}, created {created:+0;-0}; "
                 + $"then disposed: live {liveAfterDispose:+0;-0}, created {createdAfterDispose:+0;-0}");
+            // Every peer number in the run rests on the counter; one that doesn't count known peers exactly is useless.
+            if (live != 100 || created != 100 || liveAfterDispose != -100 || createdAfterDispose != 0)
+                throw new BenchmarkCheckException("The peer counter failed its calibration.");
 
             listening = Connect(null);
             seeding = Connect("seeder");
@@ -160,7 +167,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     }
 
     /// <summary>
-    /// Proves the peered conversion is complete and exact on real FirebaseFirestore data: what the listener reads back must
+    /// Proves the peered conversion is complete and exact on real Firestore data: what the listener reads back must
     /// equal <see cref="SeedSpec"/>, which wrote it. Covers every value kind, including ones the benchmark documents
     /// don't use. (On Android the same documents check peered against Peerless.)
     /// </summary>
@@ -203,6 +210,8 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                 : $"DIFFERENT {difference}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
+            if (difference is not null)
+                throw new BenchmarkCheckException($"verify: {verdict}");
         }
         finally
         {
@@ -235,12 +244,14 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         return (registration, sampler.Samples);
     }
 
-    public Task UpdateAsync(string collection, string documentId, long version) =>
-        Seeding.GetCollection(collection).GetDocument(documentId).UpdateDataAsync(
-            NSDictionary<NSObject, NSObject>.FromObjectsAndKeys(
-                [NSNumber.FromInt64(version), Timestamp.Create()],
-                [new NSString("version"), new NSString("updatedAt")],
-                2));
+    public Func<Task> PrepareUpdate(string collection, string documentId, long version)
+    {
+        DocumentReference target = Seeding.GetCollection(collection).GetDocument(documentId);
+        NSNumber value = NSNumber.FromInt64(version);
+        NSString[] keys = [new NSString("version"), new NSString("updatedAt")];
+        return () => target.UpdateDataAsync(NSDictionary<NSObject, NSObject>.FromObjectsAndKeys(
+            [value, Timestamp.Create()], keys, keys.Length));
+    }
 
     public async Task SettleAsync(string phase, int size, string point)
     {

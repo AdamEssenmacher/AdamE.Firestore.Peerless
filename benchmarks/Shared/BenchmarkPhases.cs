@@ -17,6 +17,9 @@ internal interface IBenchmarkSample
     long DoneTimestamp { get; }
 }
 
+/// <summary>A run's own correctness check failed: the run stops and is recorded as failed, never as a result.</summary>
+internal sealed class BenchmarkCheckException(string message) : Exception(message);
+
 /// <summary>How much a run does. The defaults are what every committed run uses.</summary>
 internal sealed record BenchmarkPlan(int[] Sizes, int UpdatesPerSize, int SingleDocumentUpdates)
 {
@@ -50,8 +53,12 @@ internal interface IBenchmarkPlatform<TSample>
     /// <summary>Starts listening to one document through the measured instance.</summary>
     (IDisposable Registration, ChannelReader<TSample> Samples) ListenToDocument(string collection, string documentId);
 
-    /// <summary>Sets <c>version</c> and <c>updatedAt</c> (now) on one document, through the seeder.</summary>
-    Task UpdateAsync(string collection, string documentId, long version);
+    /// <summary>
+    /// Prepares setting <c>version</c> and <c>updatedAt</c> (now) on one document, through the seeder: builds the
+    /// document reference and the field values, and returns the write itself. The phases take the write→callback
+    /// timestamp between the two, so building the reference isn't counted as latency.
+    /// </summary>
+    Func<Task> PrepareUpdate(string collection, string documentId, long version);
 
     /// <summary>Forces collection on both sides of the bridge, then records the settled reference counts.</summary>
     Task SettleAsync(string phase, int size, string point);
@@ -156,8 +163,9 @@ internal static class BenchmarkPhases
         for (int update = 1; update <= updates; update++)
         {
             platform.Report($"{phase} {size}: update {update}/{updates}");
+            Func<Task> write = platform.PrepareUpdate(collection, BenchmarkPlan.DocumentId((update * 7) % size), update + 1);
             long written = Stopwatch.GetTimestamp();
-            await platform.UpdateAsync(collection, BenchmarkPlan.DocumentId((update * 7) % size), update + 1).ConfigureAwait(false);
+            await write().ConfigureAwait(false);
             TSample sample = await NextAsync(platform, samples, expected).ConfigureAwait(false);
             double latency = Stopwatch.GetElapsedTime(written, sample.DoneTimestamp).TotalMilliseconds;
             platform.Record(phase, size, update, "update", sample, latency);

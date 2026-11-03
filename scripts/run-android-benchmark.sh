@@ -10,6 +10,9 @@
 #   FIRESTORE_PORT  the Firestore emulator's host port (default 8181, as in firebase.json); the app reaches it at
 #                   10.0.2.2:<port>
 #
+# Exits nonzero unless the run completed under NativeAOT with every self-check passing (the app records a failed
+# check as outcome: failed), and on a timeout, a dead process or a summarizer error.
+#
 # The emulator AVD (one-time setup; any arm64 API 36 Google APIs image works):
 #   sdkmanager "system-images;android-36;google_apis;arm64-v8a"
 #   avdmanager create avd -n Peerless_Bench_API36 -k "system-images;android-36;google_apis;arm64-v8a" -d pixel_7
@@ -62,5 +65,11 @@ for name in "$mode-samples.csv" "$mode-settled.csv" "$mode-run.txt"; do
 done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 { echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load before: $load_before"; echo "host load after: $(uptime)"; } | tee -a "$out/host.txt"
-python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null || true
+python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null
 echo "results: $out"
+
+# The run only counts if it finished, as NativeAOT, with its own checks (verify, dispose race) passed.
+[[ "$outcome" == "done" ]] || { echo "run did not finish: $outcome" >&2; exit 1; }
+grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+grep -qx "outcome: completed" "$out/$mode-run.txt" \
+  || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }

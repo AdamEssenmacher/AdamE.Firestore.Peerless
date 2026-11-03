@@ -89,11 +89,18 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
         try
         {
+            // A build that fell back from NativeAOT would still run, and its numbers would mean something else.
+            if (System.Runtime.CompilerServices.RuntimeFeature.IsDynamicCodeSupported)
+                throw new BenchmarkCheckException("Dynamic code is supported: this is not a NativeAOT build.");
+
             listening = Connect(FirebaseApp.DefaultAppName);
             seeding = Connect("seeder");
 
             if (options.Verify)
+            {
                 await VerifyAsync(listening, seeding).ConfigureAwait(false);
+                await DisposeRaceAsync().ConfigureAwait(false);
+            }
             await BenchmarkPhases.RunAsync(this, options.Plan).ConfigureAwait(false);
 
             writer.Note("outcome", "completed");
@@ -193,11 +200,114 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 : $"DIFFERENT direct: {directDifference ?? "same"} | bytes: {bytesDifference ?? "same"}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
+            if (directDifference is not null || bytesDifference is not null)
+                throw new BenchmarkCheckException($"verify: {verdict}");
         }
         finally
         {
             peeredRegistration.Remove();
         }
+    }
+
+    /// <summary>
+    /// Checks PeerlessListener's removal contract under load: disposed from a thread-pool thread while frames keep
+    /// arriving (both deliveries), no callback may still be running when Dispose returns, and none may start after it.
+    /// Then one listener disposes itself from inside its callback, which must neither deadlock nor see another frame.
+    /// (Step 3's check, carried onto the shared phases.)
+    /// </summary>
+    private async Task DisposeRaceAsync()
+    {
+        const string collection = "dispose-race";
+        const int iterations = 20;
+        Report("dispose race: seeding");
+        await BenchmarkPhases.SeedAsync(this, collection, 50).ConfigureAwait(false);
+        Query query = Listening.Collection(collection);
+        int violations = 0;
+        int disposedMidCallback = 0;
+
+        for (int iteration = 0; iteration < iterations; iteration++)
+        {
+            int inside = 0;
+            int returned = 0;
+            int frames = 0;
+            bool forceMidCallback = iteration % 2 == 0; // every other round disposes while a callback is certainly running
+            var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable registration = PeerlessListener.Listen(
+                query,
+                _ =>
+                {
+                    if (Volatile.Read(ref returned) == 1)
+                        Interlocked.Increment(ref violations); // started after Dispose returned
+                    Volatile.Write(ref inside, 1);
+                    int frame = Interlocked.Increment(ref frames);
+                    if (forceMidCallback && frame >= 2)
+                    {
+                        started.TrySetResult();
+                        Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
+                    }
+                    else
+                    {
+                        Thread.Sleep(3); // widen the window a disposal can land in
+                    }
+
+                    if (frame >= 2)
+                        flowing.TrySetResult();
+                    Volatile.Write(ref inside, 0);
+                },
+                error => flowing.TrySetException(error),
+                iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
+                observer: null);
+
+            using var stop = new CancellationTokenSource();
+            Task writes = Task.Run(async () =>
+            {
+                for (int write = 0; !stop.IsCancellationRequested; write++)
+                    await PrepareUpdate(collection, BenchmarkPlan.DocumentId(write % 50), write)().ConfigureAwait(false);
+            });
+
+            await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(VerifyTimeout).ConfigureAwait(false);
+            await Task.Run(() =>
+            {
+                if (Volatile.Read(ref inside) == 1)
+                    Interlocked.Increment(ref disposedMidCallback);
+                registration.Dispose();
+                if (Volatile.Read(ref inside) == 1)
+                    Interlocked.Increment(ref violations); // still running after Dispose returned
+                Volatile.Write(ref returned, 1);
+            }).ConfigureAwait(false);
+
+            await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+            await stop.CancelAsync().ConfigureAwait(false);
+            await writes.ConfigureAwait(false);
+        }
+
+        // Disposal from inside a callback, on the callback thread.
+        int selfCallbacks = 0;
+        var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        IDisposable? self = null;
+        self = PeerlessListener.Listen(
+            query,
+            _ =>
+            {
+                if (Interlocked.Increment(ref selfCallbacks) > 1)
+                    Interlocked.Increment(ref violations);
+                self?.Dispose();
+                selfDisposed.TrySetResult();
+            },
+            error => selfDisposed.TrySetException(error));
+        await selfDisposed.Task.WaitAsync(VerifyTimeout).ConfigureAwait(false);
+        for (int write = 0; write < 5; write++)
+            await PrepareUpdate(collection, BenchmarkPlan.DocumentId(write), 1000 + write)().ConfigureAwait(false);
+
+        await Task.Delay(300).ConfigureAwait(false);
+        string verdict = violations == 0
+            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
+            : $"VIOLATED {violations} times";
+        results?.Note("disposeRace", verdict);
+        Report($"dispose race: {verdict}");
+        if (violations != 0)
+            throw new BenchmarkCheckException($"dispose race: {verdict}");
     }
 
     // IBenchmarkPlatform: the shared phases drive these.
@@ -223,14 +333,13 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         return (registration, sampler.Samples);
     }
 
-    public Task UpdateAsync(string collection, string documentId, long version) =>
-        Seeding.Collection(collection).Document(documentId)
-            .Update(
-                "version",
-                Java.Lang.Long.ValueOf(version),
-                new Java.Lang.String("updatedAt"),
-                Firebase.Timestamp.Now())
-            .AsTask();
+    public Func<Task> PrepareUpdate(string collection, string documentId, long version)
+    {
+        DocumentReference target = Seeding.Collection(collection).Document(documentId);
+        Java.Lang.Long value = Java.Lang.Long.ValueOf(version);
+        var updatedAt = new Java.Lang.String("updatedAt");
+        return () => target.Update("version", value, updatedAt, Firebase.Timestamp.Now()).AsTask();
+    }
 
     public async Task SettleAsync(string phase, int size, string point)
     {
@@ -245,7 +354,6 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
     public void Record(string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds) =>
         results?.Sample(phase, size, sequence, kind, sample, writeToCallbackMilliseconds, lastSettledGlobal);
-
 
     public void Report(string message)
     {
