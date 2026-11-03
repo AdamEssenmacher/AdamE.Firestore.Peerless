@@ -26,7 +26,7 @@ Golden frames that every encoder must reproduce byte for byte live in [`fixtures
 | `i64` | 8 bytes, two's complement, little-endian |
 | `f64` | 8 bytes, IEEE 754 binary64, little-endian. The bits are kept as-is: `-0.0`, NaN payloads and infinities round-trip. |
 | `varint` | unsigned LEB128 (7 bits per byte, low group first, high bit = more), at most 5 bytes, value ≤ 2³¹−1. Encoders must use the shortest form. |
-| `string` | `varint` byte length, then that many bytes of UTF-8. Encoders must write well-formed UTF-8. A lone UTF-16 surrogate in a source string is replaced with U+FFFD (Java's `String.getBytes(UTF_8)` behaviour). |
+| `string` | `varint` byte length, then that many bytes of UTF-8. Encoders must write well-formed UTF-8. A lone UTF-16 surrogate in a source string is written as U+FFFD (what .NET's `Encoding.UTF8` does; Java's `String.getBytes(UTF_8)` writes `?` instead, so the Android encoder does its own UTF-8). |
 
 ## Frame
 
