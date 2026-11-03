@@ -28,7 +28,7 @@ internal sealed record Sample(
     int Gen2Collections,
     double GcPauseMicroseconds,
     JavaSide? Java,
-    string? Error);
+    string? Error) : IBenchmarkSample;
 
 /// <summary>Peerless only: what happened before .NET was entered.</summary>
 /// <param name="ToDotnetMicroseconds">Java callback entry to .NET entry: encode, copy into the buffer, JNI call.</param>
@@ -97,7 +97,7 @@ internal sealed class PeeredSampler : Java.Lang.Object, IEventListener, ISampler
         _ = samples.Writer.TryWrite(Samplers.Build(
             fromCache,
             documents?.Count ?? 0,
-            documents?.Sum(PlainValues.CountValues) ?? 0,
+            documents?.Sum(PlainModel.CountValues) ?? 0,
             before, after, Math.Max(peak, after.GlobalReferences),
             Probes.Microseconds(before.Timestamp, after.Timestamp),
             (after.ThreadCpuNanos - before.ThreadCpuNanos) / 1000.0, java: null, failure));
