@@ -47,7 +47,7 @@ between settles.
 | 10 | update | 32 | 1.7 | 1.7 | 0 | 0 | 0.96 MiB | 395 | 1,251 | 1,244 |
 | 10 | update, after a settle | 8 | 2.2 | 2.2 | 0 | 0 | 1.4 MiB | 515 | 451 | 444 |
 | 100 | initial | 2 | 20 | 20 | 1 | 1.5 | 12 MiB | 4,741 | 3,894 | 3,887 |
-| 100 | update | 32 | 22 | 22 | 1 | 3.8 | 12 MiB | 4,715 | 4,833 | 4,826 |
+| 100 | update | 32 | 22 | 22 | 1.5 | 3.8 | 12 MiB | 4,715 | 4,833 | 4,826 |
 | 100 | update, after a settle | 8 | 20 | 20 | 1 | 1.5 | 13 MiB | 4,751 | 3,905 | 3,898 |
 | 500 | initial | 2 | 108 | 108 | 7 | 17 | 63 MiB | 23,569 | 19,037 | 19,030 |
 | 500 | update | 32 | 132 | 122 | 9 | 31 | 62 MiB | 23,584 | 20,669 | 20,662 |
@@ -147,8 +147,14 @@ committed with it, at 10 and 100 docs, with 10 updates per size (so it settles e
 single-document updates, at a host load of 41–47. It passed every check: NativeAOT, calibration `+100/+100,
 -100/+0`, and `read back as written (465 values)`. Its counts match the full runs exactly where the cadence doesn't
 matter: 511, 4,741 and 81 peers created for the initial snapshots, and 1.36 MiB / 12.34 MiB allocated. CPU agrees
-within noise (100 docs initial: 20.0 ms against 20.4). Its absolute update peaks are lower (770 and 5,113 against
-1,251 and 4,833), because entries pile up between settles and its settles are closer together.
+within noise (100 docs initial: 20.0 ms against 20.4). Its absolute update peaks differ from the full runs', in
+different directions:
+
+- At 10 docs the peak is lower (770 against 1,251). No GC runs at that size, so entries pile up between settles,
+  and its settles are closer together.
+- At 100 docs it is higher (5,113 against 4,833). There a GC runs inside most callbacks, so how many of the
+  previous snapshots' entries are still in the table depends on when those GCs ran, not only on the settle cadence.
+  With n=5 the difference isn't explained.
 
 ## What makes these numbers unreliable
 

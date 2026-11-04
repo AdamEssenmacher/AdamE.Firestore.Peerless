@@ -65,12 +65,13 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
     /// <summary>
     /// Records a failure before the run could start (for example, bad launch arguments) in the files the script reads:
-    /// a run file with the failure and outcome, and the console line it waits for. Uses the requested mode's file
-    /// names, so the script finds them.
+    /// a run file with the failure and outcome, and the console line it waits for. The file names come from
+    /// <c>-runFiles</c>, which the script always passes (the mode whose files it watches), not from <c>-mode</c>,
+    /// which may be the very argument that failed.
     /// </summary>
     public static void RecordStartupFailure(Exception exception)
     {
-        string mode = NSUserDefaults.StandardUserDefaults.StringForKey("mode") is { Length: > 0 } requested
+        string mode = NSUserDefaults.StandardUserDefaults.StringForKey("runFiles") is { Length: > 0 } requested
             && requested.All(static c => char.IsAsciiLetterOrDigit(c) || c == '-')
                 ? requested
                 : "peered";
