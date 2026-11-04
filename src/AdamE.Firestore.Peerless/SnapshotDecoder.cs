@@ -200,11 +200,18 @@ public static class SnapshotDecoder
                 {
                     double latitude = BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
                     double longitude = BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
+                    if (!FirestoreGeoPoint.IsValid(latitude, longitude))
+                        throw Fail($"Geo point ({latitude}, {longitude}) is outside [-90, 90] x [-180, 180] or NaN.", start);
                     return FirestoreValue.FromGeoPoint(new FirestoreGeoPoint(latitude, longitude));
                 }
 
                 case Wire.Tag.Reference:
-                    return FirestoreValue.FromReference(ReadString());
+                {
+                    string path = ReadString();
+                    if (!FirestoreDocument.IsValidPath(path))
+                        throw Fail($"Reference \"{path}\" is not a document path: it is empty or has an empty segment.", start);
+                    return FirestoreValue.FromReference(path);
+                }
                 case Wire.Tag.Array:
                 {
                     CheckDepth(depth, start);
@@ -275,10 +282,11 @@ public static class SnapshotDecoder
                 scratch.PushValue(ReadValue(depth));
             }
 
-            if (scratch.HasDuplicateKey(scratch.KeysFrom(keyBottom), hashBottom, out duplicate))
+            string[] keys = scratch.PopKeys(keyBottom);
+            if (scratch.HasDuplicateKey(keys, hashBottom, out duplicate))
                 throw Fail($"The map key \"{duplicate}\" appears twice.", start);
             scratch.PopHashes(hashBottom);
-            return FirestoreMap.Owning(scratch.PopKeys(keyBottom), scratch.PopValues(valueBottom));
+            return FirestoreMap.Owning(keys, scratch.PopValues(valueBottom));
         }
 
         // Pre-allocates only while every open pre-allocated container could still be backed by the unread bytes.
@@ -377,7 +385,7 @@ public static class SnapshotDecoder
     private sealed class Scratch
     {
         private const int InitialStack = 64;
-        private const int MaxRetainedStack = 4096; // larger stacks (a huge frame) are left for the GC
+        private const int MaxRetainedTable = 16 * 1024; // larger hash/duplicate tables (a huge map) are left for the GC
         private const int KeyCacheSize = 256;
         private const int KeyCacheLimit = KeyCacheSize / 2;
         private const int MaxProbes = 8;
@@ -385,10 +393,8 @@ public static class SnapshotDecoder
         // Random per process, so the cache's slots can't be predicted by whoever writes the data.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
 
-        private FirestoreValue[] values = new FirestoreValue[InitialStack];
-        private string[] keys = new string[InitialStack];
-        private int valueHighWater;
-        private int keyHighWater;
+        private readonly ChunkedStack<FirestoreValue> values = new();
+        private readonly ChunkedStack<string> keys = new();
 
         private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
         private readonly string?[] cachedKeys = new string[KeyCacheSize];
@@ -397,45 +403,22 @@ public static class SnapshotDecoder
         private uint[] hashes = new uint[InitialStack];
         private int[] seen = [];
 
-        public int ValueTop { get; private set; }
+        public int ValueTop => values.Count;
 
-        public int KeyTop { get; private set; }
+        public int KeyTop => keys.Count;
 
         public int HashTop { get; private set; }
 
         public void PopHashes(int bottom) => HashTop = bottom;
 
-        public ReadOnlySpan<string> KeysFrom(int bottom) => keys.AsSpan(bottom, KeyTop - bottom);
 
-        public void PushValue(FirestoreValue value)
-        {
-            if (ValueTop == values.Length)
-                Array.Resize(ref values, values.Length * 2);
-            values[ValueTop++] = value;
-            valueHighWater = Math.Max(valueHighWater, ValueTop);
-        }
+        public void PushValue(FirestoreValue value) => values.Push(value);
 
-        public void PushKey(string key)
-        {
-            if (KeyTop == keys.Length)
-                Array.Resize(ref keys, keys.Length * 2);
-            keys[KeyTop++] = key;
-            keyHighWater = Math.Max(keyHighWater, KeyTop);
-        }
+        public void PushKey(string key) => keys.Push(key);
 
-        public FirestoreValue[] PopValues(int bottom)
-        {
-            FirestoreValue[] popped = values.AsSpan(bottom, ValueTop - bottom).ToArray();
-            ValueTop = bottom;
-            return popped;
-        }
+        public FirestoreValue[] PopValues(int bottom) => values.PopFrom(bottom);
 
-        public string[] PopKeys(int bottom)
-        {
-            string[] popped = keys.AsSpan(bottom, KeyTop - bottom).ToArray();
-            KeyTop = bottom;
-            return popped;
-        }
+        public string[] PopKeys(int bottom) => keys.PopFrom(bottom);
 
         // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
         // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch.
@@ -534,10 +517,9 @@ public static class SnapshotDecoder
         // Clears what the last decode left (so no strings or values outlive it) and says whether to keep this scratch.
         public bool Reset()
         {
-            if (RuntimeHelpers.IsReferenceOrContainsReferences<FirestoreValue>())
-                Array.Clear(values, 0, valueHighWater);
-            Array.Clear(keys, 0, keyHighWater);
-            ValueTop = KeyTop = HashTop = valueHighWater = keyHighWater = 0;
+            values.Reset();
+            keys.Reset();
+            HashTop = 0;
             if (cachedCount > 0)
             {
                 Array.Clear(cachedBytes);
@@ -545,8 +527,73 @@ public static class SnapshotDecoder
                 cachedCount = 0;
             }
 
-            return values.Length <= MaxRetainedStack && keys.Length <= MaxRetainedStack
-                && hashes.Length <= MaxRetainedStack * 4 && seen.Length <= MaxRetainedStack * 4;
+            return hashes.Length <= MaxRetainedTable && seen.Length <= MaxRetainedTable;
+        }
+    }
+
+    /// <summary>
+    /// A stack in fixed-size chunks: growing never copies what is already there, so a container read here costs one slot
+    /// per item plus its exact-size result, not a series of doubling copies. A few chunks are kept between decodes.
+    /// </summary>
+    private sealed class ChunkedStack<T>
+    {
+        private const int ChunkShift = 10;
+        private const int ChunkSize = 1 << ChunkShift; // 1,024 items: 32 KB of FirestoreValue
+        private const int Mask = ChunkSize - 1;
+        private const int RetainedChunks = 4;
+
+        private readonly List<T[]> chunks = [];
+        private int highWater;
+
+        public int Count { get; private set; }
+
+        public void Push(T item)
+        {
+            int chunk = Count >> ChunkShift;
+            if (chunk == chunks.Count)
+                chunks.Add(new T[ChunkSize]);
+            chunks[chunk][Count & Mask] = item;
+            Count++;
+            if (Count > highWater)
+                highWater = Count;
+        }
+
+        public T[] PopFrom(int bottom)
+        {
+            var popped = new T[Count - bottom];
+            int copied = 0;
+            for (int index = bottom; index < Count;)
+            {
+                int offset = index & Mask;
+                int length = Math.Min(ChunkSize - offset, Count - index);
+                Array.Copy(chunks[index >> ChunkShift], offset, popped, copied, length);
+                copied += length;
+                index += length;
+            }
+
+            Count = bottom;
+            return popped;
+        }
+
+        // Clears only the chunks it keeps (so they hold no references); the rest are dropped without clearing.
+        public void Reset()
+        {
+            int keep = Math.Min(chunks.Count, RetainedChunks);
+            if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
+            {
+                for (int chunk = 0; chunk < keep; chunk++)
+                {
+                    int used = Math.Min(ChunkSize, highWater - (chunk << ChunkShift));
+                    if (used <= 0)
+                        break;
+                    Array.Clear(chunks[chunk], 0, used);
+                }
+            }
+
+            if (chunks.Count > keep)
+                chunks.RemoveRange(keep, chunks.Count - keep);
+            Count = 0;
+            highWater = 0;
         }
     }
 }

@@ -1,0 +1,17 @@
+phase,size,point,gref,wgref,surfaced_peers
+warmup,10,before-listen,169,0,110
+warmup,10,after-initial,181,0,115
+warmup,10,after-update-1,182,0,116
+warmup,10,after-update-2,182,0,116
+warmup,10,after-update-3,182,0,116
+warmup,10,after-remove,178,0,112
+query,10,before-listen,177,0,111
+query,10,after-initial,181,0,115
+query,10,after-update-1,182,0,116
+query,10,after-update-2,182,0,116
+query,10,after-remove,178,0,112
+document,1,before-listen,177,0,111
+document,1,after-initial,181,0,115
+document,1,after-update-1,182,0,116
+document,1,after-update-2,182,0,116
+document,1,after-remove,178,0,112
