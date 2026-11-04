@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -10,10 +11,11 @@ namespace AdamE.Firestore.Peerless;
 /// thread-safe, and the result does not reference the input buffer, so the caller may reuse or free it afterwards.
 /// </summary>
 /// <remarks>
-/// Every item takes at least one byte, so the items declared by all open containers must fit in the bytes left to read.
-/// A frame whose declared counts don't is rejected the moment they stop fitting; otherwise each container is read
-/// straight into an array of its declared size. Memory therefore stays proportional to the frame's size, however
-/// hostile its counts.
+/// Every array item takes at least one byte and every map entry at least two, so the minimum size of everything the
+/// open containers still declare must fit in the bytes left to read. A frame whose declared counts don't is rejected the
+/// moment they stop fitting; otherwise each container is read straight into an array of its declared size. Memory
+/// therefore stays proportional to the frame's size, however hostile its counts: about 48 bytes per frame byte at most,
+/// whether the frame decodes or is rejected after a valid prefix (docs/wire-format.md).
 /// </remarks>
 public static class SnapshotDecoder
 {
@@ -67,7 +69,8 @@ public static class SnapshotDecoder
         private readonly Scratch scratch = scratch;
         private int position;
 
-        // Items declared but not yet started, across all open containers. Each needs at least one unread byte.
+        // The minimum unread bytes the items declared but not yet started still need, across all open containers: one
+        // per array item, two per map entry (a key length and a value tag).
         private long reserved;
 
         public FirestoreSnapshot ReadFrame()
@@ -247,12 +250,12 @@ public static class SnapshotDecoder
 
             // Key hashes (already computed by the key cache) go on a scratch stack for the duplicate check.
             int hashBottom = scratch.HashTop;
-            Reserve(count, start);
+            Reserve(2L * count, start);
             var names = new string[count];
             var values = new FirestoreValue[count];
             for (int index = 0; index < count; index++)
             {
-                reserved--;
+                reserved -= 2;
                 names[index] = ReadKey();
                 values[index] = ReadValue(depth);
             }
@@ -263,14 +266,18 @@ public static class SnapshotDecoder
             return FirestoreMap.Owning(names, values);
         }
 
-        // Every item takes at least one byte (an array item its tag; a map entry a key length and a tag), so in a frame
-        // that can decode, the items still to come in all open containers plus this container's always fit in the bytes
-        // left. A frame whose declared counts don't is rejected here, before anything is allocated for them.
-        private void Reserve(int count, int start)
+        // An array item takes at least one byte (its tag) and a map entry at least two (a key length and a tag), so in a
+        // frame that can decode, the minimum size of everything still declared always fits in the bytes left. A frame
+        // whose declared counts don't is rejected here, before anything is allocated for them.
+        private void Reserve(long bytes, int start)
         {
-            if (reserved + count > frame.Length - position)
-                throw Fail($"Declared counts ({reserved + count:N0} items still to come) exceed the {frame.Length - position:N0} bytes left in the frame.", start);
-            reserved += count;
+            if (reserved + bytes > frame.Length - position)
+            {
+                throw Fail(string.Create(CultureInfo.InvariantCulture,
+                    $"Declared counts need at least {reserved + bytes:N0} more bytes, but only {frame.Length - position:N0} are left in the frame."), start);
+            }
+
+            reserved += bytes;
         }
 
         private readonly void CheckDepth(int depth, int start)
@@ -355,7 +362,8 @@ public static class SnapshotDecoder
 
     /// <summary>
     /// Per-thread working memory for one decode: the field-name cache, the key hashes and the duplicate-key table.
-    /// Kept between decodes while it stays small, so normal frames allocate nothing here.
+    /// Kept between decodes while it stays small, so after a thread's first decode the only allocation here is a copy
+    /// of each new field name's bytes, once per frame.
     /// </summary>
     private sealed class Scratch
     {

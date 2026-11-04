@@ -50,7 +50,13 @@ fi
 # Everything this script changes on the device is undone when it exits, however it exits: the hidden-API setting,
 # the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
-previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null | sed -nE 's/.*ring buffer is ([0-9]+) ?([KMG])i?B.*/\1\2/p' | head -1)"
+# `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
+# count is accepted too. If the size can't be read, it isn't changed back, and the script says so.
+previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null \
+  | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
+if [ -z "$previous_log_size" ]; then
+  echo "Could not read $serial's logcat buffer size; it will be enlarged but not restored afterwards." >&2
+fi
 log_resized=0
 reversed=0
 cleanup() {
@@ -94,8 +100,9 @@ adb -s "$serial" shell settings put global hidden_api_policy 1
 [ "$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')" = "1" ] \
   || { echo "Could not set hidden_api_policy on $serial; ART reference-table dumps will be missing." >&2; }
 if [ "$app_host" = "127.0.0.1" ]; then
-  # A forward someone already set up for this port stays as it is, and isn't removed afterwards either.
-  if ! adb -s "$serial" reverse --list | grep -q "tcp:$port tcp:$port"; then
+  # Any forward that already exists for this device port, whatever it points at, stays as it is and isn't removed
+  # afterwards either. (A here-string, not a pipe: grep -q closing early would fail the pipe under pipefail.)
+  if ! awk -v device="tcp:$port" '$2 == device { found = 1 } END { exit !found }' <<<"$(adb -s "$serial" reverse --list)"; then
     adb -s "$serial" reverse "tcp:$port" "tcp:$port" >/dev/null
     reversed=1
   fi
@@ -129,9 +136,10 @@ done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 { echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load before: $load_before"; echo "host load after: $(uptime)"; } | tee -a "$out/host.txt"
 echo "results: $out"
-# A summary that can't be built is a failure too, not something to hide.
-python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null
 if [ "$outcome" != "done" ]; then
+  # Its files may be missing, so it isn't summarized: the summary would fail and hide this message.
   echo "The run did not complete: $outcome" >&2
   exit 1
 fi
+# A summary that can't be built is a failure too, not something to hide.
+python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null

@@ -119,17 +119,21 @@ map-body = count:varint (key:string value)*count
   document's field values are at depth 1; the items of an array or map value at depth *d* are at depth *d* + 1. An
   array or map value **at depth 100 or more is rejected**, so at most 99 containers can nest inside a document's
   fields. (The document's own fields map isn't counted.)
-- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame. Every item takes at
-  least one byte (an array item its tag; a map entry a key length and a tag; a document a path length and its flags),
-  so in a frame that can decode, the items still to come in all open containers always fit in the bytes left. Decoders
-  **reject a frame as soon as its declared counts stop fitting**, before allocating for them; a frame that nests
-  counts claiming the same bytes over and over is caught at the second level. The .NET decoder then allocates each
-  container at its declared size. Its memory per frame byte: at most about **48 bytes** (the densest shape, a chain of
-  one-entry maps at 3 bytes each, measures 43 on CoreCLR; Mono's 8-byte-larger array headers add about 5; the tests
-  run on CoreCLR only), and a rejected frame costs at most about 32 (the outermost container's array, allocated before
-  an inner count is found not to fit). The documents array is allocated exactly as declared, at most 4 bytes per frame
-  byte. On top of that, a thread's first decode allocates about 5 KB of working memory (field-name cache and
-  duplicate-key tables), reused by its later decodes.
+- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame. An array item takes
+  at least one byte (its tag), a map entry at least two (a key length and a tag), and a document at least two (a path
+  length and its flags). So in a frame that can decode, the minimum size of everything the open containers still
+  declare always fits in the bytes left. Decoders **reject a frame as soon as its declared counts stop fitting**,
+  before allocating for them; a frame that nests counts claiming the same bytes over and over is caught at the second
+  level. The .NET decoder then allocates each container at its declared size. Its memory per frame byte is at most
+  about **48 bytes**, whether the frame decodes or is rejected:
+  - The densest shape that decodes, a chain of one-entry maps at 3 bytes each, measures 43 on CoreCLR. Mono's 8-byte
+    larger array headers add about 5. The tests run on CoreCLR only.
+  - A rejected frame keeps what its valid prefix cost (a prefix of one-entry maps followed by a bad count measures
+    41). The containers allocated before an inner count fails cost at most one array slot per byte they claim: 32
+    for nested arrays, 20 for nested maps.
+  - The documents array is allocated exactly as declared, at most 4 bytes per frame byte.
+  - On top of that, a thread's first decode allocates about 5 KB of working memory (field-name cache and
+    duplicate-key tables), reused by its later decodes.
 
 ### What encoders write
 
