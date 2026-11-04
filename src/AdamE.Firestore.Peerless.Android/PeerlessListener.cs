@@ -104,6 +104,11 @@ public sealed class FirestoreListenException : Exception
 /// callback thread, from inside the callback, or without holding the callback's locks.
 /// </para>
 /// <para>
+/// <b>Refused queries.</b> When Firestore refuses to listen (it throws for some invalid queries, and on a terminated
+/// instance), <c>Listen</c> throws <see cref="InvalidOperationException"/> with Firestore's reason; nothing stays
+/// registered. The Java exception is its <see cref="Exception.InnerException"/>.
+/// </para>
+/// <para>
 /// <b>Listen can wait too.</b> <c>Listen</c> records the native registration under the same lock a running callback
 /// holds, so if the first callback is already running (possible when <c>Listen</c> is called off the main thread),
 /// <c>Listen</c> waits for it to finish. Calling <c>Listen</c> while holding a lock that <c>onSnapshot</c> also takes
@@ -130,11 +135,19 @@ public sealed class FirestoreListenException : Exception
 public static class PeerlessListener
 {
     /// <summary>Listens to a query. Dispose the result to stop listening.</summary>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen (for example, the Firestore instance was terminated). The message is Firestore's
+    /// reason, the Java exception is the inner exception, and nothing stays registered.
+    /// </exception>
     public static IDisposable Listen(
         Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(query, onSnapshot, onError, FrameDelivery.DirectBuffer, observer: null);
 
     /// <summary>Listens to one document. Dispose the result to stop listening.</summary>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen (for example, the Firestore instance was terminated). The message is Firestore's
+    /// reason, the Java exception is the inner exception, and nothing stays registered.
+    /// </exception>
     public static IDisposable Listen(
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(document, onSnapshot, onError, FrameDelivery.DirectBuffer, observer: null);
@@ -154,8 +167,7 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
             observer);
-        receiver.Attach(PeerlessListeners.Listen(query, receiver, (int)delivery, receiver.Timed));
-        return new Registration(receiver);
+        return Register(receiver, () => PeerlessListeners.Listen(query, receiver, (int)delivery, receiver.Timed));
     }
 
     internal static IDisposable Listen(
@@ -173,7 +185,26 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer);
-        receiver.Attach(PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed));
+        return Register(receiver, () => PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed));
+    }
+
+    // Firestore refuses some listens outright: addSnapshotListener throws (for example IllegalStateException on a
+    // terminated instance). Only that listen-time failure is translated, to the same exception the iOS listener throws;
+    // the receiver is stopped and its peer released first, so nothing stays allocated or registered.
+    private static Registration Register(FrameReceiver receiver, Func<IListenerRegistration> listen)
+    {
+        IListenerRegistration registration;
+        try
+        {
+            registration = listen();
+        }
+        catch (Java.Lang.RuntimeException exception)
+        {
+            receiver.Abandon();
+            throw new InvalidOperationException(exception.Message ?? "Firestore refused to listen.", exception);
+        }
+
+        receiver.Attach(registration);
         return new Registration(receiver);
     }
 
