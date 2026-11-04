@@ -186,9 +186,11 @@ It was taken at a host load of 62 rather than 12–32, so its timings aren't com
   between cancels it.
 - **A refused listen throws, as on iOS.** When `addSnapshotListener` itself throws (for example on a terminated
   Firestore instance), `Listen` stops the receiver, releases its peer, and throws `InvalidOperationException` with
-  Firestore's message and the Java exception as `InnerException`. Each verifying run now checks this: on the emulator
-  (own Firestore on 8281/4511), `IllegalStateException: The client has already been terminated` was wrapped as
-  expected, and the settled global reference count went from 210 to 211 across 10 refused listens (no leak).
+  Firestore's message and the Java exception as `InnerException`. Only `IllegalStateException`, Firestore's refusal,
+  is translated; any other exception from `addSnapshotListener` is rethrown as it is, after the same cleanup. Each
+  verifying run now checks this. The committed run in `refused-listen-check/` (own Firestore on 8281/4511, host load
+  about 250, so not for timings) recorded `refusedListen: ok (IllegalStateException: The client has already been
+  terminated); settled GREFs before 191, after 10 refused listens 192`: wrapped as expected, and no leak.
 - **The first error stops the listener.** A frame that fails to decode, or a snapshot the shim fails to encode (for
   example, one that would pass the 2 GB frame cap), closes the listener, removes the Firestore registration, and
   reports a `PeerlessFormatException`; a Firestore error reports a `FirestoreListenException` with Firestore's code.
