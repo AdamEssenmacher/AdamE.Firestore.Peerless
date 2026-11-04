@@ -105,8 +105,12 @@ value = tag:u8 body
 map-body = count:varint (key:string value)*count
 ```
 
-- Map keys are unique within a map (encoders read them from a native map, so this holds by construction), and
-  decoders **reject** a map with a repeated key, including a document's fields. Key order is the encoder's iteration
+- Map keys are unique within a map, and decoders **reject** a map with a repeated key, including a document's
+  fields. Encoders read keys from a native map, so they start out unique, with one exception: a lone UTF-16 surrogate
+  is written as U+FFFD, so two keys that differ only in lone surrogates would be written identically. An encoder must
+  detect that (it can only happen in a map where some key held a lone surrogate) and **fail that snapshot** rather
+  than write the duplicate. The Android shim reports it as an encoding failure (`onError` with a
+  `PeerlessFormatException`); the iOS encoder must do the same. Key order is the encoder's iteration
   order and carries no meaning; decoders must not depend on it.
 - A decoder rejects an unknown tag. Because a value carries no length, an unknown tag can't be skipped, so a new value
   kind needs a **major** version bump.

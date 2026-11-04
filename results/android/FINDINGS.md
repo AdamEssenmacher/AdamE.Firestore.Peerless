@@ -10,9 +10,12 @@ On the same documents, sizes, settle points, AVD and ports, Peerless delivers a 
 
 - **no JNI global references per snapshot** (peered: about 31–35 per document over the settled count; 5,588 at
   the peak of a 1000-document snapshot),
-- **43–58× less managed allocation** (about 80 bytes per value instead of 3.5–4.5 KB),
-- **80–140× less main-thread CPU** for collections of 500–1000 documents (1000 docs: 9.5 ms instead of 1.3 s), and
-- **no GCs inside the callback** (peered: up to 600 in one 1000-document snapshot on this emulator).
+- **43–58× less managed allocation for query snapshots** (about 80 bytes per value instead of 3.4–4.4 KiB; 22–27× for
+  the single-document listener, whose snapshots are too small for the per-snapshot overhead to vanish),
+- **74–139× less main-thread CPU** for collections of 500–1000 documents (1000-doc initial: 9.5 ms instead of 1.3 s;
+  1000-doc update: 9.3 ms instead of 689 ms), and
+- **at most one GC inside a callback** (median 1 per 1000-document update, 0 elsewhere), against up to 600 in one
+  1000-document peered snapshot on this emulator.
 
 Both paths produce **identical values**. Every run first listens to a collection that covers every value kind (null,
 bytes, geo point, NaN, −0.0, ±∞, extreme longs, a whole-number double, unicode, empty and nested containers, a
@@ -165,7 +168,11 @@ It was taken at a host load of 62 rather than 12–32, so its timings aren't com
   verification phase now checks this: 20 disposals from a thread-pool thread while updates keep frames arriving (half
   of them timed to land in the middle of a callback that sleeps 50 ms, alternating deliveries), plus one disposal
   from inside a callback. Result on the emulator, under NativeAOT: `ok (20 disposals from the thread pool while frames
-  arrived, 10 of them while a callback was running; one from inside a callback)`.
+  arrived, 10 of them while a callback was running; one from inside a callback)`. The `entryset-check` runs reported
+  the same, but they predate `ListenerGate` and the untimed `onFrame`, so the check was repeated on the current code
+  (`dispose-race-check/`: `peerless-direct`, 10 documents, with the same result and identical values). That run used
+  its own Firestore emulator on ports 8281/4511 at a host load of 90–100, so it is evidence for the contract only, not
+  for timings.
 - **The contract lives in one platform-neutral type**, `ListenerGate` in the core library, which the plain .NET test
   project covers deterministically, with no emulator. The tests cover a failure before `Listen` returns (held, then
   posted once afterwards), disposal from inside `onSnapshot` and from inside `onError`, disposal from another thread
