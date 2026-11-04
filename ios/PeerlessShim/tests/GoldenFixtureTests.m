@@ -259,6 +259,36 @@ static void DepthLimitAtDocumentDepth(void) {
     }
 }
 
+// Lone surrogates become U+FFFD, so two keys differing only there would collide in the frame (decoders reject a
+// repeated key). As on Android, the encoder fails the snapshot instead; a lossy key without a collision is fine.
+static void CollidingLoneSurrogateKeysAreRefused(void) {
+    unichar high[] = {'k', 0xD800};
+    unichar low[] = {'k', 0xDC00};
+    NSString *first = [NSString stringWithCharacters:high length:2];
+    NSString *second = [NSString stringWithCharacters:low length:2];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    BOOL refused = NO;
+    @try {
+        [writer writeValue:@{first: @1LL, second: @2LL}];
+    } @catch (NSException *exception) {
+        refused = [exception.reason containsString:@"lone UTF-16 surrogates"];
+    }
+    BOOL lossyAlone = YES;
+    @try {
+        [writer reset];
+        [writer writeValue:@{first: @1LL, @"k": @2LL}]; // "k\uFFFD" and "k" stay distinct
+    } @catch (NSException *exception) {
+        lossyAlone = NO;
+    }
+    if (refused && lossyAlone) {
+        passes++;
+        printf("PASS keys colliding only in lone surrogates are refused; a lone lossy key is not\n");
+    } else {
+        failures++;
+        printf("FAIL lone-surrogate key collision: refused=%d, lossy key alone accepted=%d\n", refused, lossyAlone);
+    }
+}
+
 void ListenerTestsRecord(BOOL ok, NSString *name, NSString *detail) {
     if (ok) {
         passes++;
@@ -286,6 +316,7 @@ int main(int argc, const char *argv[]) {
         StringEdgeCases();
         RefusesNestingDeeperThan100();
         DepthLimitAtDocumentDepth();
+        CollidingLoneSurrogateKeysAreRefused();
         RunListenerTests();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;

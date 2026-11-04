@@ -152,7 +152,8 @@ static inline void PLSDouble(AdamEPeerlessFrameWriter *self, double value) {
 }
 
 // UTF-16 → UTF-8 by hand, for strings holding a lone surrogate: it becomes U+FFFD, as in .NET and the Java encoder.
-static void PLSStringSlow(AdamEPeerlessFrameWriter *self, CFStringRef value, CFIndex chars) {
+// Returns whether it replaced a lone surrogate, so the frame no longer carries the string exactly.
+static BOOL PLSStringSlow(AdamEPeerlessFrameWriter *self, CFStringRef value, CFIndex chars) {
     if (self->_scratchCapacity < (size_t)chars) {
         unichar *grown = realloc(self->_scratch, (size_t)chars * sizeof(unichar));
         if (grown == NULL)
@@ -180,6 +181,7 @@ static void PLSStringSlow(AdamEPeerlessFrameWriter *self, CFStringRef value, CFI
 
     PLSVarint(self, (uint32_t)bytes);
     PLSEnsure(self, bytes);
+    BOOL replaced = NO;
     uint8_t *out = self->_buffer + self->_length;
     for (CFIndex index = 0; index < chars; index++) {
         uint32_t c = units[index];
@@ -199,6 +201,7 @@ static void PLSStringSlow(AdamEPeerlessFrameWriter *self, CFStringRef value, CFI
                 *out++ = 0xEF; // U+FFFD
                 *out++ = 0xBF;
                 *out++ = 0xBD;
+                replaced = YES;
             }
         } else {
             *out++ = (uint8_t)(0xE0 | (c >> 12));
@@ -207,6 +210,7 @@ static void PLSStringSlow(AdamEPeerlessFrameWriter *self, CFStringRef value, CFI
         }
     }
     self->_length = (size_t)(out - self->_buffer);
+    return replaced;
 }
 
 // CoreFoundation writes a lone surrogate as a 3-byte ED A0..BF sequence (CESU-style), which isn't UTF-8. Those are
@@ -224,11 +228,12 @@ static inline BOOL PLSIsWellFormed(const uint8_t *bytes, size_t length) {
 // Converts straight into the frame buffer, 5 bytes past the cursor (room for the longest varint), then slides the
 // bytes back once their length is known. CFStringGetBytes stops at a character it can't convert (lossByte 0), and
 // then the slow path redoes the string.
-static void PLSString(AdamEPeerlessFrameWriter *self, CFStringRef value) {
+// Returns whether a lone surrogate was replaced (only the slow path can do that).
+static BOOL PLSString(AdamEPeerlessFrameWriter *self, CFStringRef value) {
     CFIndex chars = CFStringGetLength(value);
     if (chars == 0) {
         PLSByte(self, 0);
-        return;
+        return NO;
     }
     size_t maxBytes = (size_t)chars * 3; // every UTF-16 unit takes at most 3 bytes; a surrogate pair 4 for 2 units
     PLSEnsure(self, 5 + maxBytes);
@@ -236,10 +241,8 @@ static void PLSString(AdamEPeerlessFrameWriter *self, CFStringRef value) {
     CFIndex used = 0;
     CFIndex converted = CFStringGetBytes(value, CFRangeMake(0, chars), kCFStringEncodingUTF8, 0, false, start + 5,
                                          (CFIndex)maxBytes, &used);
-    if (converted != chars || !PLSIsWellFormed(start + 5, (size_t)used)) {
-        PLSStringSlow(self, value, chars);
-        return;
-    }
+    if (converted != chars || !PLSIsWellFormed(start + 5, (size_t)used))
+        return PLSStringSlow(self, value, chars);
     size_t prefix = PLSVarintSize((uint32_t)used);
     if (prefix != 5)
         memmove(start + prefix, start + 5, (size_t)used);
@@ -251,6 +254,41 @@ static void PLSString(AdamEPeerlessFrameWriter *self, CFStringRef value) {
     }
     *cursor = (uint8_t)remaining;
     self->_length += prefix + (size_t)used;
+    return NO;
+}
+
+// The key as the frame carries it: each lone surrogate as U+FFFD.
+static NSString *PLSWithLoneSurrogatesReplaced(NSString *value) {
+    NSUInteger length = value.length;
+    NSMutableString *text = [NSMutableString stringWithCapacity:length];
+    for (NSUInteger index = 0; index < length; index++) {
+        unichar c = [value characterAtIndex:index];
+        if (CFStringIsSurrogateHighCharacter(c) && index + 1 < length
+            && CFStringIsSurrogateLowCharacter([value characterAtIndex:index + 1])) {
+            unichar pair[2] = {c, [value characterAtIndex:++index]};
+            [text appendString:[NSString stringWithCharacters:pair length:2]];
+        } else {
+            unichar written = (c >= 0xD800 && c <= 0xDFFF) ? 0xFFFD : c;
+            [text appendString:[NSString stringWithCharacters:&written length:1]];
+        }
+    }
+    return text;
+}
+
+// As in the Android encoder and the spec: two keys that differ only in lone surrogates would be written identically,
+// which decoders reject, so the snapshot fails instead (the listener reports it as code -1, a PeerlessFormatException
+// in .NET). Only maps where some key held a lone surrogate are checked.
+static void PLSRejectCollidingKeys(const void **keys, CFIndex count) {
+    NSMutableSet<NSString *> *written = [NSMutableSet setWithCapacity:(NSUInteger)count];
+    for (CFIndex index = 0; index < count; index++) {
+        id key = (__bridge id)keys[index];
+        NSString *asWritten = PLSWithLoneSurrogatesReplaced([key isKindOfClass:PLSStringClass] ? key : [key description]);
+        if ([written containsObject:asWritten])
+            [NSException raise:NSInvalidArgumentException
+                        format:@"Two keys in one map differ only in lone UTF-16 surrogates, which UTF-8 can't carry; "
+                               @"both would be written as \"%@\".", asWritten];
+        [written addObject:asWritten];
+    }
 }
 
 static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth);
@@ -272,11 +310,14 @@ static void PLSMapBody(AdamEPeerlessFrameWriter *self, NSDictionary *map, int de
         [NSException raise:NSMallocException format:@"Peerless could not read a map of %ld entries.", (long)count];
     @try {
         CFDictionaryGetKeysAndValues((__bridge CFDictionaryRef)map, keys, values);
+        BOOL lossy = NO;
         for (CFIndex index = 0; index < count; index++) {
             id key = (__bridge id)keys[index];
-            PLSString(self, (__bridge CFStringRef)([key isKindOfClass:PLSStringClass] ? key : [key description]));
+            lossy |= PLSString(self, (__bridge CFStringRef)([key isKindOfClass:PLSStringClass] ? key : [key description]));
             PLSValue(self, (__bridge id)values[index], depth);
         }
+        if (lossy)
+            PLSRejectCollidingKeys(keys, count);
     } @finally { // a nested value may throw (too deep, out of memory); the arrays mustn't leak
         if (keys != stackKeys)
             free(keys);

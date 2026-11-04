@@ -245,6 +245,10 @@ Also in round two:
 - **Depth, as the format counts it.** A document's field values are at depth 1, and an array or map at depth 100
   or more is refused, as the decoder refuses it; a scalar may sit at any depth. The writer used to refuse a scalar at
   depth 100. It is tested through a document: 99 nested containers accepted, 100 refused.
+- **Keys that collide in lone surrogates.** As on Android (and now in the spec), two keys of one map that differ
+  only in lone UTF-16 surrogates, which both become U+FFFD, fail the snapshot as an encoding failure (code −1, a
+  `PeerlessFormatException` in .NET) rather than producing a frame the decoder rejects. Only maps where some key held
+  a lone surrogate are checked. A shim test covers a colliding pair and a lone lossy key that doesn't collide.
 - **Exception safety and shipping hygiene.** Maps with more than 32 keys read their keys and values into malloc'd
   arrays, which leaked when a nested value threw; they're now freed in `@finally`. The test hooks
   (`adame_peerless_testing_listen`) are compiled only into the test executable (`ADAME_PEERLESS_TESTING`), not into
@@ -259,7 +263,7 @@ Also in round two:
   [`20261104-131225-peerless-tip-check`](20261104-131225-peerless-tip-check/summary.md) is a short committed
   Peerless run (10 and 100 docs, host load 47–56) of the code as committed with it. It passed every check: NativeAOT,
   calibration, `read back as written`, `identical (465 values)`, and the dispose race (20 thread-pool disposals, 10
-  during a running callback, plus one from inside a callback). Shim tests: 22 of 22.
+  during a running callback, plus one from inside a callback). Shim tests: 23 of 23.
 
 ## What makes these numbers unreliable
 
