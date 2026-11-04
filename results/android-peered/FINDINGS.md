@@ -54,10 +54,11 @@ why *update, after a settle* rows show a lower peak over settled than the other 
 table subtracted the count at callback entry instead, which understated update peaks more (1000-doc updates: 2,028).
 All figures here are recomputed from the committed CSVs by `scripts/summarize-peered.py`; none needed a re-run.
 
-- **Managed allocation is about 3.4–4.4 KiB per converted value at 100+ documents.** Updates (about 3.4 KiB) run
-  10–20% below initial snapshots (3.8–4.4 KiB). The 10-document and single-document rows run higher (3.7–6.4 KiB),
-  with more GC per callback. (Sizes in this file are binary: KB and MB in the tables are KiB and MiB.) The cost is peer creation plus the binding's `JavaDictionary` and collection marshalling, which is
-  what Peerless is meant to remove.
+- **Managed allocation is about 3.4–4.4 KiB per converted value at 100+ documents.** Updates (about 3.42 KiB) run
+  10–23% below initial snapshots (3.80–4.42 KiB; at 1000 documents 3.42 against 4.42). The 10-document rows, warmup
+  included, and the single-document rows run 3.55–6.44 KiB, with more GC per callback. (Sizes in this file are binary:
+  KB and MB in the tables are KiB and MiB.) The cost is peer creation plus the binding's `JavaDictionary` and
+  collection marshalling, which is what Peerless is meant to remove.
 - **GREFs per snapshot.** With no GC during the callback, conversion holds about 31–36 GREFs per document over the
   settled count (10 docs: 312–364). At 500 and 1000 docs the peak is far below 35 × N because GCs fire inside the
   callback and release earlier documents' peers. The highest absolute count measured **inside a listener callback** is

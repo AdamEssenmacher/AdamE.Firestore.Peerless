@@ -33,7 +33,7 @@ def peak_over_settled(row):
     base = last_settled(row)
     return None if base is None or not has_peak else f(row, "gref_peak") - base
 
-lines = ["# Peered baseline summary", "", (run / "peered-run.txt").read_text().strip().replace("\n", "  \n"), "",
+lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().replace("\n", "  \n"), "",
          "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB.", "",
          "*GREF peak* is the highest .NET-side JNI global reference count seen during the callback (sampled after each",
          "document), as an absolute count: **what an app sees**, since an app never forces the settles this benchmark",
