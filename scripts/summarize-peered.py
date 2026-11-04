@@ -43,7 +43,8 @@ lines = ["# Peered baseline summary", "", (run / "peered-run.txt").read_text().s
          "Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the",
          "single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come",
          "straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached",
-         "java.lang.Class references that ART's own table (below) includes. n/a: this run predates peak sampling.", "",
+         "java.lang.Class references that ART's own table (below) includes."
+         + ("" if has_peak else " n/a: this run predates peak sampling."), "",
          "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|"]
 def after_settle(row):
@@ -73,9 +74,11 @@ previous = (run / "summary.md").read_text() if (run / "summary.md").exists() els
 have_logcat = (run / "logcat.txt").exists()
 forced = [l.split("monodroid-gc: ", 1)[1].strip() for l in ((run / "logcat.txt").read_text(errors="replace").splitlines()
           if have_logcat else []) if "outstanding GREFs" in l]
-if have_logcat or "Emergency GCs" not in previous:
-    lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): {len(forced)}"
+if have_logcat:
+    lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`, whole run): {len(forced)}"
               + (f" (e.g. \"{forced[0]}\")" if forced else "")]
+elif "Emergency GCs" not in previous:
+    lines += ["", "Emergency GCs forced by the runtime's GREF threshold: unknown (this run's logcat isn't available)"]
 else:
     lines += ["", next(l for l in previous.splitlines() if l.startswith("Emergency GCs"))]
 lines += ["", f"Partial snapshots skipped: {len(skipped)}", "", "## Settled references (after forced .NET + Java GC)", "",
