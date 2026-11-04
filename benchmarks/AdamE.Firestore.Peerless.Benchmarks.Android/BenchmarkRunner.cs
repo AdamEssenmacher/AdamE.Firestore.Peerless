@@ -95,6 +95,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             {
                 await VerifyAsync(listening, seeding).ConfigureAwait(false);
                 await DisposeRaceAsync(listening, seeding).ConfigureAwait(false);
+                await RefusedListenAsync().ConfigureAwait(false);
             }
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
@@ -312,6 +313,43 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             : $"VIOLATED {violations} times";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
+    }
+
+    /// <summary>
+    /// A listen Firestore refuses (here: on a terminated instance) must throw InvalidOperationException with the Java
+    /// exception inside, as on iOS, and leave nothing behind: the settled global reference count is compared before
+    /// and after ten refused listens.
+    /// </summary>
+    private async Task RefusedListenAsync()
+    {
+        FirebaseFirestore terminated = Connect("terminated");
+        await terminated.Terminate().AsTask().ConfigureAwait(false);
+        Query query = terminated.Collection("refused");
+        (int before, _, _) = await Probes.SettleAsync().ConfigureAwait(false);
+
+        string verdict = "ok";
+        for (int attempt = 0; attempt < 10 && verdict == "ok"; attempt++)
+        {
+            try
+            {
+                using IDisposable registration = PeerlessListener.Listen(query, _ => { }, _ => { });
+                verdict = "FAILED: Listen on a terminated instance did not throw";
+            }
+            catch (InvalidOperationException exception) when (exception.InnerException is Java.Lang.Exception inner)
+            {
+                if (attempt == 0)
+                    verdict = $"ok ({inner.GetType().Name}: {exception.Message})";
+            }
+            catch (Exception exception)
+            {
+                verdict = $"FAILED: {exception.GetType().Name}: {exception.Message}";
+            }
+        }
+
+        (int after, _, _) = await Probes.SettleAsync().ConfigureAwait(false);
+        verdict = $"{verdict}; settled GREFs before {before}, after 10 refused listens {after}";
+        results?.Note("refusedListen", verdict.ReplaceLineEndings(" "));
+        Report($"refused listen: {verdict}");
     }
 
     private async Task QueryPhaseAsync(
