@@ -19,7 +19,8 @@ On the same documents, sizes, settle points and simulator, Peerless delivers a s
 
 - **no `NSObject` peers at all**: 0 created and 0 peer-table entries added in every one of 556 Peerless callbacks, the snapshot itself
   included (peered: about 47 created per document, 47,129 for a 1000-document snapshot),
-  The peer table's absolute count during a Peerless callback is 9–45. That's the app's own 7 entries, plus the
+  The peer table's absolute count during a Peerless callback is 9–70 in the committed runs (the single-document
+  listener's updates, which run longest between settles, have a median of 45). That's the app's own 7 entries, plus the
   seeder's update writes since the last settle (their arguments and completions), which is the same harness effect as
   Android's 4–36 GREFs over settled. None of it is created by the snapshot. [COMPARISON.md](COMPARISON.md) gives the
   absolute and over-settled tables on Android's rules.

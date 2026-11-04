@@ -16,8 +16,15 @@
 # skipped (unless ALLOW_NO_VERIFY=1), or a summarizer error.
 set -euo pipefail
 
-udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [peered|peerless] [launch args]}"
+usage="usage: run-ios-benchmark.sh <simulator-udid> [peered|peerless] [launch args, e.g. -sizes 10,100]"
+udid="${1:?$usage}"
 mode="${2:-peered}"
+# Checked before anything else (build, database clear, launch): a launch argument given in the mode's place, as in
+# `run-ios-benchmark.sh <udid> -sizes 10,100`, would otherwise become the mode and the run would wait out its timeout.
+case "$mode" in
+  peered|peerless) ;;
+  *) echo "$usage" >&2; echo "Unknown mode '$mode': the second argument is the mode (peered or peerless)." >&2; exit 2 ;;
+esac
 shift 2 || shift $# || true
 port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
