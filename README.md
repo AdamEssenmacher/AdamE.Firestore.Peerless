@@ -90,7 +90,7 @@ deliberately not the defaults.
 The iOS app seeds the same documents and runs the same phases and settle points (`benchmarks/Shared`), listening
 through `AdamE.Firebase.iOS.CloudFirestore` and converting each snapshot into the same plain .NET values as Android's
 peered mode. For each callback it records wall time, main-queue CPU time, managed allocations, GC count and pause time,
-and `NSObject` peers: every peer created, and the live peer table. It also records the settled peer table after forced
+and `NSObject` peers: every peer created, and the peer table. It also records the settled peer table after forced
 GCs. Each run first checks that a collection covering every value kind reads back exactly as it was written.
 
 Requirements: .NET SDK 10.0.403 with the `ios` workload (27.1), Xcode 27.1, the Firebase CLI, and an arm64 iOS

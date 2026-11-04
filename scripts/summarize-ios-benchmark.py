@@ -14,34 +14,64 @@ def rng(values, scale=1.0):
     values = [v / scale for v in values]
     return f"{med(values):.1f} [{min(values):.1f}–{max(values):.1f}]"
 
+# The settle point before each sample, as on Android: before-listen for an initial snapshot, otherwise the latest of
+# after-initial / after-update-N before it. Its peer-table count is the baseline "over settled" subtracts.
+def settle_key(point):
+    if point == "before-listen": return -1
+    if point == "after-initial": return 0
+    if point.startswith("after-update-"): return int(point.rsplit("-", 1)[1])
+    return None
+settles = {}
+for row in settled:
+    key = settle_key(row["point"])
+    if key is not None:
+        settles.setdefault((row["phase"], int(row["size"])), []).append((key, int(row["peers"])))
+def last_settled(row):
+    seq = int(row["seq"])
+    earlier = [p for k, p in settles.get((row["phase"], int(row["size"])), []) if k < seq or (seq == 0 and k == -1)]
+    return float(earlier[-1]) if earlier else None
+def over_settled(row):
+    base = last_settled(row)
+    return None if base is None else f(row, "peers_peak") - base
+def after_settle(row):
+    seq = int(row["seq"])
+    return seq >= 1 and any(k == seq - 1 for k, _ in settles.get((row["phase"], int(row["size"])), []))
+def rng_opt(values, scale=1.0):
+    values = [v for v in values if v is not None]
+    return rng(values, scale) if values else "n/a"
+
 host = (run / "host.txt").read_text().strip().replace("\n", "  \n") if (run / "host.txt").exists() else ""
 lines = [f"# iOS {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().replace("\n", "  \n"), "", host, "",
-         "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *Peers created* counts every NSObject",
+         "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KiB. *Peers created* counts every NSObject",
          "peer the runtime registered during the callback (the peer table's insertion count), whatever a GC collected",
-         "meanwhile. *Table peak* is the peer table's highest entry count sampled after each document, minus the count",
-         "at entry; *table end* the same at the end of the callback. Entries are native retains held, not live managed",
-         "peers: a GC can't remove one while a main-queue callback runs (a collected peer is unregistered by",
-         "NSObject_Disposer, which drains on the main queue), so only explicit disposal lowers them inside a callback.", "",
-         "| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KB | peers created | table peak | table end | write→callback ms |",
+         "meanwhile. *Table peak* is the peer table's highest entry count sampled after each document, as an absolute",
+         "count: what an app holds. *Peak over settled* is that peak minus the count at the last settle point (forced GC,",
+         "finalizers and a main-queue turn), as Android's GREF figure is. Entries are native retains held, not live",
+         "managed peers: a GC can't remove one while a main-queue callback runs (a collected peer is unregistered by",
+         "NSObject_Disposer, which drains on the main queue), so only explicit disposal lowers them inside a callback.",
+         "*Update, after a settle* rows are the updates that come straight after a settle point; *update* rows are the",
+         "rest (as on Android: right after a settle the previous snapshot's peers are gone, so more are created).", "",
+         "| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KiB | peers created | table peak | peak over settled | write→callback ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---|---:|"]
 groups = {}
 for row in rows:
     if row["phase"] == "skipped": continue
-    groups.setdefault((row["phase"], int(row["size"]), row["kind"]), []).append(row)
+    kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
+    groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
 for (phase, size, kind), group in groups.items():
     lines.append("| " + " | ".join([
         phase, str(size), kind, str(len(group)), str(int(med([f(r, "values") for r in group]))),
         rng([f(r, "wall_us") for r in group], 1000), rng([f(r, "thread_cpu_us") for r in group], 1000),
         rng([f(r, "gc_pause_us") for r in group], 1000), f"{med([f(r, 'gen0') for r in group]):.0f}",
         f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}", rng([f(r, "peers_created") for r in group]),
-        rng([f(r, "peers_peak_delta") for r in group]), rng([f(r, "peers_delta") for r in group]),
-        f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind == "update" else "",
+        rng([f(r, "peers_peak") for r in group]), rng_opt([over_settled(r) for r in group]),
+        f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
 off_main = sum(1 for r in rows if r.get("main_thread") == "0")
 skipped = [r for r in rows if r["phase"] == "skipped"]
 lines += ["", f"Callbacks off the main thread: {off_main}. Partial snapshots skipped: {len(skipped)}.",
           "", "## Settled peers (after forced GC, finalizers and a main-queue turn, three times)", "",
-          "| phase | docs | point | peer table entries | with a live peer | managed heap KB | largest peer kinds |",
+          "| phase | docs | point | peer table entries | with a live peer | managed heap KiB | largest peer kinds |",
           "|---|---:|---|---:|---:|---:|---|"]
 lines += [f"| {s['phase']} | {s['size']} | {s['point']} | {s['peers']} | {s['peers_alive']} | "
           f"{int(s['heap_bytes']) / 1024:.0f} | {s['largest_kinds']} |" for s in settled]

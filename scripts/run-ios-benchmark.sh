@@ -11,7 +11,8 @@
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 #
 # Exits nonzero unless the run completed under NativeAOT with every self-check passing (the app records a failed
-# check as outcome: failed), and on a timeout, a dead process or a summarizer error.
+# check, or bad launch arguments, as outcome: failed), and on a timeout, a dead process, a run whose verify check was
+# skipped (unless ALLOW_NO_VERIFY=1), or a summarizer error.
 set -euo pipefail
 
 udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [launch args]}"
@@ -64,8 +65,11 @@ echo "results: $out"
 
 # The run only counts if it finished, as NativeAOT, with its own checks (calibration, verify) passed.
 [[ "$outcome" == "done" ]] || { echo "run did not finish: $outcome" >&2; exit 1; }
-grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
+grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+# A run without its verify check proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
+grep -q "^verify: read back as written" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
+  || { echo "run has no passing verify check (launched with -verify NO? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }
 # Only a finished, passing run is summarized; a summarizer error still fails the script.
 python3 -I "$root/scripts/summarize-ios-benchmark.py" "$out" >/dev/null
