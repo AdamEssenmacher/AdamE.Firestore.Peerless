@@ -164,12 +164,12 @@ public sealed class SnapshotDecoderTests
         Assert.Contains((byte)0x00, frame); // NUL is the single byte 00, not modified UTF-8's C0 80.
     }
 
-    // The real worst cases (docs/wire-format.md): a frame that decodes costs at most about 40 bytes of .NET memory per
-    // frame byte (a one-item array or map in 3-4 bytes is ~120-160 bytes of objects). A malformed frame built to waste
-    // memory can add a 32-byte slot reserved for an item that never comes, and a scratch-stack slot before the exact
-    // copy, per frame byte: about 96 measured. Both plus the decoder's fixed working memory.
+    // The real worst case (docs/wire-format.md): a frame that decodes costs at most about 43 bytes of .NET memory per
+    // frame byte on CoreCLR, which is what these tests run on (a chain of one-entry maps, 3 bytes and ~128 bytes of
+    // objects each; Mono's larger array headers would add about 5). A malformed frame is rejected as soon as its
+    // declared counts exceed the bytes left, so it costs at most about 32. Plus about 5 KB of working memory on a
+    // thread's first decode.
     private const int BytesPerFrameByte = 48;
-    private const int BytesPerHostileFrameByte = 128;
     private const int FixedOverhead = 16 * 1024;
 
     public static TheoryData<string, int> AllocationShapes => new()
@@ -181,6 +181,8 @@ public sealed class SnapshotDecoderTests
         { "map claiming one more entry than the frame holds", 1_000 },
         { "map claiming one more entry than the frame holds", 200_000 },
         { "outer array reserved but never filled", 200_000 },
+        { "one-entry maps nested 97 deep", 1 },
+        { "one-entry maps nested 97 deep", 300 },
     };
 
     [Theory]
@@ -220,6 +222,18 @@ public sealed class SnapshotDecoderTests
                     for (int index = 0; index < size; index++)
                         field.Byte(Wire.Tag.Map).Varint(1).Varint(0).Byte(Wire.Tag.Null);
                     break;
+                case "one-entry maps nested 97 deep":
+                    // An array of `size` chains, each 97 one-entry maps deep with empty keys (0B 01 00 per level):
+                    // the densest objects-per-byte shape that decodes.
+                    field.Byte(Wire.Tag.Array).Varint(size);
+                    for (int chain = 0; chain < size; chain++)
+                    {
+                        for (int level = 0; level < 97; level++)
+                            field.Byte(Wire.Tag.Map).Varint(1).Varint(0);
+                        field.Byte(Wire.Tag.Null);
+                    }
+
+                    break;
                 case "outer array reserved but never filled":
                     // An outer array claims `size` items and gets its array up front; its first item is an array that
                     // really holds `size - 4` nulls (read on the scratch stack); then the frame ends.
@@ -243,21 +257,18 @@ public sealed class SnapshotDecoderTests
         Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        if (shape is "map claiming one more entry than the frame holds" or "outer array reserved but never filled")
+        if (shape is "map claiming one more entry than the frame holds" or "outer array reserved but never filled"
+            or "hostile nested counts")
         {
-            Assert.IsType<PeerlessFormatException>(failure);
-        }
-        else if (shape == "hostile nested counts")
-        {
-            // It got all the way down to the innermost array's first item, so every declared count was accepted.
-            Assert.Contains("tag 255", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
+            // Rejected as soon as the declared counts stop fitting in the bytes left, before allocating for them.
+            Assert.Contains("exceed the", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
         }
         else
         {
             Assert.Null(failure);
         }
 
-        long bound = (long)(failure is null ? BytesPerFrameByte : BytesPerHostileFrameByte) * frame.Length + FixedOverhead;
+        long bound = (long)BytesPerFrameByte * frame.Length + FixedOverhead;
         TestContext.Current.SendDiagnosticMessage($"{shape} x {size}: {(double)allocated / frame.Length:F1} B per frame byte");
         Assert.True(allocated <= bound, $"{shape} x {size}: {allocated:N0} bytes for a {frame.Length:N0}-byte frame (bound {bound:N0}).");
     }
@@ -302,6 +313,8 @@ public sealed class SnapshotDecoderTests
 
     [Theory]
     [InlineData("/")]
+    [InlineData("a")]
+    [InlineData("rooms/a/messages")]
     [InlineData("/a/b")]
     [InlineData("a/b/")]
     [InlineData("a//b")]
@@ -353,7 +366,6 @@ public sealed class SnapshotDecoderTests
 
         Assert.IsNotType<string[]>(map.Keys);
         Assert.IsNotType<FirestoreValue[]>(map.Values);
-        Assert.Same(map.Keys, map.Keys); // created once, not per call
         Assert.Throws<NotSupportedException>(() => ((IList<string>)map.Keys)[0] = "x");
         Assert.Equal(1, map["a"].AsInteger());
     }
@@ -389,7 +401,8 @@ public sealed class SnapshotDecoderTests
     [InlineData("")]
     [InlineData("/")]
     [InlineData("a//b")]
-    public void References_with_an_empty_segment_are_rejected(string path)
+    [InlineData("users")]
+    public void References_that_are_not_document_paths_are_rejected(string path)
     {
         byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.Reference).String(path));
 

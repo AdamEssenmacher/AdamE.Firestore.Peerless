@@ -24,9 +24,11 @@ public sealed class RoundTripProperties
         Gen.String[Gen.Char.AlphaNumeric, 128, 300],
         CodePoint.Array[50, 120].Select(static parts => string.Concat(parts)));
 
+    // Document paths: one or two collection/document pairs, so always an even number of segments.
     private static readonly Gen<string> Path = Gen.String[Gen.Char.AlphaNumeric, 1, 8]
-        .Array[1, 4]
-        .Select(static segments => string.Join('/', segments));
+        .Array[2, 2]
+        .Array[1, 2]
+        .Select(static pairs => string.Join('/', pairs.SelectMany(static pair => pair)));
 
     private static readonly Gen<FirestoreValue> Scalar = Gen.OneOf(
         Gen.Const(FirestoreValue.Null),

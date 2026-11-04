@@ -98,16 +98,21 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
      `-p:PeerlessGen0=4mb` switch it used was removed afterwards, because it had no effect.
    - **Wall-time and GC numbers should be re-measured on a real arm64 device.** The Peerless side must be measured
      under the same conditions.
-2. **GC storms right after a settle point.** Some callbacks run hundreds of GCs: 381–410 at 500 documents and 517–779
-   at 1000, taking about 10 s at 1000, against about 25–50 GCs and 1.2 s for their neighbours, with about 2× the CPU.
-   In all three runs here it hits the same two callbacks at 500 and 1000 documents: the initial snapshot (which follows
-   the "before listen" settle) and seq 1, the first update (which follows the "after initial" settle). PR #3's
-   comparison runs show it at other post-settle updates too. It is the GC count, not host load: an earlier version of this file blamed host contention for the 10 s
-   update, which was wrong. The likeliest cause is the forced full GCs at the settle point resetting the GC's tuning,
+2. **GC storms right after a settle point.** Some callbacks run hundreds of GCs, taking about 10 s at 1000 documents,
+   against about 25–50 GCs and 1.2 s for their neighbours, with about 2× the CPU. In all three runs here:
+   - at 1000 documents both callbacks right after a settle storm: the initial snapshot (631, 640 and 517 GCs; it
+     follows the "before listen" settle) and seq 1, the first update (777, 779 and 719; it follows the "after initial"
+     settle);
+   - at 500 documents only seq 1 does (410, 389 and 381 GCs); the initial snapshot runs 168, 88 and 55.
+
+   PR #3's comparison runs show it at other post-settle updates too. It is the GC count, not host load: an earlier
+   version of this file blamed host contention for the 10 s update, which was wrong. The likeliest cause is the forced full GCs at the settle point resetting the GC's tuning,
    so the next large callback starts with a small gen0 budget; that is unconfirmed. The summaries report *update, after a
    settle* separately, so these callbacks can't skew the other update medians; PR #3 does the same in both modes.
-3. **Host contention.** Load average ranged from 34 to 172 on 18 cores during the runs (other Scavos builds and tests,
-   the self-hosted runner's Firebase NuGet build, and two other Android emulators). Main-thread CPU time, allocations
+3. **Host contention.** The two runs that recorded it (`host.txt`) ended at 1-minute load averages of 34 and 33 on 18
+   cores, with 5- and 15-minute averages from 48 to 129; the first run recorded none. Load seen on the machine during
+   the session reached about 172 (other Scavos builds and tests, the self-hosted runner's Firebase NuGet build, and
+   two other Android emulators). Main-thread CPU time, allocations
    and GREF counts are much more stable than wall time.
 4. **One run per configuration.** Initial-snapshot rows have n=1. Spread is shown as min–max in each `summary.md`.
    The two older runs (`20261103-133339`, `20261103-133741-gen0-4mb`) predate peak sampling, so their summaries show

@@ -12,7 +12,7 @@
 #                   exit, with the port forward) and clears logcat; without it, non-emulator serials are refused
 #   FIREBASE_HUB_PORT  the emulator hub's port (default 4501), used to check FIRESTORE_PORT is really Firestore's
 #   FIRESTORE_PORT  the Firestore emulator's host port (default 8181, as in firebase.json); the app reaches it at
-#                   10.0.2.2:<port>
+#                   10.0.2.2:<port> from an emulator, or at 127.0.0.1:<port> through `adb reverse` from a device
 #
 # The emulator AVD (one-time setup; any arm64 API 36 Google APIs image works):
 #   sdkmanager "system-images;android-36;google_apis;arm64-v8a"
@@ -47,8 +47,11 @@ else
   app_host="127.0.0.1" # a device reaches the host's Firestore emulator through `adb reverse` (set up below)
 fi
 
-# Everything this script changes on the device is undone when it exits, however it exits.
+# Everything this script changes on the device is undone when it exits, however it exits: the hidden-API setting,
+# the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
+previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null | sed -nE 's/.*ring buffer is ([0-9]+) ?([KMG])i?B.*/\1\2/p' | head -1)"
+log_resized=0
 reversed=0
 cleanup() {
   if [ "$previous_policy" = "null" ] || [ -z "$previous_policy" ]; then
@@ -58,6 +61,9 @@ cleanup() {
   fi
   if [ "$reversed" = "1" ]; then
     adb -s "$serial" reverse --remove "tcp:$port" >/dev/null 2>&1 || true
+  fi
+  if [ "$log_resized" = "1" ] && [ -n "$previous_log_size" ]; then
+    adb -s "$serial" logcat -G "$previous_log_size" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -82,16 +88,24 @@ adb -s "$serial" shell rm -f "$files/$mode-samples.csv" "$files/$mode-settled.cs
 # Start each run from an empty emulator database.
 curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
 # The app reads ART's JNI reference tables through a hidden API (dalvik.system.VMDebug). API 36 Google APIs images
-# allow it already; this keeps it working on stricter images. Emulator-only setting; it does not touch the host.
+# allow it already; this keeps it working on stricter images. It changes the emulator's (or device's) settings, not
+# the host's, and is restored on exit.
 adb -s "$serial" shell settings put global hidden_api_policy 1
 [ "$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')" = "1" ] \
   || { echo "Could not set hidden_api_policy on $serial; ART reference-table dumps will be missing." >&2; }
 if [ "$app_host" = "127.0.0.1" ]; then
-  adb -s "$serial" reverse "tcp:$port" "tcp:$port" >/dev/null
-  reversed=1
+  # A forward someone already set up for this port stays as it is, and isn't removed afterwards either.
+  if ! adb -s "$serial" reverse --list | grep -q "tcp:$port tcp:$port"; then
+    adb -s "$serial" reverse "tcp:$port" "tcp:$port" >/dev/null
+    reversed=1
+  fi
 fi
 # ART's reference-table dumps are long: a bigger ring buffer keeps them from being overwritten before they're pulled.
-adb -s "$serial" logcat -G 16M || echo "Could not enlarge the logcat buffer; long ART dumps may be cut off." >&2
+if adb -s "$serial" logcat -G 16M; then
+  log_resized=1
+else
+  echo "Could not enlarge the logcat buffer; long ART dumps may be cut off." >&2
+fi
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
 load_before="$(uptime)"
