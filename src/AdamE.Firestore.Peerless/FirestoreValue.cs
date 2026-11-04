@@ -109,7 +109,7 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
     {
         ArgumentNullException.ThrowIfNull(path);
         if (!FirestoreDocument.IsValidPath(path))
-            throw new ArgumentException($"\"{path}\" is not a document path: it is empty or has an empty segment.", nameof(path));
+            throw new ArgumentException($"\"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", nameof(path));
         return new(FirestoreValueKind.Reference, reference: path);
     }
 
@@ -140,6 +140,11 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
     public string AsString() => (string)Expect(FirestoreValueKind.String).Reference();
 
     /// <summary>The bytes. Throws unless <see cref="Kind"/> is <see cref="FirestoreValueKind.Bytes"/>.</summary>
+    /// <remarks>
+    /// The memory is the value's own, not a copy, as is usual for <see cref="ReadOnlyMemory{T}"/>: code that recovers
+    /// the array (for example with <c>MemoryMarshal.TryGetArray</c>) and writes to it changes this value, its
+    /// <see cref="Equals(FirestoreValue)"/> and its hash code. Copy it (<c>ToArray()</c>) to keep or change it.
+    /// </remarks>
     public ReadOnlyMemory<byte> AsBytes() => (byte[])Expect(FirestoreValueKind.Bytes).Reference();
 
     /// <summary>The timestamp. Throws unless <see cref="Kind"/> is <see cref="FirestoreValueKind.Timestamp"/>.</summary>
@@ -189,7 +194,7 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
         return Kind == FirestoreValueKind.Boolean;
     }
 
-    /// <summary>Gets the bytes if this is a bytes value.</summary>
+    /// <summary>Gets the bytes if this is a bytes value; shared, not copied, as <see cref="AsBytes"/> explains.</summary>
     public bool TryGetBytes(out ReadOnlyMemory<byte> value)
     {
         value = Kind == FirestoreValueKind.Bytes ? (byte[]?)reference : default;

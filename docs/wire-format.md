@@ -73,8 +73,9 @@ document  = path:string flags:u8 fields
 fields    = (if flags & 0x01) map-body
 ```
 
-- `path` is the document's full path, for example `rooms/abc/messages/1`. A path that is empty or has an empty
-  segment (a leading, trailing or doubled `/`, including `/` alone) is rejected.
+- `path` is the document's full path, for example `rooms/abc/messages/1`. A path that is empty, has an empty segment
+  (a leading, trailing or doubled `/`, including `/` alone) or has an odd number of segments (a collection path such
+  as `rooms`) is rejected.
 - Flag bits: `0x01` = `exists`, `0x02` = `isFromCache`, `0x04` = `hasPendingWrites` (the document's own metadata).
 - A document that doesn't exist has no `fields` at all. Only a document snapshot frame (kind 2) can carry one.
 - Documents appear in the snapshot's order, which for a query is the query's order.
@@ -96,7 +97,7 @@ value = tag:u8 body
 | 6 | bytes | `varint` length, raw bytes |
 | 7 | timestamp | `seconds:i64 nanoseconds:i32`, within Firestore's range: 0 ≤ nanoseconds ≤ 999,999,999 and −62,135,596,800 ≤ seconds ≤ 253,402,300,799 (0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z). Decoders reject anything outside it. |
 | 8 | geo point | `latitude:f64 longitude:f64`, with −90 ≤ latitude ≤ 90 and −180 ≤ longitude ≤ 180 (never NaN), as Firestore requires. Decoders reject anything else. |
-| 9 | reference | `path:string`, the referenced document's full path, under the same rule as a document's path (non-empty, no empty segment; decoders reject anything else) |
+| 9 | reference | `path:string`, the referenced document's full path, under the same rule as a document's path (non-empty, no empty segment, an even number of segments; decoders reject anything else) |
 | 10 | array | `count:varint value*count` |
 | 11 | map | `map-body` |
 | 12 | unsupported | `typeName:string`, the native type the encoder didn't understand |
@@ -114,16 +115,17 @@ map-body = count:varint (key:string value)*count
   document's field values are at depth 1; the items of an array or map value at depth *d* are at depth *d* + 1. An
   array or map value **at depth 100 or more is rejected**, so at most 99 containers can nest inside a document's
   fields. (The document's own fields map isn't counted.)
-- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame, since every item takes
-  at least one byte. Decoders must keep memory proportional to the frame's size even when counts are nested to claim
-  the same bytes over and over. The .NET decoder's guarantee: it allocates a container at its declared size up front
-  only while the declared-but-unread items of all open up-front containers fit in the bytes left to read, which real
-  data always does. Other containers are read onto a scratch stack and allocated when they end, so they cost only
-  the items actually read, on a stack of fixed-size chunks that grows without copying. Its allocation per frame
-  byte, plus a fixed few KB: at most about **48 bytes** for a frame that decodes (a one-item array or map in 3–4 bytes
-  is the densest case), and at most about **128 bytes** for a malformed frame built to waste memory. That case can
-  combine a 32-byte slot reserved for an item that never arrives, a scratch slot, and the exact-size copy (about 96
-  measured). A tighter bound would need scratch memory kept as large as the largest frame, or non-contiguous arrays.
+- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame. Every item takes at
+  least one byte (an array item its tag; a map entry a key length and a tag; a document a path length and its flags),
+  so in a frame that can decode, the items still to come in all open containers always fit in the bytes left. Decoders
+  **reject a frame as soon as its declared counts stop fitting**, before allocating for them; a frame that nests
+  counts claiming the same bytes over and over is caught at the second level. The .NET decoder then allocates each
+  container at its declared size. Its memory per frame byte: at most about **48 bytes** (the densest shape, a chain of
+  one-entry maps at 3 bytes each, measures 43 on CoreCLR; Mono's 8-byte-larger array headers add about 5; the tests
+  run on CoreCLR only), and a rejected frame costs at most about 32 (the outermost container's array, allocated before
+  an inner count is found not to fit). The documents array is allocated exactly as declared, at most 4 bytes per frame
+  byte. On top of that, a thread's first decode allocates about 5 KB of working memory (field-name cache and
+  duplicate-key tables), reused by its later decodes.
 
 ### What encoders write
 

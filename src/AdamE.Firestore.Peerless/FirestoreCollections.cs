@@ -69,8 +69,6 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
     private const int LinearSearchLimit = 8;
 
     private readonly string[] keys;
-    private System.Collections.ObjectModel.ReadOnlyCollection<string>? keyView;
-    private System.Collections.ObjectModel.ReadOnlyCollection<FirestoreValue>? valueView;
     private readonly FirestoreValue[] values;
     private Dictionary<string, int>? index;
 
@@ -106,12 +104,15 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
         : throw new KeyNotFoundException($"The map has no field \"{key}\".");
 
     /// <summary>The keys, in the order the native SDK produced them.</summary>
-    /// <remarks>A read-only view, created once per map: the map's own arrays are never handed out.</remarks>
-    public IEnumerable<string> Keys => keyView ??= Array.AsReadOnly(keys);
+    /// <remarks>
+    /// A read-only view over the map's keys; the map's own array is never handed out. Each call creates a small
+    /// wrapper (kept off the map, so decoded maps stay small); <c>foreach</c> over the map itself allocates less.
+    /// </remarks>
+    public IEnumerable<string> Keys => Array.AsReadOnly(keys);
 
     /// <summary>The values, in the same order as <see cref="Keys"/>.</summary>
-    /// <remarks>A read-only view, created once per map: the map's own arrays are never handed out.</remarks>
-    public IEnumerable<FirestoreValue> Values => valueView ??= Array.AsReadOnly(values);
+    /// <remarks>A read-only view over the map's values, created per call like <see cref="Keys"/>.</remarks>
+    public IEnumerable<FirestoreValue> Values => Array.AsReadOnly(values);
 
     /// <inheritdoc />
     public bool ContainsKey(string key) => IndexOf(key) >= 0;

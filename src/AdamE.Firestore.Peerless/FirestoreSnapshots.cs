@@ -10,7 +10,8 @@ public sealed class FirestoreDocument
 {
     /// <summary>Creates a document. A document that does not exist must have empty <paramref name="fields"/>.</summary>
     /// <exception cref="ArgumentException">
-    /// <paramref name="path"/> is empty or has an empty segment (a leading, trailing or doubled <c>/</c>).
+    /// <paramref name="path"/> is not a document path: it is empty, has an empty segment (a leading, trailing or doubled
+    /// <c>/</c>), or has an odd number of segments (a collection path).
     /// </exception>
     public FirestoreDocument(string path, bool exists, SnapshotMetadata metadata, FirestoreMap fields)
         : this(path, exists, metadata, fields, validated: false)
@@ -22,7 +23,7 @@ public sealed class FirestoreDocument
         ArgumentNullException.ThrowIfNull(path);
         ArgumentNullException.ThrowIfNull(fields);
         if (!validated && !IsValidPath(path))
-            throw new ArgumentException($"\"{path}\" is not a document path: it is empty or has an empty segment.", nameof(path));
+            throw new ArgumentException($"\"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", nameof(path));
         if (!exists && fields.Count != 0)
             throw new ArgumentException("A document that does not exist has no fields.", nameof(fields));
 
@@ -32,9 +33,11 @@ public sealed class FirestoreDocument
         Fields = fields;
     }
 
-    // Non-empty, and no empty segment: no leading or trailing '/', no "//".
+    // A document path: non-empty, no empty segment (no leading or trailing '/', no "//"), and an even number of
+    // segments (collection/document pairs), so a collection path such as "rooms" or "rooms/a/messages" is refused.
     internal static bool IsValidPath(string path) =>
-        path.Length > 0 && path[0] != '/' && path[^1] != '/' && !path.Contains("//", StringComparison.Ordinal);
+        path.Length > 0 && path[0] != '/' && path[^1] != '/' && !path.Contains("//", StringComparison.Ordinal)
+        && path.AsSpan().Count('/') % 2 == 1;
 
     /// <summary>The document's full path, for example <c>rooms/abc/messages/1</c>.</summary>
     public string Path { get; }
