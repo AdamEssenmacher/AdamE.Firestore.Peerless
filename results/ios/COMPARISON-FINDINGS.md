@@ -19,6 +19,10 @@ On the same documents, sizes, settle points and simulator, Peerless delivers a s
 
 - **no `NSObject` peers at all**: 0 created and 0 peer-table entries added in every one of 556 Peerless callbacks, the snapshot itself
   included (peered: about 47 created per document, 47,129 for a 1000-document snapshot),
+  The peer table's absolute count during a Peerless callback is 9–45. That's the app's own 7 entries, plus the
+  seeder's update writes since the last settle (their arguments and completions), which is the same harness effect as
+  Android's 4–36 GREFs over settled. None of it is created by the snapshot. [COMPARISON.md](COMPARISON.md) gives the
+  absolute and over-settled tables on Android's rules.
 - **about 37× less managed allocation** (about 80 bytes per value instead of about 3 KB),
 - **25–28× less main-queue CPU** for collections of 500–1000 documents (1000 docs: 10 ms instead of 257–282 ms),
 - **almost no GCs inside the callback**: none at 10–100 docs, and one every 2–5 callbacks at 500–1000 docs (the decode
@@ -119,8 +123,10 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   non-serial queues because GCD has no public API to ask whether a queue is concurrent, so a check would be a guess.
   The cost is one uncontended lock per snapshot.
 - **The first error stops the listener.** A Firestore error, or an encode failure (an Objective-C exception from the
-  writer, or a frame over 2 GB), mutes the listener and removes its registration before `on_error` is called. .NET
-  then stops it from inside that callback, so the handle is released when the callback returns.
+  writer, or a frame over 2 GB), mutes the listener before `on_error` is called: no callback starts after it. Its
+  Firestore registration is removed once `on_error` has returned and the listener's lock is released (since round
+  two, never while the lock is held; see *Review changes, round two*). .NET stops it from inside that callback, so
+  the handle is released when the callback returns.
 - **Encoding happens on Firestore's callback queue** (`settings.dispatchQueue`, main by default), from
   `snapshot.data`, which keeps the SDK's default server-timestamp behavior (none → null), as on Android.
 - **Each listener reuses one malloc'd buffer**, which grows to the largest frame. Strings go straight into it through
@@ -224,6 +230,36 @@ Also in round two:
 - **Simulator smoke runs after the fix** (NativeAOT, host load 150–165, timings not committed): three in a row passed
   every check. The dispose race recorded 13, 12 and 11 of its 20 disposals landing during a running callback. Frame
   costs matched the timed runs (100 docs: 1.2–1.3 ms, 0 peers, 345 KB).
+
+## Review changes, round three
+
+- **A refused listen no longer aborts the process.** `addSnapshotListener:` raises an `NSException` when Firestore
+  refuses a listen, for example on a terminated instance. That used to unwind through the C shim into the .NET
+  `DllImport` frame, which aborts the process, and the `GCHandle` leaked. The shim now catches it and returns NULL
+  with Firestore's reason, and `Listen` throws `InvalidOperationException` with it. A shim test forces the raise on
+  a real, offline, terminated Firestore instance. The other example given in review, `limit(toLast:)` without an
+  `orderBy`, doesn't raise at listen time in Firestore 12.18; the shim test found that out, so it isn't used. On
+  Android the same mistakes surface as a Java `IllegalStateException`, marshalled as a catchable
+  `Java.Lang.IllegalStateException`, not an `InvalidOperationException`. Making the two match is left to the Android
+  library.
+- **Depth, as the format counts it.** A document's field values are at depth 1, and an array or map at depth 100
+  or more is refused, as the decoder refuses it; a scalar may sit at any depth. The writer used to refuse a scalar at
+  depth 100. It is tested through a document: 99 nested containers accepted, 100 refused.
+- **Exception safety and shipping hygiene.** Maps with more than 32 keys read their keys and values into malloc'd
+  arrays, which leaked when a nested value threw; they're now freed in `@finally`. The test hooks
+  (`adame_peerless_testing_listen`) are compiled only into the test executable (`ADAME_PEERLESS_TESTING`), not into
+  the shipped static library.
+- **Docs.** The header and these findings now say the registration is removed after `on_error` returns, not before.
+  `Listen` can itself wait for a first callback already running on another thread; that's documented next to the
+  `Dispose` warning.
+- **Like-for-like metrics.** `compare-ios.py` now reports the peer table's absolute peak and its peak over the last
+  settle, with updates straight after a settle kept apart, as Android's comparison does. COMPARISON.md and
+  COMPARISON-high-load.md are regenerated from the committed CSVs.
+- **Evidence from the reviewed code.**
+  [`20261104-131225-peerless-tip-check`](20261104-131225-peerless-tip-check/summary.md) is a short committed
+  Peerless run (10 and 100 docs, host load 47–56) of the code as committed with it. It passed every check: NativeAOT,
+  calibration, `read back as written`, `identical (465 values)`, and the dispose race (20 thread-pool disposals, 10
+  during a running callback, plus one from inside a callback). Shim tests: 22 of 22.
 
 ## What makes these numbers unreliable
 

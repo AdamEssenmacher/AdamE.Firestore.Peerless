@@ -80,14 +80,20 @@ internal sealed unsafe class FrameReceiver : IDisposable
         GCHandle self = GCHandle.Alloc(receiver);
         nint context = GCHandle.ToIntPtr(self);
         int timed = observer is null ? 0 : 1; // production frames take no clock reads
+        const int ErrorCapacity = 1024;
+        byte* error = stackalloc byte[ErrorCapacity];
+        error[0] = 0;
         nint created = isDocument
-            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed)
-            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed);
+            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity)
+            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity);
         GC.KeepAlive(target);
         if (created == 0)
         {
+            // Nothing was registered and the shim kept no reference to the context.
             self.Free();
-            throw new ArgumentException($"The shim could not listen to a {target.GetType().Name}.", nameof(target));
+            string reason = Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(error));
+            throw new InvalidOperationException(
+                $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}");
         }
 
         Volatile.Write(ref receiver.listener, created);

@@ -231,6 +231,34 @@ static void RefusesNestingDeeperThan100(void) {
     }
 }
 
+// The format counts a document's field values as depth 1 and refuses an array or map value at depth 100 or more; a
+// scalar may sit at any depth. Entered the way a snapshot is: through a document's fields.
+static BOOL DocumentWithNesting(int containers) {
+    id value = @"leaf";
+    for (int depth = 0; depth < containers; depth++)
+        value = @[value];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    @try {
+        [writer writeDocumentPath:@"c/d" exists:YES fromCache:NO hasPendingWrites:NO data:@{@"field": value}];
+        return YES;
+    } @catch (NSException *exception) {
+        return NO;
+    }
+}
+
+static void DepthLimitAtDocumentDepth(void) {
+    BOOL ninetyNine = DocumentWithNesting(99);  // innermost array at depth 99, its string at depth 100
+    BOOL hundred = DocumentWithNesting(100);    // innermost array at depth 100
+    if (ninetyNine && !hundred) {
+        passes++;
+        printf("PASS depth limit as the format counts it (99 containers in a document accepted, 100 refused)\n");
+    } else {
+        failures++;
+        printf("FAIL depth limit: 99 containers %s, 100 containers %s\n", ninetyNine ? "accepted" : "refused",
+               hundred ? "accepted" : "refused");
+    }
+}
+
 void ListenerTestsRecord(BOOL ok, NSString *name, NSString *detail) {
     if (ok) {
         passes++;
@@ -257,6 +285,7 @@ int main(int argc, const char *argv[]) {
         AReusedWriterProducesTheSameFrameAgain(fixtures);
         StringEdgeCases();
         RefusesNestingDeeperThan100();
+        DepthLimitAtDocumentDepth();
         RunListenerTests();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;

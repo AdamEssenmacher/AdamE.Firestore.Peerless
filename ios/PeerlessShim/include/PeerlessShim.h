@@ -7,10 +7,14 @@
 // Contract (the same as the Android shim's .NET listener):
 // - Callbacks for one listener never overlap: each runs under the listener's lock, even on a concurrent callback
 //   queue (GCD can't tell a concurrent queue from a serial one, so the shim doesn't try to reject one).
-// - The first error is the last callback: the listener mutes itself and removes its Firestore registration first.
+// - The first error is the last callback: the listener mutes itself (no callback starts after it), calls on_error, and
+//   removes its Firestore registration once on_error has returned and the listener's lock is released.
 // - After adame_peerless_listener_remove returns, no callback starts, and one that was running on another thread has
 //   finished (remove waits for it). Called from inside a callback, on the callback's thread, remove returns at once
 //   and the running callback is the last.
+// - Listening waits for a first callback already in flight: the listen call takes the listener's lock to store the
+//   registration, so if Firestore starts delivering on another thread before it returns, it waits for that callback
+//   (the same reason Dispose waits). On the main queue, listening from the main thread, this can't happen.
 // - `release` runs exactly once, when no callback can still use the context: inside remove, or, when remove is called
 //   from inside a callback, right after that callback returns.
 // - Firestore's own registration is never removed while the listener's lock is held. Firestore holds its listener
@@ -54,12 +58,16 @@ typedef struct adame_peerless_frame_timing {
 /// another), with metadata-only changes excluded, as addSnapshotListener: does by default. With `timed` nonzero the
 /// listener records adame_peerless_frame_timing for each frame (a few clock reads, plus two per document); production
 /// listeners pass 0 and take no clock reads.
+/// If Firestore refuses the query (it raises for, e.g., limit(toLast:) without an orderBy, or a terminated instance),
+/// returns NULL and writes the reason, UTF-8 and NUL-terminated, into `error` (up to `error_capacity` bytes). Nothing
+/// is left registered and the context is not referenced.
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback on_frame,
-                                  adame_peerless_error_callback on_error, int timed);
+                                  adame_peerless_error_callback on_error, int timed, char *error, size_t error_capacity);
 
 /// Listens to a FIRDocumentReference. Same contract as adame_peerless_listen_query.
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback on_frame,
-                                     adame_peerless_error_callback on_error, int timed);
+                                     adame_peerless_error_callback on_error, int timed, char *error,
+                                     size_t error_capacity);
 
 /// Stops the listener (see the contract above) and invalidates the listener pointer. Safe from any thread, and more
 /// than once per listener is a caller error.

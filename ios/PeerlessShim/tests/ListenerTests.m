@@ -6,7 +6,14 @@
 #import <pthread.h>
 #import <unistd.h>
 
+#import <FirebaseCore/FIRApp.h>
+#import <FirebaseCore/FIROptions.h>
+#import <FirebaseFirestoreInternal/FIRCollectionReference.h>
+#import <FirebaseFirestoreInternal/FIRFirestore.h>
 #import <FirebaseFirestoreInternal/FIRFirestoreErrors.h>
+#import <FirebaseFirestoreInternal/FIRFirestoreSettings.h>
+#import <FirebaseFirestoreInternal/FIRLocalCacheSettings.h>
+#import <FirebaseFirestoreInternal/FIRQuery.h>
 #import <FirebaseFirestoreInternal/FIRListenerRegistration.h>
 
 #import "AdamEPeerlessTesting.h"
@@ -252,6 +259,44 @@ static void RemovalDoesNotHoldTheLockWhileFirestoreRemoves(void) {
         exit(1); // the threads stay blocked; don't run anything else
 }
 
+// Firestore raises an NSException from addSnapshotListener: for a listen it refuses, here one on a terminated
+// instance ("The client has already been terminated."). That must come back as NULL plus a reason, not unwind into
+// the caller. A real (offline) Firestore instance, with its own callback queue (a test executable has no main run
+// loop). limit(toLast:) without an orderBy, the other case reported in review, does not raise at listen time in
+// Firestore 12.18, so it isn't used here.
+static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
+    FIROptions *options = [[FIROptions alloc] initWithGoogleAppID:@"1:000000000000:ios:0000000000000000"
+                                                      GCMSenderID:@"000000000000"];
+    options.projectID = @"demo-peerless";
+    options.APIKey = @"demo-key-not-used";
+    [FIRApp configureWithName:@"peerless-shim-tests" options:options];
+    FIRFirestore *firestore = [FIRFirestore firestoreForApp:[FIRApp appNamed:@"peerless-shim-tests"]];
+    FIRFirestoreSettings *settings = firestore.settings;
+    settings.dispatchQueue = dispatch_queue_create("peerless.test.callbacks", DISPATCH_QUEUE_SERIAL);
+    settings.cacheSettings = [[FIRMemoryCacheSettings alloc] init];
+    firestore.settings = settings;
+    FIRQuery *query = [firestore collectionWithPath:@"items"];
+    dispatch_semaphore_t terminated = dispatch_semaphore_create(0);
+    [firestore terminateWithCompletion:^(NSError *error) {
+        dispatch_semaphore_signal(terminated);
+    }];
+    BOOL didTerminate = dispatch_semaphore_wait(terminated, dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC)) == 0;
+
+    Probe probe = {.behaviour = BehaviourCount};
+    char error[512] = "";
+    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, error, sizeof error);
+    char notAQuery[512] = "";
+    void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0,
+                                                  notAQuery, sizeof notAQuery);
+    BOOL ok = didTerminate && listener == NULL && strlen(error) > 0 && wrongType == NULL && strlen(notAQuery) > 0
+        && probe.frames == 0 && probe.errors == 0;
+    ListenerTestsRecord(ok, [NSString stringWithFormat:@"a listen Firestore refuses returns NULL with its reason (\"%s\")", error],
+                        [NSString stringWithFormat:@"terminated=%d listener=%p error=\"%s\" wrongType=%p", didTerminate,
+                                                   listener, error, wrongType]);
+    if (listener != NULL)
+        adame_peerless_listener_remove(listener, NULL);
+}
+
 void RunListenerTests(void) {
     DisposeBeforeFirstCallback();
     ErrorStopsAndReleasesAfterTheCallback();
@@ -261,4 +306,5 @@ void RunListenerTests(void) {
     ConcurrentQueue();
     ErrorWithoutRemovalReleasesOnceLater();
     RemovalDoesNotHoldTheLockWhileFirestoreRemoves();
+    ARefusedListenReturnsAnErrorInsteadOfRaising();
 }

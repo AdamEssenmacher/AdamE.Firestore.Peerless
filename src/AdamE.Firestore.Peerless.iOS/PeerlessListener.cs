@@ -100,6 +100,17 @@ public sealed class FirestoreListenException : Exception
 /// listener from another's callback on a concurrent queue, hand the disposal to another queue.
 /// </para>
 /// <para>
+/// <b>Listen can wait too.</b> It stores the registration under the listener's lock, so if Firestore starts delivering
+/// the first callback on another thread before <c>Listen</c> returns, <c>Listen</c> waits for that callback to finish.
+/// The deadlock patterns above apply to it in the same way. Listening from the main thread, with callbacks on the main
+/// queue, it can't happen.
+/// </para>
+/// <para>
+/// <b>Refused queries.</b> When Firestore refuses to listen (it raises for some invalid queries, and on a terminated
+/// instance), <c>Listen</c> throws <see cref="InvalidOperationException"/> with Firestore's reason; nothing stays
+/// registered.
+/// </para>
+/// <para>
 /// <b>Calling Listen off the main queue.</b> Firestore may then deliver the first callback before <c>Listen</c>
 /// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
 /// held and posted to the main queue after <c>Listen</c> has returned.

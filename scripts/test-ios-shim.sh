@@ -21,7 +21,11 @@ exe="$out/tests/GoldenFixtureTests"
 mkdir -p "$(dirname "$exe")"
 
 # Compiled against the shipped headers, linked and run against the app's embedded frameworks.
-xcrun --sdk iphonesimulator clang "$shim/tests/GoldenFixtureTests.m" "$shim/tests/ListenerTests.m" "$out/lib/iphonesimulator/libPeerlessShim.a" \
+# The shim's sources are compiled in with ADAME_PEERLESS_TESTING, which adds the listener test hooks the shipped
+# library (build-shim.sh, linked into apps) leaves out.
+version="$(basename "$headers" | sed 's/^firebase-//')"
+xcrun --sdk iphonesimulator clang "$shim/tests/GoldenFixtureTests.m" "$shim/tests/ListenerTests.m" "$shim"/src/*.m \
+  -DADAME_PEERLESS_TESTING -DADAME_PEERLESS_FIREBASE_VERSION="\"$version\"" \
   -o "$exe" -target arm64-apple-ios15.0-simulator -isysroot "$sysroot" -fobjc-arc -fmodules -Wall -Werror \
   -I "$shim/include" -F "$headers/FirebaseFirestoreInternal.xcframework/$slice" -F "$headers/FirebaseCore.xcframework/$slice" \
   -F "$app/Frameworks" -framework FirebaseFirestoreInternal -framework FirebaseCore -Xlinker -rpath -Xlinker "$app/Frameworks"

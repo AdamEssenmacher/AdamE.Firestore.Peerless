@@ -1,6 +1,8 @@
 #import "PeerlessShim.h"
 #import "AdamEPeerlessFrameWriter.h"
+#ifdef ADAME_PEERLESS_TESTING
 #import "AdamEPeerlessTesting.h"
+#endif
 
 #import <pthread.h>
 #import <stdatomic.h>
@@ -90,6 +92,11 @@ static AdamEPeerlessListener *AdamEPeerlessNewListener(void *context, adame_peer
     listener->_onError = onError;
     atomic_init(&listener->_callbackThread, 0);
     return listener;
+}
+
+static void AdamEPeerlessSetError(char *error, size_t capacity, NSString *message) {
+    if (error != NULL && capacity > 0)
+        strlcpy(error, message.UTF8String ?: "", capacity);
 }
 
 static inline uintptr_t AdamEPeerlessThisThread(void) {
@@ -185,39 +192,59 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
 }
 
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback onFrame,
-                                  adame_peerless_error_callback onError, int timed) {
+                                  adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity) {
     id object = (__bridge id)query;
-    if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRQuery class]])
+    if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRQuery class]]) {
+        AdamEPeerlessSetError(error, errorCapacity, @"Not a FIRQuery, or a callback is missing.");
         return NULL;
+    }
     AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, timed != 0);
     __weak AdamEPeerlessListener *weak = listener;
-    id<FIRListenerRegistration> registration =
-        [(FIRQuery *)object addSnapshotListener:^(FIRQuerySnapshot *snapshot, NSError *error) {
+    id<FIRListenerRegistration> registration = nil;
+    @try {
+        registration = [(FIRQuery *)object addSnapshotListener:^(FIRQuerySnapshot *snapshot, NSError *error) {
             AdamEPeerlessListener *strong = weak; // keeps the listener alive while this callback runs
             if (strong != nil)
                 AdamEPeerlessHandle(strong, snapshot, error, ^(AdamEPeerlessFrameWriter *writer) {
                     [writer writeQuerySnapshot:snapshot];
                 });
         }];
+    } @catch (NSException *exception) {
+        // Firestore validates the query here (for example, limit(toLast:) without an orderBy, or a terminated
+        // instance) and raises. An exception must not unwind into the .NET caller, so report it and let the listener
+        // (never registered, never retained) go.
+        AdamEPeerlessSetError(error, errorCapacity, exception.reason ?: exception.name);
+        return NULL;
+    }
     AdamEPeerlessAttach(listener, registration);
     return (__bridge_retained void *)listener;
 }
 
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback onFrame,
-                                     adame_peerless_error_callback onError, int timed) {
+                                     adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity) {
     id object = (__bridge id)document;
-    if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRDocumentReference class]])
+    if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRDocumentReference class]]) {
+        AdamEPeerlessSetError(error, errorCapacity, @"Not a FIRDocumentReference, or a callback is missing.");
         return NULL;
+    }
     AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, timed != 0);
     __weak AdamEPeerlessListener *weak = listener;
-    id<FIRListenerRegistration> registration =
-        [(FIRDocumentReference *)object addSnapshotListener:^(FIRDocumentSnapshot *snapshot, NSError *error) {
+    id<FIRListenerRegistration> registration = nil;
+    @try {
+        registration = [(FIRDocumentReference *)object addSnapshotListener:^(FIRDocumentSnapshot *snapshot, NSError *error) {
             AdamEPeerlessListener *strong = weak;
             if (strong != nil)
                 AdamEPeerlessHandle(strong, snapshot, error, ^(AdamEPeerlessFrameWriter *writer) {
                     [writer writeDocumentSnapshot:snapshot];
                 });
         }];
+    } @catch (NSException *exception) {
+        // Firestore validates the query here (for example, limit(toLast:) without an orderBy, or a terminated
+        // instance) and raises. An exception must not unwind into the .NET caller, so report it and let the listener
+        // (never registered, never retained) go.
+        AdamEPeerlessSetError(error, errorCapacity, exception.reason ?: exception.name);
+        return NULL;
+    }
     AdamEPeerlessAttach(listener, registration);
     return (__bridge_retained void *)listener;
 }
@@ -257,6 +284,9 @@ void adame_peerless_listener_timing(void *pointer, adame_peerless_frame_timing *
     *timing = listener->_timing;
 }
 
+// Test-only: compiled into scripts/test-ios-shim.sh's executable, never into the shipped library (build-shim.sh
+// doesn't define ADAME_PEERLESS_TESTING).
+#ifdef ADAME_PEERLESS_TESTING
 void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback onFrame,
                                     adame_peerless_error_callback onError, id<FIRListenerRegistration> registration,
                                     AdamEPeerlessTestingCallback *callback) {
@@ -270,3 +300,4 @@ void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback
     AdamEPeerlessAttach(listener, registration);
     return (__bridge_retained void *)listener;
 }
+#endif

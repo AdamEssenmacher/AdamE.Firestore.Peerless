@@ -30,7 +30,9 @@ internal static unsafe class Native
         nint context,
         delegate* unmanaged<nint, byte*, nuint, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError,
-        int timed);
+        int timed,
+        byte* error,
+        nuint errorCapacity);
 
     [DllImport(Library, EntryPoint = "adame_peerless_listen_document")]
     public static extern nint ListenDocument(
@@ -38,7 +40,9 @@ internal static unsafe class Native
         nint context,
         delegate* unmanaged<nint, byte*, nuint, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError,
-        int timed);
+        int timed,
+        byte* error,
+        nuint errorCapacity);
 
     [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);

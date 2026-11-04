@@ -255,6 +255,9 @@ static void PLSString(AdamEPeerlessFrameWriter *self, CFStringRef value) {
 
 static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth);
 
+// Depth as the format counts it (docs/wire-format.md): a document's field values are at depth 1, and the items of an
+// array or map value at depth d are at depth d + 1. An array or map value at depth 100 or more is refused, as the
+// decoder refuses it; scalars may sit at any depth. `depth` here is the depth of the map's values.
 static void PLSMapBody(AdamEPeerlessFrameWriter *self, NSDictionary *map, int depth) {
     CFIndex count = CFDictionaryGetCount((__bridge CFDictionaryRef)map);
     PLSVarint(self, (uint32_t)count);
@@ -267,16 +270,19 @@ static void PLSMapBody(AdamEPeerlessFrameWriter *self, NSDictionary *map, int de
     const void **values = count <= 32 ? stackValues : malloc(sizeof(void *) * (size_t)count);
     if (keys == NULL || values == NULL)
         [NSException raise:NSMallocException format:@"Peerless could not read a map of %ld entries.", (long)count];
-    CFDictionaryGetKeysAndValues((__bridge CFDictionaryRef)map, keys, values);
-    for (CFIndex index = 0; index < count; index++) {
-        id key = (__bridge id)keys[index];
-        PLSString(self, (__bridge CFStringRef)([key isKindOfClass:PLSStringClass] ? key : [key description]));
-        PLSValue(self, (__bridge id)values[index], depth + 1);
+    @try {
+        CFDictionaryGetKeysAndValues((__bridge CFDictionaryRef)map, keys, values);
+        for (CFIndex index = 0; index < count; index++) {
+            id key = (__bridge id)keys[index];
+            PLSString(self, (__bridge CFStringRef)([key isKindOfClass:PLSStringClass] ? key : [key description]));
+            PLSValue(self, (__bridge id)values[index], depth);
+        }
+    } @finally { // a nested value may throw (too deep, out of memory); the arrays mustn't leak
+        if (keys != stackKeys)
+            free(keys);
+        if (values != stackValues)
+            free(values);
     }
-    if (keys != stackKeys)
-        free(keys);
-    if (values != stackValues)
-        free(values);
 }
 
 static void PLSUnsupported(AdamEPeerlessFrameWriter *self, NSString *typeName) {
@@ -285,9 +291,13 @@ static void PLSUnsupported(AdamEPeerlessFrameWriter *self, NSString *typeName) {
 }
 
 // Ordered by how often each kind appears in typical documents.
+static void PLSRefuseDeep(int depth) {
+    if (depth >= 100)
+        [NSException raise:NSInvalidArgumentException
+                    format:@"Peerless refuses an array or map nested at depth %d (the format's limit is 99).", depth];
+}
+
 static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth) {
-    if (depth > 100)
-        [NSException raise:NSInvalidArgumentException format:@"Peerless refuses values nested deeper than 100."];
     if (value == nil) {
         PLSByte(self, PLSTagNull);
     } else if ([value isKindOfClass:PLSStringClass]) {
@@ -317,9 +327,11 @@ static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth) {
                 break;
         }
     } else if ([value isKindOfClass:PLSDictionaryClass]) {
+        PLSRefuseDeep(depth);
         PLSByte(self, PLSTagMap);
-        PLSMapBody(self, value, depth);
+        PLSMapBody(self, value, depth + 1);
     } else if ([value isKindOfClass:PLSArrayClass]) {
+        PLSRefuseDeep(depth);
         NSArray *array = value;
         NSUInteger count = array.count;
         PLSByte(self, PLSTagArray);
