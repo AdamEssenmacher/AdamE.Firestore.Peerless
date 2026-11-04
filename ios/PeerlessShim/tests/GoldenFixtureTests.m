@@ -289,6 +289,70 @@ static void CollidingLoneSurrogateKeysAreRefused(void) {
     }
 }
 
+// Stand-ins for a query snapshot, with only what -writeQuerySnapshot: reads. The writer is typed for FIR classes but
+// only sends these messages, so the stand-ins can carry data that makes it throw.
+@interface PeerlessFakeMetadata : NSObject
+@property(nonatomic) BOOL isFromCache;
+@property(nonatomic) BOOL hasPendingWrites;
+@end
+@implementation PeerlessFakeMetadata
+@end
+@interface PeerlessFakeReference : NSObject
+@property(nonatomic, copy) NSString *path;
+@end
+@implementation PeerlessFakeReference
+@end
+@interface PeerlessFakeDocument : NSObject
+@property(nonatomic) PeerlessFakeMetadata *metadata;
+@property(nonatomic) PeerlessFakeReference *reference;
+@property(nonatomic) BOOL exists;
+@property(nonatomic) NSDictionary *data;
+@end
+@implementation PeerlessFakeDocument
+@end
+@interface PeerlessFakeQuerySnapshot : NSObject
+@property(nonatomic) PeerlessFakeMetadata *metadata;
+@property(nonatomic) NSArray *documents;
+@end
+@implementation PeerlessFakeQuerySnapshot
+@end
+
+// When the writer throws mid-snapshot (here, keys colliding in lone surrogates), the strong references its methods
+// hold (the snapshot, its metadata, its documents) must be released as the exception unwinds. ARC does that only with
+// -fobjc-arc-exceptions; without it a real FIRQuerySnapshot (and the Firestore instance it keeps alive) would leak.
+static void AThrowingSnapshotIsReleased(void) {
+    __weak PeerlessFakeQuerySnapshot *weakSnapshot = nil;
+    BOOL threw = NO;
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    @autoreleasepool {
+        unichar high[] = {'k', 0xD800};
+        unichar low[] = {'k', 0xDC00};
+        PeerlessFakeDocument *document = [PeerlessFakeDocument new];
+        document.metadata = [PeerlessFakeMetadata new];
+        document.reference = [PeerlessFakeReference new];
+        document.reference.path = @"items/a";
+        document.exists = YES;
+        document.data = @{[NSString stringWithCharacters:high length:2]: @1LL, [NSString stringWithCharacters:low length:2]: @2LL};
+        PeerlessFakeQuerySnapshot *snapshot = [PeerlessFakeQuerySnapshot new];
+        snapshot.metadata = [PeerlessFakeMetadata new];
+        snapshot.documents = @[document];
+        weakSnapshot = snapshot;
+        @try {
+            [writer writeQuerySnapshot:(id)snapshot];
+        } @catch (NSException *exception) {
+            threw = YES;
+        }
+    }
+    BOOL released = weakSnapshot == nil;
+    if (threw && released) {
+        passes++;
+        printf("PASS a snapshot the writer throws on is released (ARC exception cleanup)\n");
+    } else {
+        failures++;
+        printf("FAIL a snapshot the writer throws on is released: threw=%d released=%d\n", threw, released);
+    }
+}
+
 void ListenerTestsRecord(BOOL ok, NSString *name, NSString *detail) {
     if (ok) {
         passes++;
@@ -317,6 +381,7 @@ int main(int argc, const char *argv[]) {
         RefusesNestingDeeperThan100();
         DepthLimitAtDocumentDepth();
         CollidingLoneSurrogateKeysAreRefused();
+        AThrowingSnapshotIsReleased();
         RunListenerTests();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;

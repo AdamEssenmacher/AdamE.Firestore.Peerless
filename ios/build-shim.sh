@@ -33,6 +33,8 @@ if [[ ! -f "$headers/.complete" ]]; then
   touch "$headers/.complete"
 fi
 
+# -fobjc-arc-exceptions: the writer throws on a value it refuses (and the listener catches it), so ARC must release the
+# strong references held by the frames that exception unwinds through, such as the snapshot being encoded.
 compile() { # sdk slice target...
   local sdk="$1" slice="$2"; shift 2
   local sysroot; sysroot="$(xcrun --sdk "$sdk" --show-sdk-path)"
@@ -43,7 +45,7 @@ compile() { # sdk slice target...
     for source in "$shim"/src/*.m; do
       local object="$dir/$(basename "${source%.m}").o"
       xcrun --sdk "$sdk" clang -c "$source" -o "$object" -target "$target" -isysroot "$sysroot" \
-        -fobjc-arc -fmodules -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter \
+        -fobjc-arc -fobjc-arc-exceptions -fmodules -O2 -g -Wall -Wextra -Werror -Wno-unused-parameter \
         -DADAME_PEERLESS_FIREBASE_VERSION="\"$version\"" \
         -I "$shim/include" \
         -F "$headers/FirebaseFirestoreInternal.xcframework/$slice" -F "$headers/FirebaseCore.xcframework/$slice"

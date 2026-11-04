@@ -26,7 +26,7 @@ mkdir -p "$(dirname "$exe")"
 version="$(basename "$headers" | sed 's/^firebase-//')"
 xcrun --sdk iphonesimulator clang "$shim/tests/GoldenFixtureTests.m" "$shim/tests/ListenerTests.m" "$shim"/src/*.m \
   -DADAME_PEERLESS_TESTING -DADAME_PEERLESS_FIREBASE_VERSION="\"$version\"" \
-  -o "$exe" -target arm64-apple-ios15.0-simulator -isysroot "$sysroot" -fobjc-arc -fmodules -Wall -Werror \
+  -o "$exe" -target arm64-apple-ios15.0-simulator -isysroot "$sysroot" -fobjc-arc -fobjc-arc-exceptions -fmodules -Wall -Werror \
   -I "$shim/include" -F "$headers/FirebaseFirestoreInternal.xcframework/$slice" -F "$headers/FirebaseCore.xcframework/$slice" \
   -F "$app/Frameworks" -framework FirebaseFirestoreInternal -framework FirebaseCore -Xlinker -rpath -Xlinker "$app/Frameworks"
 

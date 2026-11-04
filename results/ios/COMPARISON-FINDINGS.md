@@ -265,6 +265,18 @@ Also in round two:
   calibration, `read back as written`, `identical (465 values)`, and the dispose race (20 thread-pool disposals, 10
   during a running callback, plus one from inside a callback). Shim tests: 23 of 23.
 
+## Review changes, round four
+
+- **No leak when encoding throws.** The shim is now compiled with `-fobjc-arc-exceptions`. Without it, when the
+  writer threw mid-snapshot (key collision, out of memory), ARC skipped releasing the strong references in the
+  frames the exception unwound through: the `FIRQuerySnapshot`, its metadata and documents. That kept the snapshot,
+  and the Firestore instance it holds, alive. A shim test reproduced it, with a stand-in snapshot whose document
+  has colliding keys: a weak reference to the snapshot stayed set after the throw. With the flag it clears. The
+  flag is in `build-shim.sh`, an input of the library's `BuildPeerlessShim` target, so the shim rebuilds. Shim
+  tests: 24 of 24.
+- **Comments** in the shim no longer claim `limit(toLast:)` without an `orderBy` raises at listen time; in 12.18 it
+  doesn't.
+
 ## What makes these numbers unreliable
 
 - **Simulator, not a device.** Everything from step 4 applies. Peer counts, allocation and frame sizes come from the

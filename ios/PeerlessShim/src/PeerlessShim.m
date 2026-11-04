@@ -210,9 +210,9 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
                 });
         }];
     } @catch (NSException *exception) {
-        // Firestore validates the query here (for example, limit(toLast:) without an orderBy, or a terminated
-        // instance) and raises. An exception must not unwind into the .NET caller, so report it and let the listener
-        // (never registered, never retained) go.
+        // Firestore raises here when it refuses the listen, for example on a terminated instance. (In 12.18,
+        // limit(toLast:) without an orderBy is not checked at this point.) An exception must not unwind into the
+        // .NET caller, so report it and let the listener (never registered, never retained) go.
         AdamEPeerlessSetError(error, errorCapacity, exception.reason ?: exception.name);
         return NULL;
     }
@@ -239,9 +239,8 @@ void *adame_peerless_listen_document(void *document, void *context, adame_peerle
                 });
         }];
     } @catch (NSException *exception) {
-        // Firestore validates the query here (for example, limit(toLast:) without an orderBy, or a terminated
-        // instance) and raises. An exception must not unwind into the .NET caller, so report it and let the listener
-        // (never registered, never retained) go.
+        // As for a query: Firestore raises here when it refuses the listen, for example on a terminated instance.
+        // Report it rather than let it unwind into the .NET caller, and let the listener go.
         AdamEPeerlessSetError(error, errorCapacity, exception.reason ?: exception.name);
         return NULL;
     }
