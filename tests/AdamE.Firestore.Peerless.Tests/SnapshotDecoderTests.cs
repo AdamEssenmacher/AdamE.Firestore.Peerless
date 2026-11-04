@@ -167,8 +167,9 @@ public sealed class SnapshotDecoderTests
     // The real worst case (docs/wire-format.md): a frame that decodes costs at most about 43 bytes of .NET memory per
     // frame byte on CoreCLR, which is what these tests run on (a chain of one-entry maps, 3 bytes and ~128 bytes of
     // objects each; Mono's larger array headers would add about 5). A malformed frame is rejected as soon as its
-    // declared counts exceed the bytes left, so it costs at most about 32. Plus about 5 KB of working memory on a
-    // thread's first decode.
+    // declared counts exceed the bytes left; it keeps what its valid prefix cost (up to the same bound) plus at most
+    // one slot per byte its open containers claimed (32 for arrays, 20 for maps). Plus about 5 KB of working memory
+    // on a thread's first decode.
     private const int BytesPerFrameByte = 48;
     private const int FixedOverhead = 16 * 1024;
 
@@ -183,6 +184,7 @@ public sealed class SnapshotDecoderTests
         { "outer array reserved but never filled", 200_000 },
         { "one-entry maps nested 97 deep", 1 },
         { "one-entry maps nested 97 deep", 300 },
+        { "map claiming half the frame, holding a map claiming the rest", 2_000_000 },
     };
 
     [Theory]
@@ -234,6 +236,12 @@ public sealed class SnapshotDecoderTests
                     }
 
                     break;
+                case "map claiming half the frame, holding a map claiming the rest":
+                    // 0B <L/2-40> 00 0B <L/2-60>, then 0xFF up to `size` bytes: two map counts that together claim more
+                    // entries than the frame can hold at two bytes each.
+                    field.Byte(Wire.Tag.Map).Varint(size / 2 - 40).Varint(0).Byte(Wire.Tag.Map).Varint(size / 2 - 60);
+                    field.Raw(Enumerable.Repeat((byte)0xFF, size - 30).ToArray());
+                    break;
                 case "outer array reserved but never filled":
                     // An outer array claims `size` items and gets its array up front; its first item is an array that
                     // really holds `size - 4` nulls (read on the scratch stack); then the frame ends.
@@ -258,10 +266,10 @@ public sealed class SnapshotDecoderTests
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
         if (shape is "map claiming one more entry than the frame holds" or "outer array reserved but never filled"
-            or "hostile nested counts")
+            or "hostile nested counts" or "map claiming half the frame, holding a map claiming the rest")
         {
             // Rejected as soon as the declared counts stop fitting in the bytes left, before allocating for them.
-            Assert.Contains("exceed the", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
+            Assert.Contains("Declared counts need", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
         }
         else
         {

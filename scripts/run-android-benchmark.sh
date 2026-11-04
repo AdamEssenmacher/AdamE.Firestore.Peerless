@@ -15,7 +15,8 @@
 #                   10.0.2.2:<port> from an emulator, or at 127.0.0.1:<port> through `adb reverse` from a device
 #
 # Exits nonzero unless the run completed under NativeAOT with every self-check passing (the app records a failed
-# check as outcome: failed), and on a timeout, a dead process or a summarizer error.
+# check as outcome: failed), and on a timeout, a dead process, a run whose verify check was skipped (unless
+# ALLOW_NO_VERIFY=1), or a summarizer error.
 #
 # The emulator AVD (one-time setup; any arm64 API 36 Google APIs image works):
 #   sdkmanager "system-images;android-36;google_apis;arm64-v8a"
@@ -53,7 +54,13 @@ fi
 # Everything this script changes on the device is undone when it exits, however it exits: the hidden-API setting,
 # the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
-previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null | sed -nE 's/.*ring buffer is ([0-9]+) ?([KMG])i?B.*/\1\2/p' | head -1)"
+# `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
+# count is accepted too. If the size can't be read, it isn't changed back, and the script says so.
+previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null \
+  | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
+if [ -z "$previous_log_size" ]; then
+  echo "Could not read $serial's logcat buffer size; it will be enlarged but not restored afterwards." >&2
+fi
 log_resized=0
 reversed=0
 cleanup() {
@@ -97,8 +104,9 @@ adb -s "$serial" shell settings put global hidden_api_policy 1
 [ "$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')" = "1" ] \
   || { echo "Could not set hidden_api_policy on $serial; ART reference-table dumps will be missing." >&2; }
 if [ "$app_host" = "127.0.0.1" ]; then
-  # A forward someone already set up for this port stays as it is, and isn't removed afterwards either.
-  if ! adb -s "$serial" reverse --list | grep -q "tcp:$port tcp:$port"; then
+  # Any forward that already exists for this device port, whatever it points at, stays as it is and isn't removed
+  # afterwards either. (A here-string, not a pipe: grep -q closing early would fail the pipe under pipefail.)
+  if ! awk -v device="tcp:$port" '$2 == device { found = 1 } END { exit !found }' <<<"$(adb -s "$serial" reverse --list)"; then
     adb -s "$serial" reverse "tcp:$port" "tcp:$port" >/dev/null
     reversed=1
   fi
@@ -138,5 +146,8 @@ echo "results: $out"
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
 grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+# A run without its verify checks proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
+grep -q "^verify: identical" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
+  || { echo "run has no passing verify check (launched with --ez verify false? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }
 # Only a finished, passing run is summarized; a summarizer error still fails the script.
 python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null

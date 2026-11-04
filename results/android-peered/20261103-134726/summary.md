@@ -1,4 +1,4 @@
-# Peered baseline summary
+# peered summary
 
 project: demo-peerless  
 emulator: 10.0.2.2:8181  
