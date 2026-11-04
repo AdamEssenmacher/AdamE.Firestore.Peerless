@@ -44,7 +44,16 @@ public sealed class FirestoreArray : IReadOnlyList<FirestoreValue>, IEquatable<F
     public override bool Equals(object? obj) => Equals(obj as FirestoreArray);
 
     /// <inheritdoc />
-    public override int GetHashCode() => items.Length;
+    // Content-based (the length and up to the first 8 items), so arrays of one length don't all collide. Not cached:
+    // hashing is rare, and a field would cost every decoded array memory.
+    public override int GetHashCode()
+    {
+        var combined = new HashCode();
+        combined.Add(items.Length);
+        foreach (FirestoreValue item in items.AsSpan(0, Math.Min(items.Length, 8)))
+            combined.Add(item);
+        return combined.ToHashCode();
+    }
 
     /// <inheritdoc />
     public override string ToString() => "[" + string.Join(", ", items) + "]";
@@ -60,6 +69,8 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
     private const int LinearSearchLimit = 8;
 
     private readonly string[] keys;
+    private System.Collections.ObjectModel.ReadOnlyCollection<string>? keyView;
+    private System.Collections.ObjectModel.ReadOnlyCollection<FirestoreValue>? valueView;
     private readonly FirestoreValue[] values;
     private Dictionary<string, int>? index;
 
@@ -95,10 +106,12 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
         : throw new KeyNotFoundException($"The map has no field \"{key}\".");
 
     /// <summary>The keys, in the order the native SDK produced them.</summary>
-    public IEnumerable<string> Keys => keys;
+    /// <remarks>A read-only view, created once per map: the map's own arrays are never handed out.</remarks>
+    public IEnumerable<string> Keys => keyView ??= Array.AsReadOnly(keys);
 
     /// <summary>The values, in the same order as <see cref="Keys"/>.</summary>
-    public IEnumerable<FirestoreValue> Values => values;
+    /// <remarks>A read-only view, created once per map: the map's own arrays are never handed out.</remarks>
+    public IEnumerable<FirestoreValue> Values => valueView ??= Array.AsReadOnly(values);
 
     /// <inheritdoc />
     public bool ContainsKey(string key) => IndexOf(key) >= 0;
@@ -199,7 +212,15 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
     public override bool Equals(object? obj) => Equals(obj as FirestoreMap);
 
     /// <inheritdoc />
-    public override int GetHashCode() => keys.Length;
+    // Order-insensitive like Equals: a sum of per-entry hashes over every entry. Not cached: hashing is rare, and a
+    // field would cost every decoded map memory.
+    public override int GetHashCode()
+    {
+        int sum = keys.Length;
+        for (int position = 0; position < keys.Length; position++)
+            sum = unchecked(sum + HashCode.Combine(StringComparer.Ordinal.GetHashCode(keys[position]), values[position]));
+        return sum;
+    }
 
     /// <inheritdoc />
     public override string ToString()

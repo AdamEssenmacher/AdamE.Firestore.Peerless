@@ -24,7 +24,7 @@ workload 36.1.118, ILCompiler 10.0.14, NDK r28c). The APK carries a single nativ
 
 Each document has 16 top-level fields, which come to 44 converted values. **Every snapshot, including an update
 that changed one document, is converted in full**: the listener converts all of `QuerySnapshot.getDocuments()`, as an
-ordinary app's listener does. Peerless (step 3) does the same on both sides, encoding and decoding the whole snapshot,
+ordinary app's listener does. Peerless (PR #3) does the same on both sides, encoding and decoding the whole snapshot,
 so the two stay comparable; a changes-only variant is planned but not built.
 
 | docs | kind | n | wall ms | main-thread CPU ms | gen0 GCs in callback | managed alloc | GREF peak (absolute) | GREF peak over settled |
@@ -54,14 +54,16 @@ why *update, after a settle* rows show a lower peak over settled than the other 
 table subtracted the count at callback entry instead, which understated update peaks more (1000-doc updates: 2,028).
 All figures here are recomputed from the committed CSVs by `scripts/summarize-peered.py`; none needed a re-run.
 
-- **Managed allocation is about 3.5–4.5 KB per converted value at 100+ documents.** Updates (about 3.5 KB) run 10–20%
-  below initial snapshots (3.9–4.5 KB). The 10-document and single-document rows run higher (3.8–6.6 KB), with more
-  GC per callback. The cost is peer creation plus the binding's `JavaDictionary` and collection marshalling, which is
+- **Managed allocation is about 3.4–4.4 KiB per converted value at 100+ documents.** Updates (about 3.4 KiB) run
+  10–20% below initial snapshots (3.8–4.4 KiB). The 10-document and single-document rows run higher (3.7–6.4 KiB),
+  with more GC per callback. (Sizes in this file are binary: KB and MB in the tables are KiB and MiB.) The cost is peer creation plus the binding's `JavaDictionary` and collection marshalling, which is
   what Peerless is meant to remove.
 - **GREFs per snapshot.** With no GC during the callback, conversion holds about 31–36 GREFs per document over the
   settled count (10 docs: 312–364). At 500 and 1000 docs the peak is far below 35 × N because GCs fire inside the
-  callback and release earlier documents' peers. The highest absolute count measured is 10,658 (.NET-side; add about
-  435 for ART's own table), against ART's limit of 51,200. How high a device would go isn't something these runs
+  callback and release earlier documents' peers. The highest absolute count measured **inside a listener callback** is
+  10,658 (.NET-side; add about 435 for ART's own table), against ART's limit of 51,200. The process went higher
+  outside the callbacks: seeding the 1000-doc collection through the peered binding reached the runtime's 46,080
+  emergency threshold (item 8 below). How high a device would go isn't something these runs
   can bound: it depends on how often its GC runs inside the callback, which is exactly what this emulator distorts
   (below). An earlier version of this file gave device estimates (35,000, then 6,000–7,000); neither followed from the
   data, and both are withdrawn.
@@ -96,15 +98,14 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
      `-p:PeerlessGen0=4mb` switch it used was removed afterwards, because it had no effect.
    - **Wall-time and GC numbers should be re-measured on a real arm64 device.** The Peerless side must be measured
      under the same conditions.
-2. **GC storms right after a settle point.** Some callbacks run 500–720 GCs and take about 10 s at 1000 documents,
-   against about 25–50 GCs and 1.2 s for their neighbours, with about 2× the CPU. In every peered run this hits the
-   initial snapshot (which follows the "before listen" settle) and one update that follows a settle: seq 1 in this run
-   (right after the "after initial" settle) and seq 6 in round 2 of the step-3 comparison (right after the settle at
-   update 5). It is the GC count, not host load: an earlier version of this file blamed host contention for the 10 s
+2. **GC storms right after a settle point.** Some callbacks run hundreds of GCs: 381–410 at 500 documents and 517–779
+   at 1000, taking about 10 s at 1000, against about 25–50 GCs and 1.2 s for their neighbours, with about 2× the CPU.
+   In all three runs here it hits the same two callbacks at 500 and 1000 documents: the initial snapshot (which follows
+   the "before listen" settle) and seq 1, the first update (which follows the "after initial" settle). PR #3's
+   comparison runs show it at other post-settle updates too. It is the GC count, not host load: an earlier version of this file blamed host contention for the 10 s
    update, which was wrong. The likeliest cause is the forced full GCs at the settle point resetting the GC's tuning,
-   so the next large callback starts with a small gen0 budget; that is unconfirmed. Peerless callbacks don't show it
-   (0–1 GCs each). The summaries now report *update, after a settle* separately, in both modes, so these callbacks
-   can't skew the other update medians.
+   so the next large callback starts with a small gen0 budget; that is unconfirmed. The summaries report *update, after a
+   settle* separately, so these callbacks can't skew the other update medians; PR #3 does the same in both modes.
 3. **Host contention.** Load average ranged from 34 to 172 on 18 cores during the runs (other Scavos builds and tests,
    the self-hosted runner's Firebase NuGet build, and two other Android emulators). Main-thread CPU time, allocations
    and GREF counts are much more stable than wall time.
@@ -121,11 +122,13 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
    repeated for it.
 7. **The peered map walk was later made fair.** These runs converted each nested Java map with `keySet()` plus a
    `get(new String(key))` per entry. That costs an extra Java string and hash lookup per entry, which inflates the
-   baseline. The code now walks `entrySet()` once. All numbers in this file predate the change. The step-3
-   comparison re-ran the peered path with the new walk; see `results/android/FINDINGS.md`.
+   baseline. The code now walks `entrySet()` once. All numbers in this file predate the change. PR #3 re-ran the peered
+   path with the new walk and found allocation and GREF peaks unchanged (see its FINDINGS).
 8. **Seeding is not free either.** Building 400-document write batches through the peered binding drove the runtime
    to its emergency GC threshold (`monodroid-gc: 46080 outstanding GREFs. Performing a full GC!`, 3 times while seeding
-   1000 docs). Writes are out of scope, but a peered write path also gets close to ART's 51,200 limit.
+   1000 docs). Writes are out of scope, but a peered write path also gets close to ART's 51,200 limit. The summaries'
+   "emergency GCs" count is taken from the whole run's logcat, so it covers seeding as well as listening. In the run whose
+   logcat was checked for this (`20261103-134726`), all three fired while seeding; the other runs' logcats weren't kept.
 
 ## How it was run
 
@@ -145,7 +148,10 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
   Google APIs image allowed it as-is; the run script now also runs `adb shell settings put global hidden_api_policy 1`
   on the emulator (and warns if that fails) so it keeps working on stricter images. It restores the previous value
   when it exits, and refuses a serial that isn't an emulator unless `ALLOW_DEVICE=1` is set, because it also clears
-  logcat.
+  logcat. On a device it forwards the Firestore port with `adb reverse` and points the app at 127.0.0.1 (an emulator
+  uses 10.0.2.2), and removes the forward on exit. It also enlarges the logcat buffer to 16 MB so the ART dumps
+  survive, refuses the CI runner's ports (8080, 9099, 4400), checks through the emulator hub (4501) that the port is
+  really Firestore's, and exits non-zero unless the run completed and its summary was written.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
 - `FIRESTORE_PORT=8181 scripts/run-android-peered.sh [serial] [am-start extras]` (now `run-android-benchmark.sh`), then
