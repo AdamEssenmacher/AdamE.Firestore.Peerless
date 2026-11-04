@@ -60,7 +60,7 @@ internal static class PlainValues
         Java.Util.IMap map => Map(map),
         System.Collections.IList list => list.Cast<object?>().Select(From).ToList(),
         System.Collections.IDictionary map => map.Keys.Cast<object>().ToDictionary(
-            static key => key.ToString() ?? string.Empty,
+            static key => key.ToString() ?? throw new InvalidOperationException("A Firestore map has a null key."),
             key => From(map[key]),
             StringComparer.Ordinal),
         Java.Lang.Object other => throw new NotSupportedException($"Unexpected Java value {other.Class.Name}."),
@@ -83,7 +83,7 @@ internal static class PlainValues
     {
         var entries = new Dictionary<string, object?>(map.Size(), StringComparer.Ordinal);
         foreach (Java.Util.IMapEntry entry in map.EntrySet())
-            entries[entry.Key?.ToString() ?? string.Empty] = From(entry.Value);
+            entries[entry.Key?.ToString() ?? throw new InvalidOperationException("A Firestore map has a null key.")] = From(entry.Value);
 
         return entries;
     }

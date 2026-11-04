@@ -21,7 +21,7 @@ since that settle are still included, so the figure grows with the number of cal
 Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the
 single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come
 straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached
-java.lang.Class references that ART's own table (below) includes. n/a: this run predates peak sampling.
+java.lang.Class references that ART's own table (below) includes.
 
 | phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|

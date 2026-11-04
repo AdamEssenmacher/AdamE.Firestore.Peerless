@@ -188,9 +188,10 @@ public static class PeerlessListener
         return Register(receiver, () => PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed));
     }
 
-    // Firestore refuses some listens outright: addSnapshotListener throws (for example IllegalStateException on a
-    // terminated instance). Only that listen-time failure is translated, to the same exception the iOS listener throws;
-    // the receiver is stopped and its peer released first, so nothing stays allocated or registered.
+    // Whatever addSnapshotListener throws, the receiver is stopped and its peer released first, so nothing stays
+    // allocated or registered. Only Firestore's refusals, IllegalStateException (a terminated instance, a limitToLast
+    // query without orderBy), become the InvalidOperationException the iOS listener throws; anything else (a bug, an
+    // out-of-memory) is rethrown as it is.
     private static Registration Register(FrameReceiver receiver, Func<IListenerRegistration> listen)
     {
         IListenerRegistration registration;
@@ -198,10 +199,15 @@ public static class PeerlessListener
         {
             registration = listen();
         }
-        catch (Java.Lang.RuntimeException exception)
+        catch (Java.Lang.IllegalStateException exception)
         {
             receiver.Abandon();
             throw new InvalidOperationException(exception.Message ?? "Firestore refused to listen.", exception);
+        }
+        catch
+        {
+            receiver.Abandon();
+            throw;
         }
 
         receiver.Attach(registration);
