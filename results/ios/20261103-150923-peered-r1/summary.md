@@ -24,33 +24,41 @@ build args: none
 host load before: 15:09  up 4 days,  8:58, 1 user, load averages: 131.38 132.65 87.83  
 host load after: 15:10  up 4 days,  8:59, 1 user, load averages: 94.97 120.95 86.44
 
-Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB. *Peers created* counts every NSObject
+Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KiB. *Peers created* counts every NSObject
 peer the runtime registered during the callback (the peer table's insertion count), whatever a GC collected
-meanwhile. *Table peak* is the peer table's highest entry count sampled after each document, minus the count
-at entry; *table end* the same at the end of the callback. Entries are native retains held, not live managed
-peers: a GC can't remove one while a main-queue callback runs (a collected peer is unregistered by
+meanwhile. *Table peak* is the peer table's highest entry count sampled after each document, as an absolute
+count: what an app holds. *Peak over settled* is that peak minus the count at the last settle point (forced GC,
+finalizers and a main-queue turn), as Android's GREF figure is. Entries are native retains held, not live
+managed peers: a GC can't remove one while a main-queue callback runs (a collected peer is unregistered by
 NSObject_Disposer, which drains on the main queue), so only explicit disposal lowers them inside a callback.
+*Update, after a settle* rows are the updates that come straight after a settle point; *update* rows are the
+rest (as on Android: right after a settle the previous snapshot's peers are gone, so more are created).
 
-| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KB | peers created | table peak | table end | write→callback ms |
+| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KiB | peers created | table peak | peak over settled | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---|---:|
-| warmup | 10 | initial | 1 | 440 | 3.4 [3.4–3.4] | 3.4 [3.4–3.4] | 0.0 [0.0–0.0] | 0 | 1394 | 511.0 [511.0–511.0] | 431.0 [431.0–431.0] | 431.0 [431.0–431.0] |  |
-| warmup | 10 | update | 3 | 440 | 3.9 [3.2–4.0] | 3.9 [3.2–4.0] | 0.0 [0.0–0.0] | 0 | 1387 | 510.0 [509.0–511.0] | 430.0 [429.0–431.0] | 430.0 [429.0–431.0] | 8 |
-| query | 10 | initial | 1 | 440 | 2.6 [2.6–2.6] | 2.6 [2.6–2.6] | 0.0 [0.0–0.0] | 0 | 1394 | 511.0 [511.0–511.0] | 431.0 [431.0–431.0] | 431.0 [431.0–431.0] |  |
-| query | 10 | update | 20 | 440 | 1.8 [1.6–4.7] | 1.8 [1.6–4.7] | 0.0 [0.0–0.0] | 0 | 987 | 395.0 [395.0–517.0] | 315.0 [315.0–437.0] | 315.0 [315.0–437.0] | 6 |
-| query | 100 | initial | 1 | 4400 | 20.4 [20.4–20.4] | 20.2 [20.2–20.2] | 1.6 [1.6–1.6] | 1 | 12638 | 4741.0 [4741.0–4741.0] | 3884.0 [3884.0–3884.0] | 3884.0 [3884.0–3884.0] |  |
-| query | 100 | update | 20 | 4400 | 21.3 [19.3–27.1] | 20.7 [19.2–24.4] | 3.0 [1.4–5.1] | 1 | 12626 | 4718.0 [4701.0–4759.0] | 3765.0 [3547.0–3897.0] | 3765.0 [3547.0–3897.0] | 42 |
-| query | 500 | initial | 1 | 22000 | 108.7 [108.7–108.7] | 108.6 [108.6–108.6] | 17.5 [17.5–17.5] | 7 | 64815 | 23562.0 [23562.0–23562.0] | 19027.0 [19027.0–19027.0] | 19027.0 [19027.0–19027.0] |  |
-| query | 500 | update | 20 | 22000 | 128.3 [110.0–149.9] | 121.4 [109.9–133.0] | 31.2 [17.6–36.2] | 9 | 63709 | 23583.5 [23542.0–23605.0] | 18798.0 [18576.0–19040.0] | 18798.0 [18576.0–19040.0] | 173 |
-| query | 1000 | initial | 1 | 44000 | 258.8 [258.8–258.8] | 248.5 [248.5–248.5] | 47.9 [47.9–47.9] | 15 | 128765 | 47129.0 [47129.0–47129.0] | 37910.0 [37910.0–37910.0] | 37910.0 [37910.0–37910.0] |  |
-| query | 1000 | update | 20 | 44000 | 300.0 [234.0–1174.4] | 267.2 [228.5–346.9] | 80.9 [48.2–138.6] | 19 | 127258 | 47175.5 [47051.0–47216.0] | 37700.5 [37509.0–37922.0] | 37700.5 [37509.0–37922.0] | 377 |
-| document | 1 | initial | 1 | 44 | 0.5 [0.5–0.5] | 0.5 [0.5–0.5] | 0.0 [0.0–0.0] | 0 | 248 | 81.0 [81.0–81.0] | 73.0 [73.0–73.0] | 73.0 [73.0–73.0] |  |
-| document | 1 | update | 50 | 44 | 0.3 [0.2–0.5] | 0.3 [0.2–0.5] | 0.0 [0.0–0.0] | 0 | 97 | 39.0 [39.0–78.0] | 31.0 [31.0–70.0] | 31.0 [31.0–70.0] | 6 |
+| warmup | 10 | initial | 1 | 440 | 3.4 [3.4–3.4] | 3.4 [3.4–3.4] | 0.0 [0.0–0.0] | 0 | 1394 | 511.0 [511.0–511.0] | 441.0 [441.0–441.0] | 434.0 [434.0–434.0] |  |
+| warmup | 10 | update, after a settle | 3 | 440 | 3.9 [3.2–4.0] | 3.9 [3.2–4.0] | 0.0 [0.0–0.0] | 0 | 1387 | 510.0 [509.0–511.0] | 446.0 [445.0–447.0] | 439.0 [438.0–440.0] | 8 |
+| query | 10 | initial | 1 | 440 | 2.6 [2.6–2.6] | 2.6 [2.6–2.6] | 0.0 [0.0–0.0] | 0 | 1394 | 511.0 [511.0–511.0] | 441.0 [441.0–441.0] | 434.0 [434.0–434.0] |  |
+| query | 10 | update, after a settle | 4 | 440 | 4.3 [2.3–4.7] | 4.3 [2.3–4.7] | 0.0 [0.0–0.0] | 0 | 1405 | 515.5 [509.0–517.0] | 451.5 [445.0–453.0] | 444.5 [438.0–446.0] | 9 |
+| query | 10 | update | 16 | 440 | 1.8 [1.6–2.2] | 1.8 [1.6–2.2] | 0.0 [0.0–0.0] | 0 | 987 | 395.0 [395.0–395.0] | 1251.5 [766.0–1737.0] | 1244.5 [759.0–1730.0] | 5 |
+| query | 100 | initial | 1 | 4400 | 20.4 [20.4–20.4] | 20.2 [20.2–20.2] | 1.6 [1.6–1.6] | 1 | 12638 | 4741.0 [4741.0–4741.0] | 3894.0 [3894.0–3894.0] | 3887.0 [3887.0–3887.0] |  |
+| query | 100 | update, after a settle | 4 | 4400 | 20.3 [20.0–20.9] | 20.3 [20.0–20.7] | 1.4 [1.4–1.7] | 1 | 12684 | 4749.0 [4741.0–4759.0] | 3905.5 [3898.0–3913.0] | 3898.5 [3891.0–3906.0] | 47 |
+| query | 100 | update | 16 | 4400 | 22.1 [19.3–27.1] | 21.7 [19.2–24.4] | 3.5 [2.1–5.1] | 2 | 12576 | 4715.0 [4701.0–4730.0] | 4815.0 [4195.0–5327.0] | 4808.0 [4188.0–5320.0] | 42 |
+| query | 500 | initial | 1 | 22000 | 108.7 [108.7–108.7] | 108.6 [108.6–108.6] | 17.5 [17.5–17.5] | 7 | 64815 | 23562.0 [23562.0–23562.0] | 19037.0 [19037.0–19037.0] | 19030.0 [19030.0–19030.0] |  |
+| query | 500 | update, after a settle | 4 | 22000 | 110.7 [110.0–112.8] | 110.6 [109.9–112.7] | 18.7 [17.6–20.3] | 7 | 63712 | 23578.5 [23577.0–23579.0] | 19048.5 [19041.0–19056.0] | 19041.5 [19034.0–19049.0] | 154 |
+| query | 500 | update | 16 | 22000 | 131.1 [122.2–149.9] | 121.8 [117.1–133.0] | 31.6 [28.5–36.2] | 9 | 63709 | 23584.5 [23542.0–23605.0] | 20678.0 [19852.0–21416.0] | 20671.0 [19845.0–21409.0] | 175 |
+| query | 1000 | initial | 1 | 44000 | 258.8 [258.8–258.8] | 248.5 [248.5–248.5] | 47.9 [47.9–47.9] | 15 | 128765 | 47129.0 [47129.0–47129.0] | 37920.0 [37920.0–37920.0] | 37913.0 [37913.0–37913.0] |  |
+| query | 1000 | update, after a settle | 4 | 44000 | 256.3 [234.0–314.5] | 244.5 [228.5–299.4] | 55.0 [48.2–71.9] | 16 | 127351 | 47154.0 [47122.0–47170.0] | 37931.0 [37924.0–37938.0] | 37924.0 [37917.0–37931.0] | 329 |
+| query | 1000 | update | 16 | 44000 | 307.3 [250.2–1174.4] | 272.4 [249.7–346.9] | 85.8 [72.1–138.6] | 19 | 126763 | 47192.0 [47051.0–47216.0] | 39837.5 [39415.0–41577.0] | 39830.5 [39408.0–41570.0] | 399 |
+| document | 1 | initial | 1 | 44 | 0.5 [0.5–0.5] | 0.5 [0.5–0.5] | 0.0 [0.0–0.0] | 0 | 248 | 81.0 [81.0–81.0] | 83.0 [83.0–83.0] | 76.0 [76.0–76.0] |  |
+| document | 1 | update, after a settle | 5 | 44 | 0.3 [0.3–0.5] | 0.3 [0.3–0.5] | 0.0 [0.0–0.0] | 0 | 234 | 78.0 [78.0–78.0] | 86.0 [86.0–86.0] | 79.0 [79.0–79.0] | 9 |
+| document | 1 | update | 45 | 44 | 0.3 [0.2–0.4] | 0.3 [0.2–0.4] | 0.0 [0.0–0.0] | 0 | 97 | 39.0 [39.0–39.0] | 308.0 [123.0–493.0] | 301.0 [116.0–486.0] | 6 |
 
 Callbacks off the main thread: 0. Partial snapshots skipped: 0.
 
 ## Settled peers (after forced GC, finalizers and a main-queue turn, three times)
 
-| phase | docs | point | peer table entries | with a live peer | managed heap KB | largest peer kinds |
+| phase | docs | point | peer table entries | with a live peer | managed heap KiB | largest peer kinds |
 |---|---:|---|---:|---:|---:|---|
 | warmup | 10 | before-listen | 7 | 7 | 637 | 2 Firestore; 1 AppDelegate; 1 SceneDelegate; 1 UILabel; 1 UIWindow; 1 NSNull |
 | warmup | 10 | after-initial | 7 | 7 | 729 | 2 Firestore; 1 AppDelegate; 1 SceneDelegate; 1 UILabel; 1 UIWindow; 1 NSNull |

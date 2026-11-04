@@ -74,6 +74,25 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
             ?? throw new InvalidOperationException("The app has no caches directory."),
         "peerless");
 
+    /// <summary>
+    /// Records a failure before the run could start (for example, bad launch arguments) in the files the script reads:
+    /// a run file with the failure and outcome, and the console line it waits for. Uses the requested mode's file
+    /// names, so the script finds them.
+    /// </summary>
+    public static void RecordStartupFailure(Exception exception)
+    {
+        string mode = NSUserDefaults.StandardUserDefaults.StringForKey("mode") is { Length: > 0 } requested
+            && requested.All(static c => char.IsAsciiLetterOrDigit(c) || c == '-')
+                ? requested
+                : "peered";
+        string directory = ResultsDirectory;
+        _ = Directory.CreateDirectory(directory);
+        string reason = exception.ToString().ReplaceLineEndings(" | ");
+        File.WriteAllText(Path.Combine(directory, $"{mode}-run.txt"), $"failure: startup: {reason}\noutcome: failed\n");
+        File.WriteAllText(Path.Combine(directory, $"{mode}-console.txt"), $"{Tag} PEERLESS_DONE failed: {reason}\n");
+        Console.WriteLine($"{Tag} PEERLESS_DONE failed: {reason}");
+    }
+
     public async Task RunAsync()
     {
         using var writer = new ResultWriter(ResultsDirectory, options.ModeName);
@@ -127,6 +146,8 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                 await VerifyAsync().ConfigureAwait(false);
                 await DisposeRaceAsync().ConfigureAwait(false);
             }
+            else
+                writer.Note("verify", "skipped (-verify NO)"); // the script refuses such a run unless told to accept it
             await BenchmarkPhases.RunAsync(this, options.Plan).ConfigureAwait(false);
 
             writer.Note("outcome", "completed");

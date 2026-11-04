@@ -29,7 +29,20 @@ public sealed class SceneDelegate : UIResponder, IUIWindowSceneDelegate
         if (run is not null)
             return;
 
-        var options = BenchmarkOptions.FromLaunchArguments();
+        BenchmarkOptions options;
+        try
+        {
+            options = BenchmarkOptions.FromLaunchArguments();
+        }
+        catch (Exception exception)
+        {
+            // Bad launch arguments: record why, where the script looks, instead of leaving it to see a dead process.
+            BenchmarkRunner.RecordStartupFailure(exception);
+            label.Text = $"Bad launch arguments: {exception.Message}";
+            run = Task.CompletedTask;
+            return;
+        }
+
         void Status(string message) => UIApplication.SharedApplication.BeginInvokeOnMainThread(() => label.Text = message);
         run = Task.Run(async () =>
         {

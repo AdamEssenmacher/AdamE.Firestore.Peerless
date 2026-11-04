@@ -35,19 +35,31 @@ the Mac's memory and caches. It is not an iPhone. See *What makes these numbers 
 
 ## Numbers (per callback, medians over both runs)
 
-Each document has 16 top-level fields, which come to 44 converted values.
+Each document has 16 top-level fields, which come to 44 converted values. As on Android, *update* rows leave out the
+updates that come straight after a settle point, which are listed separately as *after a settle*. Settles come
+every 5 updates, every 12 in the single-document phase. Recomputed in review from the committed CSVs; earlier versions
+of this table pooled all updates and reported the table's growth from callback entry, which hid how entries pile up
+between settles.
 
-| docs | kind | n | wall ms | main-queue CPU ms | gen0 GCs | GC pause ms | managed alloc | peers created | peer table entries added (peak Δ) |
-|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| 10 | initial | 2 | 2.3 | 2.3 | 0 | 0 | 1.4 MB | 511 | 431 |
-| 10 | update ×20 | 40 | 1.8 | 1.8 | 0 | 0 | 0.96 MB | 395 | 315 |
-| 100 | initial | 2 | 20 | 20 | 1 | 1.5 | 12 MB | 4,741 | 3,884 |
-| 100 | update ×20 | 40 | 22 | 22 | 1 | 3.1 | 12 MB | 4,718 | 3,760 |
-| 500 | initial | 2 | 108 | 108 | 7 | 17 | 63 MB | 23,569 | 19,027 |
-| 500 | update ×20 | 40 | 129 | 121 | 9 | 31 | 62 MB | 23,581 | 18,799 |
-| 1000 | initial | 2 | 243 | 238 | 15 | 46 | 126 MB | 47,129 | 37,910 |
-| 1000 | update ×20 | 40 | 295 | 266 | 19 | 80 | 124 MB | 47,184 | 37,704 |
-| 1 (doc listener) | update ×50 | 100 | 0.33 | 0.33 | 0 | 0 | 92 KB | 39 | 31 |
+| docs | kind | n | wall ms | main-queue CPU ms | gen0 GCs | GC pause ms | managed alloc | peers created | peer table peak, absolute | peak over settled |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | initial | 2 | 2.3 | 2.3 | 0 | 0 | 1.4 MiB | 511 | 441 | 434 |
+| 10 | update | 32 | 1.7 | 1.7 | 0 | 0 | 0.96 MiB | 395 | 1,251 | 1,244 |
+| 10 | update, after a settle | 8 | 2.2 | 2.2 | 0 | 0 | 1.4 MiB | 515 | 451 | 444 |
+| 100 | initial | 2 | 20 | 20 | 1 | 1.5 | 12 MiB | 4,741 | 3,894 | 3,887 |
+| 100 | update | 32 | 22 | 22 | 1 | 3.8 | 12 MiB | 4,715 | 4,833 | 4,826 |
+| 100 | update, after a settle | 8 | 20 | 20 | 1 | 1.5 | 13 MiB | 4,751 | 3,905 | 3,898 |
+| 500 | initial | 2 | 108 | 108 | 7 | 17 | 63 MiB | 23,569 | 19,037 | 19,030 |
+| 500 | update | 32 | 132 | 122 | 9 | 31 | 62 MiB | 23,584 | 20,669 | 20,662 |
+| 500 | update, after a settle | 8 | 111 | 111 | 7 | 19 | 62 MiB | 23,577 | 19,048 | 19,041 |
+| 1000 | initial | 2 | 243 | 238 | 15 | 46 | 126 MiB | 47,129 | 37,920 | 37,913 |
+| 1000 | update | 32 | 297 | 267 | 19 | 83 | 124 MiB | 47,196 | 39,837 | 39,830 |
+| 1000 | update, after a settle | 8 | 247 | 239 | 16 | 54 | 124 MiB | 47,137 | 37,931 | 37,924 |
+| 1 (doc listener) | update | 90 | 0.32 | 0.32 | 0 | 0 | 92 KiB | 39 | 308 | 301 |
+
+*Peer table peak, absolute* is the table's highest entry count during the callback: what the app holds. *Peak over
+settled* subtracts the count at the last settle point, which is always the app's own 7 entries (see below), as
+Android's GREF figure subtracts its settled count. MiB and KiB are binary units (1,048,576 and 1,024 bytes).
 
 - **About 47 `NSObject` peers are created per document, slightly more than one per value** (47.1–47.4 at 100–1000
   docs). Every peer here is a managed object, a GC handle and a retain on a native object. Most counts repeat across
@@ -57,19 +69,23 @@ Each document has 16 top-level fields, which come to 44 converted values.
   docs). One possible cause is untested: a GC inside the callback collects a peer whose table entry stays until the
   main queue drains, so the next time Firestore hands over the same native object, the runtime makes a new peer and
   overwrites the entry (which counts as created).
-- **About 3 KB of managed allocation per converted value** (2.9–3.0 KB at 100–1000 docs, 3.2 KB at 10). Android's
-  peered path allocates about 4 KB per value. The cost has the same shape on both platforms: a peer per value, plus
+- **About 3 KiB of managed allocation per converted value** (2.9–3.0 KiB at 100–1000 docs, 3.2 KiB at 10). Android's
+  peered path allocates about 4 KiB per value. The cost has the same shape on both platforms: a peer per value, plus
   the binding's marshalling (`NSDictionary` enumeration, `NSString`→`string`, and `ObjCType` strings for every
   `NSNumber`). Not profiled further.
 - **The peer table grows by about 38,000 entries during a 1000-document callback, and never shrinks while it runs**,
-  even though 15–19 GCs (46–80 ms of pause) run inside it. On every one of the 278 peered callbacks, the table's
+  even though 15–19 GCs (46–83 ms of pause) run inside it. On every one of the 278 peered callbacks, the table's
   highest count equals its count at the end. That's how Microsoft.iOS releases a collected peer: its finalizer only
   queues it on `NSObject_Disposer`, which drains through `performSelectorOnMainThread:`. Only that drain removes the
   table entry and releases the native object. (This is from Microsoft.iOS 27.1.10018's `NSObject` code.) The callback
   occupies the main queue, so every entry it adds, and the native retain behind each, is held at least until the
-  callback returns, however many of the managed peers a GC has already collected. The column counts table entries
+  callback returns, however many of the managed peers a GC has already collected. The columns count table entries
   (native retains held), not live managed peers; how many of those were still reachable wasn't measured inside the
   callback.
+- **Between settles, entries pile up across callbacks.** Without a forced settle, the previous snapshots' entries are
+  still in the table when the next callback starts, until the main queue drains them. So the absolute peak of an
+  update that isn't right after a settle is higher: 1,251 at 10 docs (about three snapshots' worth, since no GC runs
+  at that size) and 39,837 at 1000 docs. An app that never forces GCs sees these absolute numbers.
 - **Updates can be cheaper than initial snapshots, depending on GC timing.** At 10 docs an update creates 395 peers
   against 511 for the initial snapshot, because no GC has run since the previous snapshot. When Firestore hands over
   the same native object again (unchanged documents, shared keys, tagged-pointer `NSNumber`s), the runtime returns its
@@ -80,8 +96,8 @@ Each document has 16 top-level fields, which come to 44 converted values.
   (`Dispose()` removes the entry at once). Eight is the number of maps in a document (the data plus `location`,
   `stats`, 3 `history` entries and 2 `attachments`). The likely source is a temporary the binding creates and
   disposes per `NSDictionary` enumeration. That's unconfirmed.
-- **Write→callback latency** (seeder write to fully converted): 6 ms at 10 docs, 44 ms at 100, 171 ms at 500, 365 ms
-  at 1000.
+- **Write→callback latency** (seeder write to fully converted, updates not straight after a settle): 6 ms at 10 docs,
+  44 ms at 100, 174 ms at 500, 368 ms at 1000.
 
 ## Peers level off: nothing is retained
 
@@ -92,7 +108,7 @@ removal, at every size. Those 7 are the app's own peers (2 `Firestore`, `AppDele
 `UILabel`, `NSNull`). Every peer a snapshot created is collected, and there is no growth across updates.
 
 That differs from Android, where about 4 `java.lang.String` GREFs per document stay held after GC and after removal.
-iOS has no equivalent. The managed heap after settling grows with collection size (16 MB at 1000 docs) only because
+iOS has no equivalent. The managed heap after settling grows with collection size (16 MiB at 1000 docs) only because
 the sampler keeps the latest plain conversion alive, as a view model would.
 
 ## Compared with Android's peered path
@@ -100,24 +116,46 @@ the sampler keeps the latest plain conversion alive, as a view model would.
 For orientation only. The platforms ran on different hardware: Android's numbers come from an emulated arm64 device
 with a minimum gen0 budget, iOS's from a simulator running natively on the Mac.
 
-| docs | kind | main-thread CPU ms (Android / iOS) | managed alloc | references held at peak (GREFs / peer table entries) |
-|---:|---|---|---|---|
-| 10 | initial | 6.45 / 2.3 | 1.7 MB / 1.4 MB | 308 / 431 |
-| 100 | initial | 62.8 / 20 | 16.3 MB / 12 MB | 1,370 / 3,884 |
-| 1000 | initial | 1,317 / 238 | 194 MB / 126 MB | 5,584 / 37,910 |
-| 1000 | update | 687 / 266 | 146 MB / 124 MB | 2,102 / 37,704 |
+Both sides now use the same rules: updates straight after a settle are left out, and references are given as the
+absolute peak and as the peak over the last settle. Android's figures are from
+[../android/FINDINGS.md](../android/FINDINGS.md), which uses this definition (an earlier version of this table quoted
+Android's retired peak-from-callback-entry figure, 2,102 for the 1000-doc update).
+
+| docs | kind | main-thread CPU ms (Android / iOS) | managed alloc, MiB (Android / iOS) | references at peak, absolute (GREFs / peer table) | over settled (GREFs / peer table) |
+|---:|---|---|---|---|---|
+| 10 | initial | 6.45 / 2.3 | 1.7 / 1.4 | 403 / 441 | 312 / 434 |
+| 100 | initial | 62.8 / 20 | 16.3 / 12 | 1,488 / 3,894 | 1,374 / 3,887 |
+| 1000 | initial | 1,317 / 238 | 194 / 126 | 5,708 / 37,920 | 5,588 / 37,913 |
+| 1000 | update | 689 / 267 | 146 / 124 | 9,149 / 39,837 | 5,022 / 39,830 |
 
 Both paths allocate the same order of memory per value and hold a native reference per object while converting. On
 Android that is a scarce resource (ART's 51,200-GREF limit), and a GC inside the callback releases some of it as it
 goes. On iOS a peer costs a table entry, a GC handle and a native retain. None of these has a hard limit, but all
-38,000 of them are held until the callback returns, because a GC can't release them on the main queue while it runs.
+38,000–40,000 of them are held until the callback returns, because a GC can't release them on the main queue while it
+runs.
+
+## A short run from the reviewed code
+
+The two runs above were made with the step 4 code as first committed (429db5f). Review then changed the harness:
+
+- calibration runs on the main queue, and a failed check fails the run;
+- the script waits for the app's last line, and refuses runs without a verify check;
+- updates build their document reference before the latency timestamp.
+
+[`20261104-130631-peered-tip-check`](20261104-130631-peered-tip-check/summary.md) is a short run of the code as
+committed with it, at 10 and 100 docs, with 10 updates per size (so it settles every 2 updates, not 5) and 12
+single-document updates, at a host load of 41–47. It passed every check: NativeAOT, calibration `+100/+100,
+-100/+0`, and `read back as written (465 values)`. Its counts match the full runs exactly where the cadence doesn't
+matter: 511, 4,741 and 81 peers created for the initial snapshots, and 1.36 MiB / 12.34 MiB allocated. CPU agrees
+within noise (100 docs initial: 20.0 ms against 20.4). Its absolute update peaks are lower (770 and 5,113 against
+1,251 and 4,833), because entries pile up between settles and its settles are closer together.
 
 ## What makes these numbers unreliable
 
 1. **The simulator isn't a device.** The app is a macOS process on the Mac's performance cores, so CPU and wall times
    are much faster than on most iPhones. There is no thermal throttling or memory limit (jetsam), and the GC sees the
-   Mac's memory (`available=51539607552`, 48 GB). The GC reports `GCGen0MaxBudget=8388608`; on this host it collected
-   about every 8 MB (126 MB / 15 GCs). An iPhone's gen0 budget depends on its caches and memory, so the GC counts may
+   Mac's memory (`available=51539607552`, 48 GiB). The GC reports `GCGen0MaxBudget=8388608`; on this host it collected
+   about every 8 MiB (126 MiB / 15 GCs). An iPhone's gen0 budget depends on its caches and memory, so the GC counts may
    differ there. **Peer counts and allocation per value should carry over to a device, because they come from the
    binding's code path rather than the hardware. Times and GC counts should be re-measured on a real iPhone**
    (`dotnet publish -r ios-arm64`, which needs a provisioning profile).

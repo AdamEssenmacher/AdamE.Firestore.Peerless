@@ -116,7 +116,7 @@ Android's and is in `PeerlessListener`'s docs.
 The iOS app seeds the same documents and runs the same phases and settle points (`benchmarks/Shared`). It listens
 either through `AdamE.Firebase.iOS.CloudFirestore` (converting each snapshot into the same plain .NET values as
 Android's peered mode) or through Peerless. For each callback it records wall time, main-queue CPU time, managed
-allocations, GC count and pause time, and `NSObject` peers: every peer created, and the live peer table. Peerless mode
+allocations, GC count and pause time, and `NSObject` peers: every peer created, and the peer table. Peerless mode
 also splits the time between the Objective-C side (encoding) and the .NET side (decoding). It also records the settled
 peer table after forced GCs. Each run first checks that a collection covering every value kind reads back exactly as
 written, that Peerless decodes it identically to the peered binding, and that removal holds its contract while frames
