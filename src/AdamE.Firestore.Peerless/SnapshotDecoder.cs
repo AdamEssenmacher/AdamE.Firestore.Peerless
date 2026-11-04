@@ -10,11 +10,10 @@ namespace AdamE.Firestore.Peerless;
 /// thread-safe, and the result does not reference the input buffer, so the caller may reuse or free it afterwards.
 /// </summary>
 /// <remarks>
-/// A container's array is allocated at its declared size up front only while the counts of all containers still open
-/// fit in the bytes left to read (each item needs at least one byte). Real data always fits, so a normal frame is read
-/// straight into exact-size arrays. When a frame claims more than it can hold (hostile nesting), the excess containers
-/// are read onto a per-thread scratch stack instead and copied out when they end, so their memory grows only with
-/// items actually read. Either way, memory stays proportional to the frame's size.
+/// Every item takes at least one byte, so the items declared by all open containers must fit in the bytes left to read.
+/// A frame whose declared counts don't is rejected the moment they stop fitting; otherwise each container is read
+/// straight into an array of its declared size. Memory therefore stays proportional to the frame's size, however
+/// hostile its counts.
 /// </remarks>
 public static class SnapshotDecoder
 {
@@ -68,8 +67,7 @@ public static class SnapshotDecoder
         private readonly Scratch scratch = scratch;
         private int position;
 
-        // Items declared but not yet started, across all open containers whose arrays were allocated up front. Each
-        // needs at least one unread byte, so an up-front allocation is allowed only while this fits in the bytes left.
+        // Items declared but not yet started, across all open containers. Each needs at least one unread byte.
         private long reserved;
 
         public FirestoreSnapshot ReadFrame()
@@ -150,7 +148,7 @@ public static class SnapshotDecoder
                 int start = position;
                 string path = ReadString();
                 if (!FirestoreDocument.IsValidPath(path))
-                    throw Fail($"\"{path}\" is not a document path: it is empty or has an empty segment.", start);
+                    throw Fail($"\"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", start);
 
                 byte flags = ReadByte();
                 bool exists = (flags & Wire.DocumentFlags.Exists) != 0;
@@ -209,7 +207,7 @@ public static class SnapshotDecoder
                 {
                     string path = ReadString();
                     if (!FirestoreDocument.IsValidPath(path))
-                        throw Fail($"Reference \"{path}\" is not a document path: it is empty or has an empty segment.", start);
+                        throw Fail($"Reference \"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", start);
                     return FirestoreValue.FromReference(path);
                 }
                 case Wire.Tag.Array:
@@ -219,22 +217,15 @@ public static class SnapshotDecoder
                     if (count == 0)
                         return FirestoreValue.FromArray(FirestoreArray.Empty);
 
-                    if (TryReserve(count))
+                    Reserve(count, start);
+                    var items = new FirestoreValue[count];
+                    for (int index = 0; index < count; index++)
                     {
-                        var items = new FirestoreValue[count];
-                        for (int index = 0; index < count; index++)
-                        {
-                            reserved--;
-                            items[index] = ReadValue(depth + 1);
-                        }
-
-                        return FirestoreValue.FromArray(FirestoreArray.Owning(items));
+                        reserved--;
+                        items[index] = ReadValue(depth + 1);
                     }
 
-                    int bottom = scratch.ValueTop;
-                    for (int index = 0; index < count; index++)
-                        scratch.PushValue(ReadValue(depth + 1));
-                    return FirestoreValue.FromArray(FirestoreArray.Owning(scratch.PopValues(bottom)));
+                    return FirestoreValue.FromArray(FirestoreArray.Owning(items));
                 }
 
                 case Wire.Tag.Map:
@@ -256,46 +247,30 @@ public static class SnapshotDecoder
 
             // Key hashes (already computed by the key cache) go on a scratch stack for the duplicate check.
             int hashBottom = scratch.HashTop;
-            string? duplicate;
-            if (TryReserve(count))
-            {
-                var names = new string[count];
-                var values = new FirestoreValue[count];
-                for (int index = 0; index < count; index++)
-                {
-                    reserved--;
-                    names[index] = ReadKey();
-                    values[index] = ReadValue(depth);
-                }
-
-                if (scratch.HasDuplicateKey(names, hashBottom, out duplicate))
-                    throw Fail($"The map key \"{duplicate}\" appears twice.", start);
-                scratch.PopHashes(hashBottom);
-                return FirestoreMap.Owning(names, values);
-            }
-
-            int keyBottom = scratch.KeyTop;
-            int valueBottom = scratch.ValueTop;
+            Reserve(count, start);
+            var names = new string[count];
+            var values = new FirestoreValue[count];
             for (int index = 0; index < count; index++)
             {
-                scratch.PushKey(ReadKey());
-                scratch.PushValue(ReadValue(depth));
+                reserved--;
+                names[index] = ReadKey();
+                values[index] = ReadValue(depth);
             }
 
-            string[] keys = scratch.PopKeys(keyBottom);
-            if (scratch.HasDuplicateKey(keys, hashBottom, out duplicate))
+            if (scratch.HasDuplicateKey(names, hashBottom, out string? duplicate))
                 throw Fail($"The map key \"{duplicate}\" appears twice.", start);
             scratch.PopHashes(hashBottom);
-            return FirestoreMap.Owning(keys, scratch.PopValues(valueBottom));
+            return FirestoreMap.Owning(names, values);
         }
 
-        // Pre-allocates only while every open pre-allocated container could still be backed by the unread bytes.
-        private bool TryReserve(int count)
+        // Every item takes at least one byte (an array item its tag; a map entry a key length and a tag), so in a frame
+        // that can decode, the items still to come in all open containers plus this container's always fit in the bytes
+        // left. A frame whose declared counts don't is rejected here, before anything is allocated for them.
+        private void Reserve(int count, int start)
         {
             if (reserved + count > frame.Length - position)
-                return false;
+                throw Fail($"Declared counts ({reserved + count:N0} items still to come) exceed the {frame.Length - position:N0} bytes left in the frame.", start);
             reserved += count;
-            return true;
         }
 
         private readonly void CheckDepth(int depth, int start)
@@ -379,7 +354,7 @@ public static class SnapshotDecoder
     }
 
     /// <summary>
-    /// Per-thread working memory for one decode: the item stacks, the field-name cache and the duplicate-key table.
+    /// Per-thread working memory for one decode: the field-name cache, the key hashes and the duplicate-key table.
     /// Kept between decodes while it stays small, so normal frames allocate nothing here.
     /// </summary>
     private sealed class Scratch
@@ -393,8 +368,6 @@ public static class SnapshotDecoder
         // Random per process, so the cache's slots can't be predicted by whoever writes the data.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
 
-        private readonly ChunkedStack<FirestoreValue> values = new();
-        private readonly ChunkedStack<string> keys = new();
 
         private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
         private readonly string?[] cachedKeys = new string[KeyCacheSize];
@@ -403,22 +376,12 @@ public static class SnapshotDecoder
         private uint[] hashes = new uint[InitialStack];
         private int[] seen = [];
 
-        public int ValueTop => values.Count;
-
-        public int KeyTop => keys.Count;
 
         public int HashTop { get; private set; }
 
         public void PopHashes(int bottom) => HashTop = bottom;
 
 
-        public void PushValue(FirestoreValue value) => values.Push(value);
-
-        public void PushKey(string key) => keys.Push(key);
-
-        public FirestoreValue[] PopValues(int bottom) => values.PopFrom(bottom);
-
-        public string[] PopKeys(int bottom) => keys.PopFrom(bottom);
 
         // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
         // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch.
@@ -517,8 +480,6 @@ public static class SnapshotDecoder
         // Clears what the last decode left (so no strings or values outlive it) and says whether to keep this scratch.
         public bool Reset()
         {
-            values.Reset();
-            keys.Reset();
             HashTop = 0;
             if (cachedCount > 0)
             {
@@ -528,72 +489,6 @@ public static class SnapshotDecoder
             }
 
             return hashes.Length <= MaxRetainedTable && seen.Length <= MaxRetainedTable;
-        }
-    }
-
-    /// <summary>
-    /// A stack in fixed-size chunks: growing never copies what is already there, so a container read here costs one slot
-    /// per item plus its exact-size result, not a series of doubling copies. A few chunks are kept between decodes.
-    /// </summary>
-    private sealed class ChunkedStack<T>
-    {
-        private const int ChunkShift = 10;
-        private const int ChunkSize = 1 << ChunkShift; // 1,024 items: 32 KB of FirestoreValue
-        private const int Mask = ChunkSize - 1;
-        private const int RetainedChunks = 4;
-
-        private readonly List<T[]> chunks = [];
-        private int highWater;
-
-        public int Count { get; private set; }
-
-        public void Push(T item)
-        {
-            int chunk = Count >> ChunkShift;
-            if (chunk == chunks.Count)
-                chunks.Add(new T[ChunkSize]);
-            chunks[chunk][Count & Mask] = item;
-            Count++;
-            if (Count > highWater)
-                highWater = Count;
-        }
-
-        public T[] PopFrom(int bottom)
-        {
-            var popped = new T[Count - bottom];
-            int copied = 0;
-            for (int index = bottom; index < Count;)
-            {
-                int offset = index & Mask;
-                int length = Math.Min(ChunkSize - offset, Count - index);
-                Array.Copy(chunks[index >> ChunkShift], offset, popped, copied, length);
-                copied += length;
-                index += length;
-            }
-
-            Count = bottom;
-            return popped;
-        }
-
-        // Clears only the chunks it keeps (so they hold no references); the rest are dropped without clearing.
-        public void Reset()
-        {
-            int keep = Math.Min(chunks.Count, RetainedChunks);
-            if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
-            {
-                for (int chunk = 0; chunk < keep; chunk++)
-                {
-                    int used = Math.Min(ChunkSize, highWater - (chunk << ChunkShift));
-                    if (used <= 0)
-                        break;
-                    Array.Clear(chunks[chunk], 0, used);
-                }
-            }
-
-            if (chunks.Count > keep)
-                chunks.RemoveRange(keep, chunks.Count - keep);
-            Count = 0;
-            highWater = 0;
         }
     }
 }

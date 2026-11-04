@@ -80,6 +80,20 @@ class FrameWriterTest {
     }
 
     @Test
+    fun aLiteralReplacementCharacterKeyCollidesWithALoneSurrogateKey() {
+        // "\uFFFDa" is a real key; "\uD800a" is written as the same bytes.
+        val colliding = linkedMapOf<String, Any?>("\uFFFDa" to 1L, "\uD800a" to 2L)
+        assertThrows(FrameWriter.KeyCollisionException::class.java) { FrameWriter().writeMapBody(colliding) }
+    }
+
+    @Test
+    fun aCollisionInsideANestedMapFailsTheFrameToo() {
+        val nested = linkedMapOf<String, Any?>("\uDC00x" to 1L, "\uDBFFx" to 2L)
+        val outer = linkedMapOf<String, Any?>("fine" to 1L, "inner" to listOf(linkedMapOf<String, Any?>("deeper" to nested)))
+        assertThrows(FrameWriter.KeyCollisionException::class.java) { FrameWriter().writeMapBody(outer) }
+    }
+
+    @Test
     fun aSingleLossyKeyOrOrdinaryKeysAreFine() {
         FrameWriter().writeMapBody(linkedMapOf<String, Any?>("\uD800a" to 1L, "b" to 2L))
         FrameWriter().writeMapBody(linkedMapOf<String, Any?>("😀" to 1L, "a" to 2L))

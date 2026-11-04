@@ -100,6 +100,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             {
                 await VerifyAsync(listening, seeding).ConfigureAwait(false);
                 await DisposeRaceAsync().ConfigureAwait(false);
+                await RefusedListenAsync().ConfigureAwait(false);
             }
             await BenchmarkPhases.RunAsync(this, options.Plan).ConfigureAwait(false);
 
@@ -308,6 +309,49 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         Report($"dispose race: {verdict}");
         if (violations != 0)
             throw new BenchmarkCheckException($"dispose race: {verdict}");
+    }
+
+    /// <summary>
+    /// A listen Firestore refuses (here: on a terminated instance) must throw InvalidOperationException with the Java
+    /// exception inside, as on iOS, and leave nothing behind: the settled global reference count is compared before
+    /// and after ten refused listens (a leak of one reference each would show as ten).
+    /// </summary>
+    private async Task RefusedListenAsync()
+    {
+        FirebaseFirestore terminated = Connect("terminated");
+        await terminated.Terminate().AsTask().ConfigureAwait(false);
+        Query query = terminated.Collection("refused");
+        (int before, _, _) = await Probes.SettleAsync().ConfigureAwait(false);
+
+        string? failure = null;
+        string? refusal = null;
+        for (int attempt = 0; attempt < 10 && failure is null; attempt++)
+        {
+            try
+            {
+                using IDisposable registration = PeerlessListener.Listen(query, _ => { }, _ => { });
+                failure = "Listen on a terminated instance did not throw";
+            }
+            catch (InvalidOperationException exception) when (exception.InnerException is Java.Lang.IllegalStateException inner)
+            {
+                refusal ??= $"{inner.GetType().Name}: {exception.Message}";
+            }
+            catch (Exception exception)
+            {
+                failure = $"{exception.GetType().Name}: {exception.Message}";
+            }
+        }
+
+        (int after, _, _) = await Probes.SettleAsync().ConfigureAwait(false);
+        if (failure is null && after - before >= 5)
+            failure = $"settled GREFs grew from {before} to {after} across 10 refused listens";
+        string verdict = failure is null
+            ? $"ok ({refusal}); settled GREFs before {before}, after 10 refused listens {after}"
+            : $"FAILED: {failure}";
+        results?.Note("refusedListen", verdict.ReplaceLineEndings(" "));
+        Report($"refused listen: {verdict}");
+        if (failure is not null)
+            throw new BenchmarkCheckException($"refused listen: {verdict}");
     }
 
     // IBenchmarkPlatform: the shared phases drive these.
