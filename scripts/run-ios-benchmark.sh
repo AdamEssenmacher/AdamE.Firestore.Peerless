@@ -8,6 +8,7 @@
 # Usage: scripts/run-ios-benchmark.sh <simulator-udid> [peered|peerless] [extra launch arguments, e.g. -sizes 10,100]
 #   FIRESTORE_PORT  the Firestore emulator's port (default 8181, as in firebase.json); the simulator shares the host's
 #                   network, so the app reaches it at 127.0.0.1:<port>
+#   FIREBASE_HUB_PORT  the emulator hub's port (default 4501), used to check FIRESTORE_PORT is really Firestore's
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 #
 # Exits nonzero unless the run completed under NativeAOT with every self-check passing (the app records a failed
@@ -24,7 +25,17 @@ project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS"
 bundle="com.adame.firestore.peerless.benchmarks"
 out="${RESULTS_DIR:-$root/results/ios}/$(date +%Y%m%d-%H%M%S)-$mode${RUN_LABEL:+-$RUN_LABEL}"
 
-curl -sf -o /dev/null "http://127.0.0.1:$port/" || { echo "Firestore emulator is not listening on $port" >&2; exit 1; }
+# The run clears the emulator's database, so make sure it's ours: never the CI runner's emulators (8080/9099/4400),
+# and the hub must report a Firestore emulator on this port (as the Android script checks).
+case "$port" in
+  8080|9099|4400) echo "Port $port belongs to another Firebase emulator setup on this machine (the CI runner's); use 8181." >&2; exit 1 ;;
+esac
+hub="${FIREBASE_HUB_PORT:-4501}"
+reported="$(curl -sf "http://127.0.0.1:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
+if [ "$reported" != "$port" ]; then
+  echo "The Firebase emulator hub on $hub doesn't report a Firestore emulator on $port (it reports: ${reported:-nothing}). Start it with: firebase emulators:start --only firestore --project demo-peerless" >&2
+  exit 1
+fi
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
@@ -41,7 +52,9 @@ curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/da
 mkdir -p "$out"
 files="$container/Library/Caches/peerless"
 load_before="$(uptime)"
-xcrun simctl launch --terminate-running-process "$udid" "$bundle" -mode "$mode" -port "$port" "$@"
+# -runFiles names the files this script watches, so even a failure to parse the other arguments (-mode included)
+# lands there.
+xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -mode "$mode" -port "$port" "$@"
 
 # A simulator app is an ordinary host process, so pgrep finds it (by this simulator's path) without simctl.
 echo "Waiting for the run to finish…"
