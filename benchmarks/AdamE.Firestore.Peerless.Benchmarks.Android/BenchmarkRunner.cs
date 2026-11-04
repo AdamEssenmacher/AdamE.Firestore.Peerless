@@ -327,29 +327,37 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         Query query = terminated.Collection("refused");
         (int before, _, _) = await Probes.SettleAsync().ConfigureAwait(false);
 
-        string verdict = "ok";
-        for (int attempt = 0; attempt < 10 && verdict == "ok"; attempt++)
+        string? failure = null;
+        string? refusal = null;
+        for (int attempt = 0; attempt < 10 && failure is null; attempt++)
         {
             try
             {
                 using IDisposable registration = PeerlessListener.Listen(query, _ => { }, _ => { });
-                verdict = "FAILED: Listen on a terminated instance did not throw";
+                failure = "Listen on a terminated instance did not throw";
             }
-            catch (InvalidOperationException exception) when (exception.InnerException is Java.Lang.Exception inner)
+            catch (InvalidOperationException exception) when (exception.InnerException is Java.Lang.IllegalStateException inner)
             {
-                if (attempt == 0)
-                    verdict = $"ok ({inner.GetType().Name}: {exception.Message})";
+                refusal ??= $"{inner.GetType().Name}: {exception.Message}";
             }
             catch (Exception exception)
             {
-                verdict = $"FAILED: {exception.GetType().Name}: {exception.Message}";
+                failure = $"{exception.GetType().Name}: {exception.Message}";
             }
         }
 
+        // A leak of one reference per refused listen would show as ten; a settled count can still move by one or two
+        // for unrelated reasons (the terminated instance's own objects, a peer collected late).
         (int after, _, _) = await Probes.SettleAsync().ConfigureAwait(false);
-        verdict = $"{verdict}; settled GREFs before {before}, after 10 refused listens {after}";
+        if (failure is null && after - before >= 5)
+            failure = $"settled GREFs grew from {before} to {after} across 10 refused listens";
+        string verdict = failure is null
+            ? $"ok ({refusal}); settled GREFs before {before}, after 10 refused listens {after}"
+            : $"FAILED: {failure}";
         results?.Note("refusedListen", verdict.ReplaceLineEndings(" "));
         Report($"refused listen: {verdict}");
+        if (failure is not null)
+            throw new InvalidOperationException($"refused listen: {verdict}");
     }
 
     private async Task QueryPhaseAsync(
