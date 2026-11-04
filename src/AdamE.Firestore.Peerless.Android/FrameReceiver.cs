@@ -71,6 +71,14 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
 
     public void Stop() => gate.Stop();
 
+    // Listen failed before anything was registered: close the gate (releasing any buffer) and drop this peer's global
+    // reference now rather than at the next GC. Nothing on the Java side kept the sink, since registration threw.
+    public void Abandon()
+    {
+        gate.Stop();
+        Dispose();
+    }
+
     public void OnBuffer(Java.Nio.ByteBuffer newBuffer)
     {
         if (!gate.Run(() => ReplaceBuffer(newBuffer)))
