@@ -104,8 +104,14 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
         BitConverter.DoubleToInt64Bits(value.Longitude));
 
     /// <summary>A reference to the document at <paramref name="path"/>.</summary>
-    public static FirestoreValue FromReference(string path) =>
-        new(FirestoreValueKind.Reference, reference: path ?? throw new ArgumentNullException(nameof(path)));
+    /// <exception cref="ArgumentException"><paramref name="path"/> is empty or has an empty segment.</exception>
+    public static FirestoreValue FromReference(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        if (!FirestoreDocument.IsValidPath(path))
+            throw new ArgumentException($"\"{path}\" is not a document path: it is empty or has an empty segment.", nameof(path));
+        return new(FirestoreValueKind.Reference, reference: path);
+    }
 
     /// <summary>An array value.</summary>
     public static FirestoreValue FromArray(FirestoreArray value) =>
@@ -176,6 +182,41 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
         return Kind == FirestoreValueKind.Double;
     }
 
+    /// <summary>Gets the boolean if this is one.</summary>
+    public bool TryGetBoolean(out bool value)
+    {
+        value = Kind == FirestoreValueKind.Boolean && bits != 0;
+        return Kind == FirestoreValueKind.Boolean;
+    }
+
+    /// <summary>Gets the bytes if this is a bytes value.</summary>
+    public bool TryGetBytes(out ReadOnlyMemory<byte> value)
+    {
+        value = Kind == FirestoreValueKind.Bytes ? (byte[]?)reference : default;
+        return Kind == FirestoreValueKind.Bytes;
+    }
+
+    /// <summary>Gets the timestamp if this is one.</summary>
+    public bool TryGetTimestamp(out FirestoreTimestamp value)
+    {
+        value = Kind == FirestoreValueKind.Timestamp ? AsTimestamp() : default;
+        return Kind == FirestoreValueKind.Timestamp;
+    }
+
+    /// <summary>Gets the geo point if this is one.</summary>
+    public bool TryGetGeoPoint(out FirestoreGeoPoint value)
+    {
+        value = Kind == FirestoreValueKind.GeoPoint ? AsGeoPoint() : default;
+        return Kind == FirestoreValueKind.GeoPoint;
+    }
+
+    /// <summary>Gets the referenced document's path if this is a reference.</summary>
+    public bool TryGetReferencePath([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value)
+    {
+        value = Kind == FirestoreValueKind.Reference ? (string?)reference : null;
+        return value is not null;
+    }
+
     /// <summary>Gets the string if this is one.</summary>
     public bool TryGetString([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? value)
     {
@@ -221,10 +262,20 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
     {
         FirestoreValueKind.String or FirestoreValueKind.Reference or FirestoreValueKind.Unsupported =>
             HashCode.Combine(Kind, StringComparer.Ordinal.GetHashCode((string)Reference())),
-        FirestoreValueKind.Bytes => HashCode.Combine(Kind, ((byte[])Reference()).Length),
+        FirestoreValueKind.Bytes => BytesHash((byte[])Reference()),
         FirestoreValueKind.Array or FirestoreValueKind.Map => HashCode.Combine(Kind, Reference()),
         _ => HashCode.Combine(Kind, bits, extra),
     };
+
+    // Length plus up to the first 32 bytes: enough to spread values without hashing a large blob in full.
+    private static int BytesHash(byte[] bytes)
+    {
+        var combined = new HashCode();
+        combined.Add(FirestoreValueKind.Bytes);
+        combined.Add(bytes.Length);
+        combined.AddBytes(bytes.AsSpan(0, Math.Min(bytes.Length, 32)));
+        return combined.ToHashCode();
+    }
 
     /// <summary>Whether two values are structurally equal.</summary>
     public static bool operator ==(FirestoreValue left, FirestoreValue right) => left.Equals(right);

@@ -95,8 +95,8 @@ value = tag:u8 body
 | 5 | string | `string` |
 | 6 | bytes | `varint` length, raw bytes |
 | 7 | timestamp | `seconds:i64 nanoseconds:i32`, within Firestore's range: 0 ≤ nanoseconds ≤ 999,999,999 and −62,135,596,800 ≤ seconds ≤ 253,402,300,799 (0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z). Decoders reject anything outside it. |
-| 8 | geo point | `latitude:f64 longitude:f64` |
-| 9 | reference | `path:string`, the referenced document's full path within its database. The database ID is not carried (the SDKs' `DocumentReference.path` doesn't include it), so a reference into another database of the same project reads as a path in the listener's own database. Carrying it would need a new tag, a major version. |
+| 8 | geo point | `latitude:f64 longitude:f64`, with −90 ≤ latitude ≤ 90 and −180 ≤ longitude ≤ 180 (never NaN), as Firestore requires. Decoders reject anything else. |
+| 9 | reference | `path:string`, the referenced document's full path within its database, under the same rule as a document's path (non-empty, no empty segment; decoders reject anything else). The database ID is not carried (the SDKs' `DocumentReference.path` doesn't include it), so a reference into another database of the same project reads as a path in the listener's own database. Carrying it would need a new tag, a major version. |
 | 10 | array | `count:varint value*count` |
 | 11 | map | `map-body` |
 | 12 | unsupported | `typeName:string`, the native type the encoder didn't understand |
@@ -105,8 +105,12 @@ value = tag:u8 body
 map-body = count:varint (key:string value)*count
 ```
 
-- Map keys are unique within a map (encoders read them from a native map, so this holds by construction), and
-  decoders **reject** a map with a repeated key, including a document's fields. Key order is the encoder's iteration
+- Map keys are unique within a map, and decoders **reject** a map with a repeated key, including a document's
+  fields. Encoders read keys from a native map, so they start out unique, with one exception: a lone UTF-16 surrogate
+  is written as U+FFFD, so two keys that differ only in lone surrogates would be written identically. An encoder must
+  detect that (it can only happen in a map where some key held a lone surrogate) and **fail that snapshot** rather
+  than write the duplicate. The Android shim reports it as an encoding failure (`onError` with a
+  `PeerlessFormatException`); the iOS encoder must do the same. Key order is the encoder's iteration
   order and carries no meaning; decoders must not depend on it.
 - A decoder rejects an unknown tag. Because a value carries no length, an unknown tag can't be skipped, so a new value
   kind needs a **major** version bump.
@@ -119,7 +123,11 @@ map-body = count:varint (key:string value)*count
   the same bytes over and over. The .NET decoder's guarantee: it allocates a container at its declared size up front
   only while the declared-but-unread items of all open up-front containers fit in the bytes left to read, which real
   data always does. Other containers are read onto a scratch stack and allocated when they end, so they cost only
-  the items actually read. Its total allocation stays within about 48 bytes per frame byte, plus a fixed few KB.
+  the items actually read, on a stack of fixed-size chunks that grows without copying. Its allocation per frame
+  byte, plus a fixed few KB: at most about **48 bytes** for a frame that decodes (a one-item array or map in 3–4 bytes
+  is the densest case), and at most about **128 bytes** for a malformed frame built to waste memory. That case can
+  combine a 32-byte slot reserved for an item that never arrives, a scratch slot, and the exact-size copy (about 96
+  measured). A tighter bound would need scratch memory kept as large as the largest frame, or non-contiguous arrays.
 
 ### What encoders write
 

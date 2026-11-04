@@ -112,7 +112,12 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
     private unsafe FirestoreSnapshot Decode(byte[]? frame, int length)
     {
         if (frame is not null)
+        {
+            if (length < 0 || length > frame.Length)
+                throw new PeerlessFormatException($"The shim delivered a {frame.Length}-byte array for a {length}-byte frame.", 0);
             return decode(frame.AsSpan(0, length));
+        }
+
         if (address == 0 || length < 0 || length > capacity)
             throw new PeerlessFormatException("The shim delivered a frame outside its buffer.", 0);
         return decode(new ReadOnlySpan<byte>((void*)address, length));

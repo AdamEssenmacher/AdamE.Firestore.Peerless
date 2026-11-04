@@ -104,6 +104,12 @@ public sealed class FirestoreListenException : Exception
 /// callback thread, from inside the callback, or without holding the callback's locks.
 /// </para>
 /// <para>
+/// <b>Listen can wait too.</b> <c>Listen</c> records the native registration under the same lock a running callback
+/// holds, so if the first callback is already running (possible when <c>Listen</c> is called off the main thread),
+/// <c>Listen</c> waits for it to finish. Calling <c>Listen</c> while holding a lock that <c>onSnapshot</c> also takes
+/// can therefore deadlock, just as <c>Dispose</c> can.
+/// </para>
+/// <para>
 /// <b>Calling Listen off the main thread.</b> Firestore may then deliver the first callback before <c>Listen</c>
 /// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
 /// held and posted to the main thread after <c>Listen</c> has returned.
@@ -111,7 +117,9 @@ public sealed class FirestoreListenException : Exception
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
-/// snapshot or .NET could not decode it. Either way the listener has stopped and nothing more arrives. It is
+/// snapshot or .NET could not decode it. One encoding failure is data-dependent: two keys of one map that differ only
+/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails.
+/// Either way the listener has stopped and nothing more arrives. It is
 /// required, so a failing listener can't go silent.
 /// </para>
 /// <para>

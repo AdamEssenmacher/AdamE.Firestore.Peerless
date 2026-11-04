@@ -5,4 +5,6 @@
   <attr path="/api/package[@name='com.adame.firestore.peerless']/interface" name="visibility">internal</attr>
   <!-- .NET never encodes; only the tests and the listener use the writer. -->
   <remove-node path="/api/package[@name='com.adame.firestore.peerless']/class[@name='FrameWriter']" />
+  <remove-node path="/api/package[@name='com.adame.firestore.peerless']/class[@name='FrameWriter.FrameTooLargeException']" />
+  <remove-node path="/api/package[@name='com.adame.firestore.peerless']/class[@name='FrameWriter.KeyCollisionException']" />
 </metadata>

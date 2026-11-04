@@ -159,12 +159,45 @@ public final class FrameWriter {
         writeMapBody(data);
     }
 
+    /**
+     * Writes a map's entries. Lone UTF-16 surrogates are written as U+FFFD, so two keys that differ only there would
+     * become the same key in the frame, which decoders reject. When any key of the map held a lone surrogate, the keys
+     * are checked for that and the snapshot fails with {@link KeyCollisionException} instead of producing such a frame.
+     * Maps without one pay nothing for the check.
+     */
     public void writeMapBody(@NonNull Map<String, ?> map) {
         writeVarint(map.size());
+        boolean lossy = false;
         for (Map.Entry<String, ?> entry : map.entrySet()) {
-            writeString(entry.getKey());
+            lossy |= writeString(entry.getKey());
             writeValue(entry.getValue());
         }
+        if (lossy)
+            rejectCollidingKeys(map);
+    }
+
+    private static void rejectCollidingKeys(Map<String, ?> map) {
+        java.util.HashSet<String> written = new java.util.HashSet<>();
+        for (String key : map.keySet()) {
+            String asWritten = withLoneSurrogatesReplaced(key);
+            if (!written.add(asWritten))
+                throw new KeyCollisionException("Two keys in one map differ only in lone UTF-16 surrogates, which UTF-8 "
+                        + "can't carry; both would be written as \"" + asWritten + "\".");
+        }
+    }
+
+    // The key as the frame carries it: each lone surrogate as U+FFFD.
+    static String withLoneSurrogatesReplaced(String value) {
+        StringBuilder text = new StringBuilder(value.length());
+        for (int index = 0; index < value.length(); index++) {
+            char c = value.charAt(index);
+            if (Character.isHighSurrogate(c) && index + 1 < value.length() && Character.isLowSurrogate(value.charAt(index + 1))) {
+                text.append(c).append(value.charAt(++index));
+            } else {
+                text.append(Character.isSurrogate(c) ? '\uFFFD' : c);
+            }
+        }
+        return text.toString();
     }
 
     /**
@@ -235,11 +268,16 @@ public final class FrameWriter {
         writeString(typeName);
     }
 
-    /** UTF-8, length-prefixed. A lone surrogate becomes U+FFFD, as in .NET (Java's own encoder writes '?'). */
-    public void writeString(@NonNull String value) {
+    /**
+     * UTF-8, length-prefixed. A lone surrogate becomes U+FFFD, as in .NET (Java's own encoder writes '?').
+     *
+     * @return whether a lone surrogate was replaced, so the string isn't exactly what the frame now carries
+     */
+    public boolean writeString(@NonNull String value) {
         int chars = value.length();
         long bytes = 0; // up to 3 per char: can pass Integer.MAX_VALUE for a huge string
         boolean ascii = true;
+        boolean replaced = false;
         for (int index = 0; index < chars; index++) {
             char c = value.charAt(index);
             if (c < 0x80) {
@@ -254,6 +292,7 @@ public final class FrameWriter {
                     index++;
                 } else {
                     bytes += 3; // BMP character, or a lone surrogate written as U+FFFD.
+                    replaced |= Character.isSurrogate(c);
                 }
             }
         }
@@ -296,6 +335,7 @@ public final class FrameWriter {
             }
         }
         length = position;
+        return replaced;
     }
 
     public void writeVarint(int value) {
@@ -377,6 +417,13 @@ public final class FrameWriter {
     /** The snapshot doesn't fit in one frame. */
     public static final class FrameTooLargeException extends IllegalStateException {
         FrameTooLargeException(String message) {
+            super(message);
+        }
+    }
+
+    /** Two keys of one map would be written identically (they differ only in lone surrogates). */
+    public static final class KeyCollisionException extends IllegalStateException {
+        KeyCollisionException(String message) {
             super(message);
         }
     }

@@ -73,6 +73,19 @@ class FrameWriterTest {
         assert(grown > 3_000_000)
     }
 
+    @Test
+    fun keysThatOnlyDifferInLoneSurrogatesFailTheFrameInsteadOfCollidingInIt() {
+        val colliding = linkedMapOf<String, Any?>("\uD800a" to 1L, "\uDBFFa" to 2L) // both become "\uFFFDa"
+        assertThrows(FrameWriter.KeyCollisionException::class.java) { FrameWriter().writeMapBody(colliding) }
+    }
+
+    @Test
+    fun aSingleLossyKeyOrOrdinaryKeysAreFine() {
+        FrameWriter().writeMapBody(linkedMapOf<String, Any?>("\uD800a" to 1L, "b" to 2L))
+        FrameWriter().writeMapBody(linkedMapOf<String, Any?>("😀" to 1L, "a" to 2L))
+        assertEquals("\uFFFDa😀", FrameWriter.withLoneSurrogatesReplaced("\uDC00a😀"))
+    }
+
     private fun encodeString(value: String) = encode { it.writeString(value) }.toList()
 
     private fun encode(write: (FrameWriter) -> Unit): ByteArray = FrameWriter().also(write).toByteArray()
