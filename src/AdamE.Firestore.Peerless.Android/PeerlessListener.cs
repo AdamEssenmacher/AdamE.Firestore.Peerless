@@ -188,10 +188,12 @@ public static class PeerlessListener
         return Register(receiver, () => PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed));
     }
 
-    // Whatever addSnapshotListener throws, the receiver is stopped and its peer released first, so nothing stays
-    // allocated or registered. Only Firestore's refusals, IllegalStateException (a terminated instance, a limitToLast
-    // query without orderBy), become the InvalidOperationException the iOS listener throws; anything else (a bug, an
-    // out-of-memory) is rethrown as it is.
+    // If addSnapshotListener itself throws, nothing was registered and Java kept no reference to the receiver: it is
+    // stopped and its peer released, so nothing stays allocated or registered. Only Firestore's refusals,
+    // IllegalStateException (a terminated instance, a limitToLast query without orderBy), become the
+    // InvalidOperationException the iOS listener throws; anything else is rethrown as it is. Once it has succeeded,
+    // Java holds the receiver, so a later failure removes the registration and stops the receiver but never disposes
+    // its peer under Java.
     private static Registration Register(FrameReceiver receiver, Func<IListenerRegistration> listen)
     {
         IListenerRegistration registration;
@@ -210,8 +212,17 @@ public static class PeerlessListener
             throw;
         }
 
-        receiver.Attach(registration);
-        return new Registration(receiver);
+        try
+        {
+            receiver.Attach(registration);
+            return new Registration(receiver);
+        }
+        catch
+        {
+            registration.Remove();
+            receiver.Stop();
+            throw;
+        }
     }
 
     private sealed class Registration(FrameReceiver receiver) : IDisposable

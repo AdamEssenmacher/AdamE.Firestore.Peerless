@@ -23,7 +23,7 @@ since that settle are still included, so the figure grows with the number of cal
 Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the
 single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come
 straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached
-java.lang.Class references that ART's own table (below) includes. n/a: this run predates peak sampling.
+java.lang.Class references that ART's own table (below) includes.
 
 | phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |
 |---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|
@@ -45,7 +45,7 @@ java.lang.Class references that ART's own table (below) includes. n/a: this run 
 | document | 1 | update, after a settle | 5 | 44 | 7.8 [0.8–22.3] | 1.6 [0.8–4.2] | 0.7 [0.0–2.6] | 1 | 246 | 173.0 [169.0–194.0] | 35.0 [35.0–41.0] | 27 |
 | document | 1 | update | 45 | 44 | 6.3 [0.5–31.6] | 1.4 [0.0–12.1] | 0.5 [0.0–12.0] | 1 | 200 | 373.0 [207.0–609.0] | 241.0 [70.0–481.0] | 22 |
 
-Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`): 2 (e.g. "46080 outstanding GREFs. Performing a full GC!")
+Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`, whole run): 2 (e.g. "46080 outstanding GREFs. Performing a full GC!")
 
 Partial snapshots skipped: 0
 
