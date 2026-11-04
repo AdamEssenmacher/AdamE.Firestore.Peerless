@@ -164,9 +164,12 @@ public sealed class SnapshotDecoderTests
         Assert.Contains((byte)0x00, frame); // NUL is the single byte 00, not modified UTF-8's C0 80.
     }
 
-    // The real worst case: a legitimate frame can't cost more than about 40 bytes of .NET memory per frame byte (a
-    // one-item array or map in 3-4 bytes costs ~120-160 bytes of objects), plus the decoder's fixed working memory.
+    // The real worst cases (docs/wire-format.md): a frame that decodes costs at most about 40 bytes of .NET memory per
+    // frame byte (a one-item array or map in 3-4 bytes is ~120-160 bytes of objects). A malformed frame built to waste
+    // memory can add a 32-byte slot reserved for an item that never comes, and a scratch-stack slot before the exact
+    // copy, per frame byte: about 96 measured. Both plus the decoder's fixed working memory.
     private const int BytesPerFrameByte = 48;
+    private const int BytesPerHostileFrameByte = 128;
     private const int FixedOverhead = 16 * 1024;
 
     public static TheoryData<string, int> AllocationShapes => new()
@@ -175,13 +178,30 @@ public sealed class SnapshotDecoderTests
         { "one-item arrays", 1 }, { "one-item arrays", 17 }, { "one-item arrays", 20_000 },
         { "one-entry maps", 1 }, { "one-entry maps", 17 }, { "one-entry maps", 20_000 },
         { "hostile nested counts", 98 },
+        { "map claiming one more entry than the frame holds", 1_000 },
+        { "map claiming one more entry than the frame holds", 200_000 },
+        { "outer array reserved but never filled", 200_000 },
     };
 
     [Theory]
     [MemberData(nameof(AllocationShapes))]
     public void Allocation_stays_within_a_fixed_multiple_of_the_frame(string shape, int size)
     {
-        byte[] frame = DocumentWith(field =>
+        byte[] frame = shape switch
+        {
+            // Fields map count 2, key "", then an array of `size` nulls and nothing after: the map's unread second
+            // entry keeps the array off the up-front path, so it is read on the scratch stack.
+            "map claiming one more entry than the frame holds" => Frame(Wire.FrameKind.Document, section =>
+            {
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(2).String("")
+                    .Byte(Wire.Tag.Array).Varint(size);
+                for (int index = 0; index < size; index++)
+                    section.Byte(Wire.Tag.Null);
+            }),
+            _ => [],
+        };
+        if (frame.Length == 0)
+            frame = DocumentWith(field =>
         {
             switch (shape)
             {
@@ -200,6 +220,13 @@ public sealed class SnapshotDecoderTests
                     for (int index = 0; index < size; index++)
                         field.Byte(Wire.Tag.Map).Varint(1).Varint(0).Byte(Wire.Tag.Null);
                     break;
+                case "outer array reserved but never filled":
+                    // An outer array claims `size` items and gets its array up front; its first item is an array that
+                    // really holds `size - 4` nulls (read on the scratch stack); then the frame ends.
+                    field.Byte(Wire.Tag.Array).Varint(size).Byte(Wire.Tag.Array).Varint(size - 4);
+                    for (int index = 0; index < size - 4; index++)
+                        field.Byte(Wire.Tag.Null);
+                    break;
                 default:
                     // `size` arrays, each claiming almost the whole frame as its item count, then garbage. Allocating
                     // every declared count up front would cost about size x 1 MB x 32 bytes, roughly 3 GB.
@@ -216,7 +243,11 @@ public sealed class SnapshotDecoderTests
         Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
 
-        if (shape == "hostile nested counts")
+        if (shape is "map claiming one more entry than the frame holds" or "outer array reserved but never filled")
+        {
+            Assert.IsType<PeerlessFormatException>(failure);
+        }
+        else if (shape == "hostile nested counts")
         {
             // It got all the way down to the innermost array's first item, so every declared count was accepted.
             Assert.Contains("tag 255", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
@@ -226,7 +257,8 @@ public sealed class SnapshotDecoderTests
             Assert.Null(failure);
         }
 
-        long bound = (long)BytesPerFrameByte * frame.Length + FixedOverhead;
+        long bound = (long)(failure is null ? BytesPerFrameByte : BytesPerHostileFrameByte) * frame.Length + FixedOverhead;
+        TestContext.Current.SendDiagnosticMessage($"{shape} x {size}: {(double)allocated / frame.Length:F1} B per frame byte");
         Assert.True(allocated <= bound, $"{shape} x {size}: {allocated:N0} bytes for a {frame.Length:N0}-byte frame (bound {bound:N0}).");
     }
 
@@ -304,13 +336,77 @@ public sealed class SnapshotDecoderTests
     }
 
     [Fact]
-    public void Geo_points_compare_by_their_bits()
+    public void Geo_points_compare_by_their_bits_and_reject_impossible_coordinates()
     {
-        Assert.Equal(new FirestoreGeoPoint(double.NaN, 1), new FirestoreGeoPoint(double.NaN, 1));
+        Assert.Equal(new FirestoreGeoPoint(1, 2), new FirestoreGeoPoint(1, 2));
         Assert.NotEqual(new FirestoreGeoPoint(0.0, 1), new FirestoreGeoPoint(-0.0, 1));
+        Assert.Equal(new FirestoreGeoPoint(-90, 180).GetHashCode(), new FirestoreGeoPoint(-90, 180).GetHashCode());
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreGeoPoint(double.NaN, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreGeoPoint(90.5, 0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => new FirestoreGeoPoint(0, -180.5));
+    }
+
+    [Fact]
+    public void Map_keys_and_values_are_read_only_views()
+    {
+        var map = new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.FromInteger(1))]);
+
+        Assert.IsNotType<string[]>(map.Keys);
+        Assert.IsNotType<FirestoreValue[]>(map.Values);
+        Assert.Same(map.Keys, map.Keys); // created once, not per call
+        Assert.Throws<NotSupportedException>(() => ((IList<string>)map.Keys)[0] = "x");
+        Assert.Equal(1, map["a"].AsInteger());
+    }
+
+    [Fact]
+    public void Hash_codes_depend_on_content_not_only_on_size()
+    {
+        FirestoreValue Bytes(byte first) => FirestoreValue.FromBytes([first, 2, 3]);
+        FirestoreArray Array(long first) => new([FirestoreValue.FromInteger(first)]);
+        FirestoreMap Map(string key) => new([KeyValuePair.Create(key, FirestoreValue.Null)]);
+
+        Assert.NotEqual(Bytes(1).GetHashCode(), Bytes(9).GetHashCode());
+        Assert.NotEqual(Array(1).GetHashCode(), Array(9).GetHashCode());
+        Assert.NotEqual(Map("a").GetHashCode(), Map("b").GetHashCode());
         Assert.Equal(
-            new FirestoreGeoPoint(double.NaN, 1).GetHashCode(),
-            new FirestoreGeoPoint(double.NaN, 1).GetHashCode());
+            new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.Null), KeyValuePair.Create("b", FirestoreValue.Null)]).GetHashCode(),
+            new FirestoreMap([KeyValuePair.Create("b", FirestoreValue.Null), KeyValuePair.Create("a", FirestoreValue.Null)]).GetHashCode());
+    }
+
+    [Fact]
+    public void Every_kind_has_a_try_get()
+    {
+        Assert.True(FirestoreValue.FromBoolean(true).TryGetBoolean(out bool flag) && flag);
+        Assert.True(FirestoreValue.FromBytes([7]).TryGetBytes(out ReadOnlyMemory<byte> bytes) && bytes.Span[0] == 7);
+        Assert.True(FirestoreValue.FromTimestamp(new FirestoreTimestamp(5, 6)).TryGetTimestamp(out FirestoreTimestamp time) && time.Seconds == 5);
+        Assert.True(FirestoreValue.FromGeoPoint(new FirestoreGeoPoint(1, 2)).TryGetGeoPoint(out FirestoreGeoPoint point) && point.Longitude == 2);
+        Assert.True(FirestoreValue.FromReference("a/b").TryGetReferencePath(out string? path) && path == "a/b");
+        Assert.False(FirestoreValue.Null.TryGetBoolean(out _));
+        Assert.False(FirestoreValue.FromInteger(1).TryGetReferencePath(out _));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("/")]
+    [InlineData("a//b")]
+    public void References_with_an_empty_segment_are_rejected(string path)
+    {
+        byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.Reference).String(path));
+
+        Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+        Assert.Throws<ArgumentException>(() => FirestoreValue.FromReference(path));
+    }
+
+    [Theory]
+    [InlineData(double.NaN, 0)]
+    [InlineData(91, 0)]
+    [InlineData(0, 181)]
+    public void Impossible_geo_points_are_rejected(double latitude, double longitude)
+    {
+        byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.GeoPoint)
+            .Int64(BitConverter.DoubleToInt64Bits(latitude)).Int64(BitConverter.DoubleToInt64Bits(longitude)));
+
+        Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
     }
 
     [Fact]

@@ -57,14 +57,40 @@ public readonly record struct FirestoreTimestamp
 }
 
 /// <summary>A Firestore geo point.</summary>
-/// <param name="Latitude">Latitude in degrees, from -90 to 90.</param>
-/// <param name="Longitude">Longitude in degrees, from -180 to 180.</param>
 /// <remarks>
-/// Equality compares the doubles' bits, like <see cref="FirestoreValue"/>: NaN equals the same NaN, and 0.0 differs
-/// from -0.0.
+/// Only real coordinates are accepted: latitude from -90 to 90 and longitude from -180 to 180, never NaN, the same
+/// rule Firestore applies and the decoder enforces. Equality compares the doubles' bits, like
+/// <see cref="FirestoreValue"/>, so 0.0 differs from -0.0. <c>default</c> is (0, 0).
 /// </remarks>
-public readonly record struct FirestoreGeoPoint(double Latitude, double Longitude)
+public readonly record struct FirestoreGeoPoint
 {
+    /// <summary>Creates a geo point.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">A coordinate is out of range or NaN.</exception>
+    public FirestoreGeoPoint(double latitude, double longitude)
+    {
+        if (!IsValid(latitude, longitude))
+            throw new ArgumentOutOfRangeException(nameof(latitude), $"({latitude}, {longitude}) is not a latitude in [-90, 90] and a longitude in [-180, 180].");
+        Latitude = latitude;
+        Longitude = longitude;
+    }
+
+    /// <summary>Latitude in degrees, from -90 to 90.</summary>
+    public double Latitude { get; }
+
+    /// <summary>Longitude in degrees, from -180 to 180.</summary>
+    public double Longitude { get; }
+
+    // Written so NaN fails every comparison.
+    internal static bool IsValid(double latitude, double longitude) =>
+        latitude is >= -90 and <= 90 && longitude is >= -180 and <= 180;
+
+    /// <summary>Deconstructs into latitude and longitude.</summary>
+    public void Deconstruct(out double latitude, out double longitude)
+    {
+        latitude = Latitude;
+        longitude = Longitude;
+    }
+
     /// <inheritdoc />
     public bool Equals(FirestoreGeoPoint other) =>
         BitConverter.DoubleToInt64Bits(Latitude) == BitConverter.DoubleToInt64Bits(other.Latitude)
