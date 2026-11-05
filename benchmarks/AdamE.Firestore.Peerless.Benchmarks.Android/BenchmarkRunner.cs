@@ -93,9 +93,16 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
             if (options.Verify)
             {
-                await VerifyAsync(listening, seeding).ConfigureAwait(false);
-                await DisposeRaceAsync(listening, seeding).ConfigureAwait(false);
-                await RefusedListenAsync().ConfigureAwait(false);
+                // Every check runs and records its verdict before a failure ends the run, including a check that throws.
+                string?[] failures =
+                [
+                    await CheckAsync("verify", () => VerifyAsync(listening, seeding)).ConfigureAwait(false),
+                    await CheckAsync("disposeRace", () => DisposeRaceAsync(listening, seeding)).ConfigureAwait(false),
+                    await CheckAsync("refusedListen", RefusedListenAsync).ConfigureAwait(false),
+                ];
+                string[] failed = [.. failures.OfType<string>()];
+                if (failed.Length != 0)
+                    throw new InvalidOperationException($"verification failed: {string.Join("; ", failed)}");
             }
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
@@ -112,6 +119,29 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             Report($"PEERLESS_DONE failed: {exception}");
         }
     }
+
+    // Runs one verification check. A check returns null when it held, or its failure verdict; one that throws is
+    // recorded under its note as a failure too, so the checks after it still run.
+    private async Task<string?> CheckAsync(string name, Func<Task<string?>> check)
+    {
+        try
+        {
+            string? failure = await check().ConfigureAwait(false);
+            return failure is null ? null : $"{name}: {failure}";
+        }
+        catch (Exception exception)
+        {
+            // One line without the stack trace: compare-android.py copies the verify note into a Markdown table cell.
+            string failure = $"THREW {exception.GetType().Name}: {exception.Message}".ReplaceLineEndings(" ");
+            results?.Note(name, failure);
+            Report($"{name}: THREW {exception}");
+            return $"{name}: {failure}";
+        }
+    }
+
+    private static Task TouchAsync(DocumentReference document, long version) => document.Update(
+            "version", Java.Lang.Long.ValueOf(version), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+        .AsTask();
 
     private FirebaseFirestore Connect(string appName)
     {
@@ -169,7 +199,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// both Peerless deliveries must decode to equal values. Covers every value kind, including ones the benchmark
     /// documents don't use.
     /// </summary>
-    private async Task VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task<string?> VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
     {
         const string collection = "verify";
         Report("verify: seeding");
@@ -194,11 +224,13 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             FirestoreSnapshot expected = await peered.First.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
             string? directDifference = SnapshotAssertions.Difference(expected, await direct.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
             string? bytesDifference = SnapshotAssertions.Difference(expected, await bytes.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
-            string verdict = directDifference is null && bytesDifference is null
+            bool identical = directDifference is null && bytesDifference is null;
+            string verdict = identical
                 ? $"identical ({SnapshotAssertions.DocumentCount(expected)} documents, {PeeredConversion.CountValues(expected)} values)"
                 : $"DIFFERENT direct: {directDifference ?? "same"} | bytes: {bytesDifference ?? "same"}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
+            return identical ? null : verdict.ReplaceLineEndings(" | ");
         }
         finally
         {
@@ -211,7 +243,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// arriving (both deliveries), no callback may still be running when Dispose returns, and none may start after it.
     /// Then one listener disposes itself from inside its callback, which must neither deadlock nor see another frame.
     /// </summary>
-    private async Task DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task<string?> DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
     {
         const string collection = "dispose-race";
         const int iterations = 20;
@@ -222,97 +254,140 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         int violations = 0;
         int disposedMidCallback = 0;
 
-        for (int iteration = 0; iteration < iterations; iteration++)
+        try
         {
-            int inside = 0;
-            int returned = 0;
-            int frames = 0;
-            bool forceMidCallback = iteration % 2 == 0; // every other round disposes while a callback is certainly running
-            var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            IDisposable registration = PeerlessListener.Listen(
+            for (int iteration = 0; iteration < iterations; iteration++)
+            {
+                int inside = 0;
+                int returned = 0;
+                int frames = 0;
+                bool forceMidCallback = iteration % 2 == 0; // every other round disposes while a callback is certainly running
+                var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                IDisposable registration = PeerlessListener.Listen(
+                    query,
+                    _ =>
+                    {
+                        if (Volatile.Read(ref returned) == 1)
+                            Interlocked.Increment(ref violations); // started after Dispose returned
+                        Volatile.Write(ref inside, 1);
+                        int frame = Interlocked.Increment(ref frames);
+                        if (forceMidCallback && frame >= 2)
+                        {
+                            started.TrySetResult();
+                            Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
+                        }
+                        else
+                        {
+                            Thread.Sleep(3); // widen the window a disposal can land in
+                        }
+
+                        if (frame >= 2)
+                            flowing.TrySetResult();
+                        Volatile.Write(ref inside, 0);
+                    },
+                    error => flowing.TrySetException(error),
+                    iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
+                    observer: null);
+
+                using var stop = new CancellationTokenSource();
+                Exception? bodyFailure = null;
+                Task writes = Task.Run(async () =>
+                {
+                    for (int write = 0; !stop.IsCancellationRequested; write++)
+                    {
+                        await TouchAsync(target.Document(DocumentId(write % 50)), write).ConfigureAwait(false);
+                    }
+                });
+
+                try
+                {
+                    await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                    await Task.Run(() =>
+                    {
+                        if (Volatile.Read(ref inside) == 1)
+                            Interlocked.Increment(ref disposedMidCallback);
+                        registration.Dispose();
+                        if (Volatile.Read(ref inside) == 1)
+                            Interlocked.Increment(ref violations); // still running after Dispose returned
+                        Volatile.Write(ref returned, 1);
+                    }).ConfigureAwait(false);
+
+                    await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+                }
+                catch (Exception exception)
+                {
+                    bodyFailure = exception;
+                    throw;
+                }
+                finally
+                {
+                    // A timeout must not leave the listener or the writes running into the checks that follow. A write
+                    // fault is observed here (and, as the likely cause, replaces a timeout it led to); the bound keeps a
+                    // stalled write from hanging the run.
+                    registration.Dispose();
+                    await stop.CancelAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await writes.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                    }
+                    catch (Exception writeFailure) when (bodyFailure is not null && !(bodyFailure is TimeoutException && writes.IsFaulted))
+                    {
+                        // Any other failure of the body (a listener error, say) is the real one: keep it, report this.
+                        Report($"dispose race: writes also failed: {writeFailure.GetType().Name}: {writeFailure.Message}");
+                    }
+                }
+            }
+
+            // Disposal from inside a callback, on the callback thread.
+            int selfCallbacks = 0;
+            var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable? self = null;
+            IDisposable listener = PeerlessListener.Listen(
                 query,
                 _ =>
                 {
-                    if (Volatile.Read(ref returned) == 1)
-                        Interlocked.Increment(ref violations); // started after Dispose returned
-                    Volatile.Write(ref inside, 1);
-                    int frame = Interlocked.Increment(ref frames);
-                    if (forceMidCallback && frame >= 2)
-                    {
-                        started.TrySetResult();
-                        Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
-                    }
-                    else
-                    {
-                        Thread.Sleep(3); // widen the window a disposal can land in
-                    }
-
-                    if (frame >= 2)
-                        flowing.TrySetResult();
-                    Volatile.Write(ref inside, 0);
+                    // Off the main thread the first frame can arrive before Listen returns and assigns the handle (allowed
+                    // by PeerlessListener's contract); skip it and dispose on the next one, which the write below causes.
+                    IDisposable? handle = Volatile.Read(ref self);
+                    if (handle is null)
+                        return;
+                    if (Interlocked.Increment(ref selfCallbacks) > 1)
+                        Interlocked.Increment(ref violations);
+                    handle.Dispose();
+                    selfDisposed.TrySetResult();
                 },
-                error => flowing.TrySetException(error),
-                iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
-                observer: null);
-
-            using var stop = new CancellationTokenSource();
-            Task writes = Task.Run(async () =>
+                error => selfDisposed.TrySetException(error));
+            Volatile.Write(ref self, listener); // published to the callback thread, which reads it with Volatile.Read
+            try
             {
-                for (int write = 0; !stop.IsCancellationRequested; write++)
-                {
-                    await target.Document(DocumentId(write % 50)).Update(
-                            "version", Java.Lang.Long.ValueOf(write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
-                        .AsTask()
-                        .ConfigureAwait(false);
-                }
-            });
-
-            await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
-            await Task.Run(() =>
+                if (!selfDisposed.Task.IsCompleted)
+                    await TouchAsync(target.Document(DocumentId(0)), 999).ConfigureAwait(false);
+                await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            }
+            finally
             {
-                if (Volatile.Read(ref inside) == 1)
-                    Interlocked.Increment(ref disposedMidCallback);
-                registration.Dispose();
-                if (Volatile.Read(ref inside) == 1)
-                    Interlocked.Increment(ref violations); // still running after Dispose returned
-                Volatile.Write(ref returned, 1);
-            }).ConfigureAwait(false);
+                listener.Dispose(); // already disposed from its callback unless that never happened
+            }
 
-            await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
-            await stop.CancelAsync().ConfigureAwait(false);
-            await writes.ConfigureAwait(false);
+            for (int write = 0; write < 5; write++)
+                await TouchAsync(target.Document(DocumentId(write)), 1000 + write).ConfigureAwait(false);
+
+            await Task.Delay(300).ConfigureAwait(false);
+            int observed = Volatile.Read(ref violations); // read once, so the recorded verdict and the result agree
+            string verdict = observed == 0
+                ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
+                : $"VIOLATED {observed} times";
+            results?.Note("disposeRace", verdict);
+            Report($"dispose race: {verdict}");
+            return observed == 0 ? null : verdict;
         }
-
-        // Disposal from inside a callback, on the callback thread.
-        int selfCallbacks = 0;
-        var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        IDisposable? self = null;
-        self = PeerlessListener.Listen(
-            query,
-            _ =>
-            {
-                if (Interlocked.Increment(ref selfCallbacks) > 1)
-                    Interlocked.Increment(ref violations);
-                self?.Dispose();
-                selfDisposed.TrySetResult();
-            },
-            error => selfDisposed.TrySetException(error));
-        await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
-        for (int write = 0; write < 5; write++)
+        catch (Exception exception) when (Volatile.Read(ref violations) is int counted and > 0)
         {
-            await target.Document(DocumentId(write)).Update(
-                    "version", Java.Lang.Long.ValueOf(1000 + write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            // Keep the contract violations already found: they are what this check exists to catch.
+            throw new InvalidOperationException(
+                $"VIOLATED {counted} times, then threw {exception.GetType().Name}: {exception.Message}", exception);
         }
-
-        await Task.Delay(300).ConfigureAwait(false);
-        string verdict = violations == 0
-            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
-            : $"VIOLATED {violations} times";
-        results?.Note("disposeRace", verdict);
-        Report($"dispose race: {verdict}");
     }
 
     /// <summary>
@@ -320,7 +395,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// exception inside, as on iOS, and leave nothing behind: the settled global reference count is compared before
     /// and after ten refused listens.
     /// </summary>
-    private async Task RefusedListenAsync()
+    private async Task<string?> RefusedListenAsync()
     {
         FirebaseFirestore terminated = Connect("terminated");
         await terminated.Terminate().AsTask().ConfigureAwait(false);
@@ -356,8 +431,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             : $"FAILED: {failure}";
         results?.Note("refusedListen", verdict.ReplaceLineEndings(" "));
         Report($"refused listen: {verdict}");
-        if (failure is not null)
-            throw new InvalidOperationException($"refused listen: {verdict}");
+        return failure is null ? null : verdict.ReplaceLineEndings(" ");
     }
 
     private async Task QueryPhaseAsync(
@@ -421,13 +495,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             Report($"{phase} {size}: update {update}/{updates}");
             DocumentReference target = seedingCollection.Document(DocumentId((update * 7) % size));
             long written = Stopwatch.GetTimestamp();
-            await target.Update(
-                    "version",
-                    Java.Lang.Long.ValueOf(update + 1),
-                    new Java.Lang.String("updatedAt"),
-                    Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            await TouchAsync(target, update + 1).ConfigureAwait(false);
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
             double latency = Probes.Microseconds(written, sample.DoneTimestamp) / 1000.0;
             results?.Sample(phase, size, update, "update", sample, latency, lastSettledGlobal);
