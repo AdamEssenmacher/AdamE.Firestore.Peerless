@@ -58,16 +58,18 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
         this.decode = decode;
         this.onSnapshot = onSnapshot;
         this.observer = observer;
-        gate = new ListenerGate(onError, PostToMainThread, ReleaseBuffer);
+        gate = new ListenerGate(onError, ReleaseBuffer);
     }
 
     public bool Timed => observer is not null;
 
-    public void Attach(IListenerRegistration registration) => gate.Attach(() =>
-    {
-        registration.Remove();
-        registration.Dispose();
-    });
+    public void Attach(IListenerRegistration registration) => gate.Attach(
+        () =>
+        {
+            registration.Remove();
+            registration.Dispose();
+        },
+        PostToMainThread);
 
     public void Stop() => gate.Stop();
 

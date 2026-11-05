@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CoreFoundation;
 using Firebase.CloudFirestore;
 
 namespace AdamE.Firestore.Peerless.iOS;
@@ -111,9 +112,10 @@ public sealed class FirestoreListenException : Exception
 /// registered.
 /// </para>
 /// <para>
-/// <b>Calling Listen off the main queue.</b> Firestore may then deliver the first callback before <c>Listen</c>
-/// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
-/// held and posted to the main queue after <c>Listen</c> has returned.
+/// <b>Registration timing.</b> A callback on another thread can run before the calling code assigns the returned
+/// handle. An error that arrives before the native registration is attached is held, then posted to the main queue and
+/// from there to Firestore's callback queue. So a caller on the main thread, or on a serial callback queue, has its
+/// handle before that <c>onError</c> runs; a caller on any other thread may not.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> Until it is disposed or fails, a listener is rooted: the shim holds a GC handle to its callbacks, so
@@ -168,6 +170,7 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             query,
+            CallbackQueue(query),
             static frame => SnapshotDecoder.DecodeQuery(frame),
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
@@ -187,11 +190,26 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             document,
+            CallbackQueue(document),
             static frame => SnapshotDecoder.DecodeDocument(frame),
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer,
             isDocument: true);
+    }
+
+    // Built in their own methods, not as lambdas inside Listen: there they would share a closure with onSnapshot's
+    // wrapper and keep the target alive for the listener's whole life.
+    private static Func<DispatchQueue> CallbackQueue(Query query) => () => CallbackQueue(query.Firestore);
+
+    private static Func<DispatchQueue> CallbackQueue(DocumentReference document) =>
+        () => CallbackQueue(document.Firestore);
+
+    // -settings returns a copy; dispose its peer rather than leave it to the finalizer.
+    private static DispatchQueue CallbackQueue(Firebase.CloudFirestore.Firestore firestore)
+    {
+        using FirestoreSettings settings = firestore.Settings;
+        return settings.DispatchQueue;
     }
 
     /// <summary>The Firebase iOS SDK version the shim was compiled against.</summary>
