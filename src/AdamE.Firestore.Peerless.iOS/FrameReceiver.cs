@@ -4,7 +4,7 @@ using System.Text;
 namespace AdamE.Firestore.Peerless.iOS;
 
 /// <summary>What the shim reported about one frame, for measurement. All on the shim's clocks.</summary>
-/// <param name="StartNanos">When the Objective-C callback began (<see cref="PeerlessListener.NowNanoseconds"/>).</param>
+/// <param name="StartNanos">When the Objective-C callback took the listener's lock, so any wait for it isn't counted (<see cref="PeerlessListener.NowNanoseconds"/>).</param>
 /// <param name="StartCpuNanos">The callback thread's CPU time then.</param>
 /// <param name="EncodeNanos">Wall time the Objective-C side spent encoding.</param>
 /// <param name="EncodeCpuNanos">Thread CPU time the Objective-C side spent encoding.</param>
@@ -134,9 +134,9 @@ internal sealed unsafe class FrameReceiver : IDisposable
 
     private void Deliver(nint data, nuint length, FrameTiming* timing) => gate.Run(() =>
     {
-        if (observer is not null)
+        // The shim supplies callback-local timing whenever this listener requests it (observer set), and NULL otherwise.
+        if (observer is not null && timing is not null)
         {
-            // The shim supplies callback-local timing whenever this listener requests it.
             observer.Arrived(new FrameArrival(
                 (long)timing->StartNanos,
                 (long)timing->StartCpuNanos,

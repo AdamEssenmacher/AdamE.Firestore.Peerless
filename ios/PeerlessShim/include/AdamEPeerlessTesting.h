@@ -14,8 +14,10 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void (^AdamEPeerlessTestingCallback)(id _Nullable snapshot, NSError *_Nullable error,
                                              void (^encode)(AdamEPeerlessFrameWriter *writer));
 
-/// Creates a listener as adame_peerless_listen_query does, attached to `registration`. `*callback` receives the block
-/// to call in place of Firestore; it holds the listener weakly, as Firestore's block does.
+/// Creates a listener as adame_peerless_listen_query does, attached to `registration`, except that the caller chooses
+/// `timed` (the listen functions' `timed` argument): YES delivers adame_peerless_frame_timing with each frame, NO
+/// delivers NULL timing. `*callback` receives the block to call in place of Firestore; it holds the listener weakly,
+/// as Firestore's block does.
 void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback on_frame,
                                     adame_peerless_error_callback on_error, id<FIRListenerRegistration> registration,
                                     BOOL timed, AdamEPeerlessTestingCallback _Nullable *_Nonnull callback);

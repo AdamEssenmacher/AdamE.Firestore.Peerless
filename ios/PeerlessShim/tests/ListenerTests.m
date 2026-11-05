@@ -133,8 +133,13 @@ static void FirstFrameTimingDoesNotRequireTheListenerHandle(void) {
     callback(@"snapshot", nil, Encode);
     uint64_t after = adame_peerless_now_nanos();
     adame_peerless_frame_timing timing = probe.firstFrameTiming;
-    BOOL ok = probe.listener == NULL && probe.frames == 1 && timing.start_nanos >= before
-        && timing.start_nanos <= after && timing.encode_nanos <= after - timing.start_nanos;
+    uint64_t cpuAfter = adame_peerless_thread_cpu_nanos();
+    BOOL ok = probe.listener == NULL && probe.frames == 1 && atomic_load(&probe.timedFrames) == 1
+        && timing.start_nanos >= before && timing.start_nanos <= after
+        && timing.encode_nanos <= after - timing.start_nanos
+        && timing.start_cpu_nanos > 0 && timing.start_cpu_nanos <= cpuAfter
+        && timing.encode_cpu_nanos <= cpuAfter - timing.start_cpu_nanos
+        && timing.data_nanos <= timing.encode_nanos;
     adame_peerless_listener_remove(listener, OnRelease);
     ListenerTestsRecord(ok, @"first frame carries its timing before the caller stores the listener handle",
                         Counts(&probe, registration));
