@@ -286,7 +286,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
 
         // Register on the callback thread so even a cached snapshot can only arrive after self is assigned.
-        int selfCallbacks = 0;
+        int selfDisposeCalled = 0, selfEarly = 0;
         var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         IDisposable? self = null;
         using var handler = new Handler(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."));
@@ -298,12 +298,22 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                     query,
                     _ =>
                     {
-                        if (Interlocked.Increment(ref selfCallbacks) > 1)
-                            Interlocked.Increment(ref violations);
-                        if (self is null)
-                            Interlocked.Increment(ref violations); // delivered before Listen returned; the finally below stops it
+                        if (Volatile.Read(ref selfDisposeCalled) == 1)
+                        {
+                            Interlocked.Increment(ref violations); // a callback after Dispose from inside a callback
+                        }
+                        else if (self is null)
+                        {
+                            // Harness ordering, not the listener contract: delivered before Listen returned on this
+                            // looper. Not disposed here; the next callback disposes it, or the cleanup below does.
+                            Interlocked.Increment(ref selfEarly);
+                        }
                         else
+                        {
+                            Volatile.Write(ref selfDisposeCalled, 1);
                             self.Dispose();
+                        }
+
                         selfDisposed.TrySetResult();
                     },
                     error => selfDisposed.TrySetException(error));
@@ -332,12 +342,30 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         {
             // Queued behind the registration on the same looper, so it also stops a listener registered after a timeout.
             // Dispose is idempotent, so this is a no-op once the callback has disposed the listener itself.
-            handler.Post(() => self?.Dispose());
+            // Awaited so the listener is gone before the next check takes its global reference baseline.
+            var cleaned = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (!handler.Post(() =>
+            {
+                try
+                {
+                    self?.Dispose();
+                    cleaned.TrySetResult();
+                }
+                catch (Exception exception)
+                {
+                    cleaned.TrySetException(exception);
+                }
+            }))
+                cleaned.TrySetException(new InvalidOperationException("Could not post the self-disposal cleanup to the main thread."));
+
+            await cleaned.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
         }
 
         string verdict = violations == 0
             ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
             : $"VIOLATED {violations} times";
+        if (selfEarly != 0)
+            verdict += $"; harness: {selfEarly} self-disposal callbacks arrived before Listen returned, so the in-callback disposal check is inconclusive";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
     }
