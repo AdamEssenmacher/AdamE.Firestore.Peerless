@@ -171,15 +171,22 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         for (int update = 1; update <= updates; update++)
         {
             Report($"{phase} {size}: update {update}/{updates}");
-            DocumentReference target = seedingCollection.Document(DocumentId((update * 7) % size));
-            long written = Stopwatch.GetTimestamp();
-            await target.Update(
-                    "version",
-                    Java.Lang.Long.ValueOf(update + 1),
-                    new Java.Lang.String("updatedAt"),
-                    Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            // The GREF count is process-wide, so the seeder's peers are disposed as soon as the write completes: left
+            // for the GC, they would pile up between settles and be counted as listener cost. Each is a new Java
+            // object (not Long.valueOf, whose cached instances can share a peer with the listener's own values).
+            long written;
+            using (DocumentReference target = seedingCollection.Document(DocumentId((update * 7) % size)))
+#pragma warning disable CA1422 // Long(long) is deprecated in Java in favour of valueOf, whose cache is the problem here.
+            using (var version = new Java.Lang.Long(update + 1))
+#pragma warning restore CA1422
+            using (var field = new Java.Lang.String("updatedAt"))
+            using (Firebase.Timestamp now = Firebase.Timestamp.Now())
+            {
+                written = Stopwatch.GetTimestamp();
+                using Android.Gms.Tasks.Task write = target.Update("version", version, field, now);
+                await write.AsTask().ConfigureAwait(false);
+            }
+
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
             double latency = Probes.Microseconds(written, sample.CallbackTimestamp) / 1000.0;
             results?.Sample(phase, size, update, "update", sample, latency, lastSettledGlobal);

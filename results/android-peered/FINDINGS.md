@@ -47,7 +47,13 @@ Medians (the per-size split for every row is in [the run's summary](20261103-134
 benchmark runs at its settle points, so nothing ever brings its count back down to the settled level. *Peak over
 settled* subtracts the count at the last settle point, which removes only references that survive a full GC.
 References earlier callbacks left for the GC since that settle are still included, so the figure grows with the number
-of callbacks since the settle. The cadence: a settle before listening, after the initial snapshot, and after every
+of callbacks since the settle. So are the harness's own references: the count is process-wide, and in these runs each
+update also left about 6 GREFs from outside the listener (the seeder's write arguments, its `DocumentReference` and
+returned task, the task's completion listener, and the status line's `Handler` and `Runnable`). The single-document
+phase shows it: the count at callback entry climbs by 40 per update while each callback adds 34, so by the 12th update
+about 72 of its 481 peak over settled are harness references (about 15%; a smaller share at larger sizes). The code
+now disposes those peers as soon as they are used and reuses one `Handler` and `Runnable`; no committed run has
+measured that change yet. The cadence: a settle before listening, after the initial snapshot, and after every
 5th update (every 12th in the single-document phase; every update in warmup). Between two settles, the count at
 callback entry climbs (1000 docs: from 4,120 to 9,188 over five updates) and drops again at the next settle. That is
 why *update, after a settle* rows show a lower peak over settled than the other updates. An earlier version of this
@@ -77,7 +83,8 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
     and Firestore's cached documents keep those `String` instances alive. It is still unknown why nested strings are
     not retained the same way.
   - About 0.5–1 `java.lang.Long` per update in the small phases. These come from the seeder's `Long.valueOf(n)` for
-    small n, which Java caches forever, so the peer lives forever. That's a harness artefact, not the listener.
+    small n, which Java caches forever, so the peer lives forever. That's a harness artefact, not the listener. The
+    seeder now creates a new `Long` per update and disposes it (not yet re-run).
 - **Write→callback latency** (seeder write to listener callback): 10–18 ms for small snapshots and 90–120 ms at
   500–1000 docs.
 
