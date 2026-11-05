@@ -12,13 +12,19 @@ shim="$root/ios/PeerlessShim"
 out="$root/ios/build"
 app="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS/bin/Release/net10.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"
 
-# Rebuild the app to refresh its embedded frameworks and let its shim target prepare the headers.
-# An incremental build can reuse the previously extracted frameworks after the package version changes.
-dotnet build "$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS" -c Release --no-incremental >/dev/null
 # The Firebase version build-shim.sh builds against (Directory.Packages.props), not whichever ios/build/firebase-*
 # happens to sort first: an older extraction may still be there.
 version="$(sed -n 's/.*"AdamE.Firebase.iOS.CloudFirestore" Version="\([^"]*\)".*/\1/p' "$root/Directory.Packages.props")"
 headers="$out/firebase-$version"
+
+# Builds the app only when its embedded frameworks are missing or of another Firebase version. Nonincremental, because
+# an incremental build reuses the frameworks it extracted for the previous package version.
+embedded() { plutil -extract CFBundleShortVersionString raw "$app/Frameworks/$1.framework/Info.plist" 2>/dev/null || true; }
+if [[ "$(embedded FirebaseFirestoreInternal)" != "$version" || "$(embedded FirebaseCore)" != "$version" ]]; then
+  dotnet build "$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS" -c Release --no-incremental >/dev/null
+fi
+# The app build's shim target skips itself while the xcframework is up to date, so it may not have extracted them.
+[[ -f "$headers/.complete" ]] || "$root/ios/build-shim.sh" >/dev/null
 [[ -d "$headers/FirebaseFirestoreInternal.xcframework" ]] || { echo "No extracted Firebase $version in $out (build-shim.sh failed?)" >&2; exit 1; }
 slice=ios-arm64_x86_64-simulator
 sysroot="$(xcrun --sdk iphonesimulator --show-sdk-path)"
