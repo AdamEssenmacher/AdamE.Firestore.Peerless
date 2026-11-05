@@ -26,7 +26,9 @@
 
   <!-- Builds the Java shim with Gradle when its sources or Gradle configuration are newer than the AAR. A packaged
        build will ship the AAR. It runs before _CategorizeAndroidLibraries, the first target that reads the AAR, so the
-       same build binds and packages the rebuilt one. -->
+       same build binds and packages the rebuilt one. Gradle leaves an up-to-date AAR untouched, so the AAR is touched
+       afterwards, or an edit that changes no output would rerun Gradle on every build. IDE design-time builds skip it
+       once an AAR exists. -->
   <ItemGroup>
     <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/src/main/**/*" />
     <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/*.gradle.kts;$(PeerlessShimDirectory)peerless-shim/*.pro" />
@@ -39,7 +41,9 @@
   </PropertyGroup>
   <Target Name="BuildPeerlessShim"
           BeforeTargets="_CategorizeAndroidLibraries;PrepareForBuild;_ResolveLibraryProjectImports;ResolveAssemblyReferences"
+          Condition="'$(DesignTimeBuild)' != 'true' Or !Exists('$(PeerlessShimAar)')"
           Inputs="@(PeerlessShimSource)" Outputs="$(PeerlessShimAar)">
     <Exec Command="$(PeerlessGradle) :peerless-shim:assembleRelease --console=plain -q" WorkingDirectory="$(PeerlessShimDirectory)" />
+    <Touch Files="$(PeerlessShimAar)" />
   </Target>
 </Project>

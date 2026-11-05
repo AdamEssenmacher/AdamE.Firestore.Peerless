@@ -9,12 +9,17 @@ from collections import defaultdict
 from pathlib import Path
 
 out = Path(sys.argv[1])
-runs = [Path(arg) for arg in sys.argv[2:]]
 MODES = ["peered", "peerless-direct", "peerless-bytes"]
 
 
 def mode_of(run):
-    return next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
+    return next((p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv")), None)
+
+
+# Folders that aren't runs (the check folders a `results/android/*/` glob also matches) are skipped.
+runs = [Path(arg) for arg in sys.argv[2:] if mode_of(Path(arg))]
+if not runs:
+    sys.exit("No run folders (with a *-samples.csv) given.")
 
 
 samples = defaultdict(list)  # (mode, phase, size, kind) -> rows
@@ -96,7 +101,8 @@ def table(title, key, scale, digits, explain):
         ratio = ""
         if "peered" in values and "peerless-direct" in values:
             p, d = values["peered"], values["peerless-direct"]
-            ratio = f" {p / d:,.0f}× |" if p and d else " – |"
+            # Two significant figures below 10×, so a ratio near or under 1 (Peerless no faster, or slower) shows.
+            ratio = (f" {p / d:,.0f}× |" if p / d >= 10 else f" {p / d:.2g}× |") if p and d else " – |"
         lines.append(f"| {label} | {kind} | " + " | ".join(cell(values[m], digits) for m in present) + " |" + ratio)
     lines.append("")
 

@@ -22,6 +22,10 @@ set -euo pipefail
 
 serial="${1:-emulator-5650}"
 mode="${2:-peered}"
+case "$mode" in
+  peered|peerless-direct|peerless-bytes) ;;
+  *) echo "Unknown mode '$mode': the second argument is peered, peerless-direct or peerless-bytes (extra am start args follow it)." >&2; exit 1 ;;
+esac
 shift 2 || shift $# || true
 port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"

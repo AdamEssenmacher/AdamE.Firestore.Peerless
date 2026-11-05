@@ -117,7 +117,10 @@ public sealed class FirestoreListenException : Exception
 /// <para>
 /// <b>Calling Listen off the main thread.</b> Firestore may then deliver the first callback before <c>Listen</c>
 /// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
-/// held and posted to the main thread after <c>Listen</c> has returned.
+/// held until <c>Listen</c> has the native registration, then posted to the main thread. That can still run before the
+/// calling thread has stored the returned handle, so the same caveat applies to <c>onError</c>: don't reach the handle
+/// through a variable that <c>Listen</c>'s return value is assigned to (call <c>Listen</c> on the main thread, where no
+/// callback can run before it returns, if a callback needs it).
 /// </para>
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
