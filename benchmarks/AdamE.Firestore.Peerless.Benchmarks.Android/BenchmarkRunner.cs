@@ -289,6 +289,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         int selfDisposeCalled = 0, selfEarly = 0;
         var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         IDisposable? self = null;
+        Exception? selfError = null;
         using var handler = new Handler(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."));
         if (!handler.Post(() =>
         {
@@ -316,7 +317,12 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
                         selfDisposed.TrySetResult();
                     },
-                    error => selfDisposed.TrySetException(error));
+                    error =>
+                    {
+                        // Kept as well, because an early callback may already have completed selfDisposed.
+                        Interlocked.CompareExchange(ref selfError, error, null);
+                        selfDisposed.TrySetException(error);
+                    });
             }
             catch (Exception exception)
             {
@@ -325,6 +331,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }))
             throw new InvalidOperationException("Could not post the self-disposal listener to the main thread.");
 
+        bool selfCompleted = false;
         try
         {
             await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
@@ -337,6 +344,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             }
 
             await Task.Delay(300).ConfigureAwait(false);
+            if (Volatile.Read(ref selfError) is { } error)
+                throw new InvalidOperationException("The self-disposal listener reported an error.", error);
+            selfCompleted = true;
         }
         finally
         {
@@ -358,13 +368,21 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             }))
                 cleaned.TrySetException(new InvalidOperationException("Could not post the self-disposal cleanup to the main thread."));
 
-            await cleaned.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            try
+            {
+                await cleaned.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            }
+            catch (Exception) when (!selfCompleted)
+            {
+                // The check already failed; let that failure propagate instead of the cleanup's.
+            }
         }
 
         string verdict = violations == 0
-            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
+            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running"
+              + (selfDisposeCalled == 1 ? "; one from inside a callback)" : ")")
             : $"VIOLATED {violations} times";
-        if (selfEarly != 0)
+        if (selfDisposeCalled == 0)
             verdict += $"; harness: {selfEarly} self-disposal callbacks arrived before Listen returned, so the in-callback disposal check is inconclusive";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
