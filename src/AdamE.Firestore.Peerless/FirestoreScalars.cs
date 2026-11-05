@@ -69,7 +69,8 @@ public readonly record struct FirestoreGeoPoint
     public FirestoreGeoPoint(double latitude, double longitude)
     {
         if (!IsValid(latitude, longitude))
-            throw new ArgumentOutOfRangeException(nameof(latitude), $"({latitude}, {longitude}) is not a latitude in [-90, 90] and a longitude in [-180, 180].");
+            throw new ArgumentOutOfRangeException(nameof(latitude), string.Create(CultureInfo.InvariantCulture,
+                $"({latitude}, {longitude}) is not a latitude in [-90, 90] and a longitude in [-180, 180]."));
         Latitude = latitude;
         Longitude = longitude;
     }

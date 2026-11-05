@@ -169,8 +169,8 @@ public sealed class SnapshotDecoderTests
         { "duplicate key in a nested map", DocumentWith(raw => raw.Byte(Wire.Tag.Map).Varint(2)
             .String("k").Byte(Wire.Tag.Null).String("k").Byte(Wire.Tag.Null)) },
         { "duplicate key in a large map", DocumentWith(raw => LargeMapWithDuplicate(raw)) },
-        { "timestamp after 9999", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MaxTimestampSeconds + 1).Int32(0)) },
-        { "timestamp before 0001", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MinTimestampSeconds - 1).Int32(0)) },
+        { "timestamp after 9999", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MaxSeconds + 1).Int32(0)) },
+        { "timestamp before 0001", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MinSeconds - 1).Int32(0)) },
         {
             "document frame with two documents", Frame(Wire.FrameKind.Document, section => section.Varint(2)
                 .Document(Doc("a/1")).Document(Doc("a/2")))
@@ -213,8 +213,8 @@ public sealed class SnapshotDecoderTests
     public void Timestamps_at_the_edges_of_firestores_range_decode()
     {
         byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.Array).Varint(2)
-            .Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MinTimestampSeconds).Int32(0)
-            .Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MaxTimestampSeconds).Int32(999_999_999));
+            .Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MinSeconds).Int32(0)
+            .Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MaxSeconds).Int32(999_999_999));
 
         FirestoreArray items = SnapshotDecoder.DecodeDocument(frame).Document.Fields["field"].AsArray();
 
@@ -267,7 +267,7 @@ public sealed class SnapshotDecoderTests
         byte[] frame = shape switch
         {
             // Fields map count 2, key "", then an array of `size` nulls and nothing after: the map's unread second
-            // entry keeps the array off the up-front path, so it is read on the scratch stack.
+            // entry stays reserved, so the array's count no longer fits and it is rejected before its array is allocated.
             "map claiming one more entry than the frame holds" => Frame(Wire.FrameKind.Document, section =>
             {
                 section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(2).String("")
@@ -316,8 +316,9 @@ public sealed class SnapshotDecoderTests
                     field.Raw(Enumerable.Repeat((byte)0xFF, size - 30).ToArray());
                     break;
                 case "outer array reserved but never filled":
-                    // An outer array claims `size` items and gets its array up front; its first item is an array that
-                    // really holds `size - 4` nulls (read on the scratch stack); then the frame ends.
+                    // An outer array claims `size` items, which fits, so its array is allocated; its first item is an
+                    // array that really holds `size - 4` nulls, which no longer fits beside the outer array's reserved
+                    // items, so it is rejected before its own array is allocated.
                     field.Byte(Wire.Tag.Array).Varint(size).Byte(Wire.Tag.Array).Varint(size - 4);
                     for (int index = 0; index < size - 4; index++)
                         field.Byte(Wire.Tag.Null);
@@ -583,6 +584,63 @@ public sealed class SnapshotDecoderTests
         byte[] document = TestFrameEncoder.Encode(new FirestoreDocumentSnapshot(Live, Doc("a/1")));
 
         Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.DecodeQuery(document));
+    }
+
+    [Fact]
+    public void The_wrong_snapshot_kind_is_refused_before_decoding()
+    {
+        // A query frame whose documents section is garbage: refused by its kind byte, not by its content.
+        byte[] query = Frame(Wire.FrameKind.Query, section => section.Raw([0xFF, 0xFF]));
+
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.DecodeDocument(query));
+
+        Assert.Contains("not a document snapshot", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void A_document_frame_with_other_than_one_document_is_refused_at_its_count(int count)
+    {
+        byte[] frame = Frame(Wire.FrameKind.Document, section =>
+        {
+            section.Varint(count);
+            for (int index = 0; index < count; index++)
+                section.String($"a/{index}").Byte(Wire.DocumentFlags.Exists).Varint(0);
+        });
+
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+
+        Assert.Contains($"exactly one document, not {count}", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(Wire.HeaderLength + 6 + 5, exception.Offset); // the count, after the metadata and documents headers
+    }
+
+    [Theory]
+    [InlineData(Wire.Tag.Bytes)]
+    [InlineData(Wire.Tag.String)]
+    public void A_value_cannot_claim_bytes_reserved_for_the_items_after_it(byte tag)
+    {
+        // An array of 1,000 items whose first is a value claiming all but 500 of the bytes left: the other 999 items'
+        // minimum byte each no longer fit, so it is refused before its bytes are copied.
+        const int length = 100_000;
+        byte[] frame = DocumentWith(raw =>
+            raw.Byte(Wire.Tag.Array).Varint(1_000).Byte(tag).Varint(length).Raw(new byte[length + 500]));
+
+        (Exception? failure, long allocated) = MeasureDecode(frame);
+
+        Assert.Contains("Declared counts need", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
+        Assert.True(allocated < length, $"Decoding allocated {allocated:N0} bytes before refusing a {length:N0}-byte value.");
+    }
+
+    [Fact]
+    public void A_query_snapshot_copies_its_documents()
+    {
+        List<FirestoreDocument> documents = [Doc("a/1")];
+        var snapshot = new FirestoreQuerySnapshot(Live, documents);
+
+        documents.Clear();
+
+        Assert.Single(snapshot.Documents);
     }
 
     [Fact]

@@ -41,8 +41,12 @@ foreach ((string name, byte[] frame, int iterations) in cases)
         for (int iteration = 0; iteration < iterations; iteration++)
             _ = SnapshotDecoder.Decode(frame);
         clock.Stop();
-        allocated = (GC.GetAllocatedBytesForCurrentThread() - before) / iterations;
-        best = Math.Min(best, clock.Elapsed.TotalMicroseconds / iterations);
+        double elapsed = clock.Elapsed.TotalMicroseconds / iterations;
+        if (elapsed < best)
+        {
+            best = elapsed;
+            allocated = (GC.GetAllocatedBytesForCurrentThread() - before) / iterations; // from the same round as the time
+        }
     }
 
     Console.WriteLine($"{name,-22} frame {frame.Length,9:N0} B  {best,10:N1} us  {allocated / 1024.0,10:N1} KB");

@@ -2,7 +2,6 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace AdamE.Firestore.Peerless;
@@ -20,10 +19,6 @@ namespace AdamE.Firestore.Peerless;
 /// </remarks>
 public static class SnapshotDecoder
 {
-    // Kept for the tests' readability; the range lives on FirestoreTimestamp.
-    internal const long MinTimestampSeconds = FirestoreTimestamp.MinSeconds;
-    internal const long MaxTimestampSeconds = FirestoreTimestamp.MaxSeconds;
-
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     [ThreadStatic]
@@ -60,14 +55,20 @@ public static class SnapshotDecoder
     /// <summary>Decodes a query snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or is not a query snapshot.</exception>
     public static FirestoreQuerySnapshot DecodeQuery(ReadOnlySpan<byte> frame) =>
-        Decode(frame) as FirestoreQuerySnapshot
+        (HasOtherKind(frame, Wire.FrameKind.Query) ? null : Decode(frame) as FirestoreQuerySnapshot)
         ?? throw new PeerlessFormatException("The frame is not a query snapshot.", Wire.HeaderLength - 2);
 
     /// <summary>Decodes a document snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or is not a document snapshot.</exception>
     public static FirestoreDocumentSnapshot DecodeDocument(ReadOnlySpan<byte> frame) =>
-        Decode(frame) as FirestoreDocumentSnapshot
+        (HasOtherKind(frame, Wire.FrameKind.Document) ? null : Decode(frame) as FirestoreDocumentSnapshot)
         ?? throw new PeerlessFormatException("The frame is not a document snapshot.", Wire.HeaderLength - 2);
+
+    // Whether the header is valid but names the other supported kind, so the frame is refused without decoding it.
+    // Any other header goes through Decode, which reports what is wrong with it.
+    private static bool HasOtherKind(ReadOnlySpan<byte> frame, byte expected) =>
+        frame.Length >= Wire.HeaderLength && frame[..4].SequenceEqual(Wire.Magic) && frame[4] == Wire.MajorVersion
+        && frame[6] != expected && frame[6] is Wire.FrameKind.Query or Wire.FrameKind.Document;
 
     // Strict: invalid UTF-8 (including overlong forms such as modified UTF-8's C0 80, and encoded surrogates) throws
     // DecoderFallbackException, which the reader turns into a PeerlessFormatException.
@@ -145,9 +146,7 @@ public static class SnapshotDecoder
                 throw Fail("The frame has no documents section.");
 
             if (kind == Wire.FrameKind.Query)
-                return new FirestoreQuerySnapshot(snapshotMetadata, Array.AsReadOnly(documents));
-            if (documents.Length != 1)
-                throw Fail($"A document snapshot frame must hold exactly one document, not {documents.Length}.");
+                return new FirestoreQuerySnapshot(snapshotMetadata, documents);
             return new FirestoreDocumentSnapshot(snapshotMetadata, documents[0]);
         }
 
@@ -163,13 +162,16 @@ public static class SnapshotDecoder
         // documents still to come stay reserved, so a fields map can't claim their bytes too.
         private FirestoreDocument[] ReadDocuments(byte kind)
         {
+            int start = position;
             int count = ReadCount(minimumBytesEach: 2);
+            if (kind == Wire.FrameKind.Document && count != 1)
+                throw Fail($"A document snapshot frame must hold exactly one document, not {count}.", start);
             reserved += 2L * count; // Nothing else is reserved yet, and ReadCount already checked that these fit.
             var documents = new FirestoreDocument[count];
             for (int index = 0; index < count; index++)
             {
                 reserved -= 2;
-                int start = position;
+                start = position;
                 string path = ReadString();
                 if (!FirestoreDocument.IsValidPath(path))
                     throw Fail($"\"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", start);
@@ -208,14 +210,14 @@ public static class SnapshotDecoder
                 case Wire.Tag.String:
                     return FirestoreValue.FromString(ReadString());
                 case Wire.Tag.Bytes:
-                    return FirestoreValue.OwningBytes(Take(ReadCount(minimumBytesEach: 1)).ToArray());
+                    return FirestoreValue.OwningBytes(Take(ReadLength()).ToArray());
                 case Wire.Tag.Timestamp:
                 {
                     long seconds = BinaryPrimitives.ReadInt64LittleEndian(Take(8));
                     int nanoseconds = BinaryPrimitives.ReadInt32LittleEndian(Take(4));
                     if (!FirestoreTimestamp.IsValid(seconds, nanoseconds))
                         throw Fail($"Timestamp {seconds}s+{nanoseconds}ns is outside Firestore's range (years 0001 to 9999).", start);
-                    return FirestoreValue.FromTimestamp(new FirestoreTimestamp(seconds, nanoseconds));
+                    return FirestoreValue.ValidatedTimestamp(seconds, nanoseconds);
                 }
 
                 case Wire.Tag.GeoPoint:
@@ -223,8 +225,12 @@ public static class SnapshotDecoder
                     double latitude = BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
                     double longitude = BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
                     if (!FirestoreGeoPoint.IsValid(latitude, longitude))
-                        throw Fail($"Geo point ({latitude}, {longitude}) is outside [-90, 90] x [-180, 180] or NaN.", start);
-                    return FirestoreValue.FromGeoPoint(new FirestoreGeoPoint(latitude, longitude));
+                    {
+                        throw Fail(string.Create(CultureInfo.InvariantCulture,
+                            $"Geo point ({latitude}, {longitude}) is outside [-90, 90] x [-180, 180] or NaN."), start);
+                    }
+
+                    return FirestoreValue.ValidatedGeoPoint(latitude, longitude);
                 }
 
                 case Wire.Tag.Reference:
@@ -232,7 +238,7 @@ public static class SnapshotDecoder
                     string path = ReadString();
                     if (!FirestoreDocument.IsValidPath(path))
                         throw Fail($"Reference \"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", start);
-                    return FirestoreValue.FromReference(path);
+                    return FirestoreValue.ValidatedReference(path);
                 }
                 case Wire.Tag.Array:
                 {
@@ -293,13 +299,27 @@ public static class SnapshotDecoder
         // whose declared counts don't is rejected here, before anything is allocated for them.
         private void Reserve(long bytes, int start)
         {
+            CheckFits(bytes, start);
+            reserved += bytes;
+        }
+
+        private readonly void CheckFits(long bytes, int start)
+        {
             if (reserved + bytes > limit - position)
             {
                 throw Fail(string.Create(CultureInfo.InvariantCulture,
                     $"Declared counts need at least {reserved + bytes:N0} more bytes, but only {limit - position:N0} are left in the section."), start);
             }
+        }
 
-            reserved += bytes;
+        // A string's, key's or bytes value's length, which must fit beside what the open containers still reserve, so
+        // a value can't claim (and be allocated for) bytes that the items declared after it need.
+        private int ReadLength()
+        {
+            int start = position;
+            int length = ReadCount(minimumBytesEach: 1);
+            CheckFits(length, start);
+            return length;
         }
 
         private readonly void CheckDepth(int depth, int start)
@@ -312,7 +332,7 @@ public static class SnapshotDecoder
         private string ReadKey()
         {
             int start = position;
-            ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
+            ReadOnlySpan<byte> bytes = Take(ReadLength());
             try
             {
                 return scratch.Key(bytes);
@@ -326,7 +346,7 @@ public static class SnapshotDecoder
         private string ReadString()
         {
             int start = position;
-            ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
+            ReadOnlySpan<byte> bytes = Take(ReadLength());
             try
             {
                 return Utf8(bytes);
@@ -403,7 +423,6 @@ public static class SnapshotDecoder
         // Random per process, so the cache's slots can't be predicted by whoever writes the data.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
 
-
         private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
         private readonly string?[] cachedKeys = new string[KeyCacheSize];
         private int cachedCount;
@@ -411,12 +430,9 @@ public static class SnapshotDecoder
         private uint[] hashes = new uint[InitialStack];
         private int[] seen = [];
 
-
         public int HashTop { get; private set; }
 
         public void PopHashes(int bottom) => HashTop = bottom;
-
-
 
         // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
         // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch. A key
@@ -443,7 +459,9 @@ public static class SnapshotDecoder
                 return false;
             }
 
-            int size = (int)BitOperations.RoundUpToPowerOf2((uint)names.Length * 2);
+            // Capped at 2^30 so the size stays a positive int: a section holds fewer than 2^30 entries at two bytes each,
+            // so the table never fills and still has room for the sort's index list.
+            int size = (int)Math.Min(BitOperations.RoundUpToPowerOf2((uint)names.Length * 2), 1u << 30);
             if (seen.Length < size)
                 seen = new int[size];
             int mask = size - 1;

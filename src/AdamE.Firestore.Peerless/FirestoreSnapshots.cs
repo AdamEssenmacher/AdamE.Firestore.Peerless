@@ -70,10 +70,16 @@ public abstract class FirestoreSnapshot
 /// <summary>The result of a query listener: every matching document, in query order.</summary>
 public sealed class FirestoreQuerySnapshot : FirestoreSnapshot
 {
-    /// <summary>Creates a query snapshot.</summary>
-    public FirestoreQuerySnapshot(SnapshotMetadata metadata, IReadOnlyList<FirestoreDocument> documents)
+    /// <summary>Creates a query snapshot from <paramref name="documents"/>, which are copied.</summary>
+    public FirestoreQuerySnapshot(SnapshotMetadata metadata, IEnumerable<FirestoreDocument> documents)
+        : this(metadata, [.. documents ?? throw new ArgumentNullException(nameof(documents))])
+    {
+    }
+
+    // Takes ownership of an array nothing else holds.
+    internal FirestoreQuerySnapshot(SnapshotMetadata metadata, FirestoreDocument[] documents)
         : base(metadata) =>
-        Documents = documents ?? throw new ArgumentNullException(nameof(documents));
+        Documents = Array.AsReadOnly(documents);
 
     /// <summary>The documents, in query order.</summary>
     public IReadOnlyList<FirestoreDocument> Documents { get; }
