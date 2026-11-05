@@ -48,14 +48,62 @@ public sealed class SnapshotDecoderTests
             .Section(9, section => section.Raw(new byte[2 * count]))
             .ToArray();
 
-        _ = Record.Exception(() => SnapshotDecoder.Decode(frame)); // warm the per-thread scratch
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        (Exception? failure, long allocated) = MeasureDecode(frame);
 
         Assert.IsType<PeerlessFormatException>(failure);
         Assert.True(allocated <= FixedOverhead, $"Decoding allocated {allocated:N0} bytes for a count with no documents.");
     }
+
+    // Each frame is followed by a 64 KiB unknown section, so a bound on the bytes left in the frame (instead of the
+    // section) would let the content claim or read those bytes and fail differently, or not at all.
+    public static TheoryData<string, byte[], string> SectionBoundFrames => new()
+    {
+        {
+            // Fields map of 502 entries, the first an array of 1,000 nulls, then the section ends: the map's 501
+            // unread entries and the array's items don't both fit in the section.
+            "nested counts", FollowedByUnknownSection(section =>
+            {
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(502).Varint(0).Byte(Wire.Tag.Array).Varint(1_000);
+                section.Raw(new byte[1_000]);
+            }),
+            "left in the section"
+        },
+        {
+            // 1,000 documents in 2,000 bytes; the first one's fields map claims 900 entries, which the other 999
+            // documents' minimum two bytes each leave no room for.
+            "a fields map and the documents after it", FollowedByUnknownSection(section =>
+                section.Varint(1_000).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(900).Raw(new byte[1_993])),
+            "left in the section"
+        },
+        {
+            "a value", FollowedByUnknownSection(section =>
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(1).Varint(0).Byte(Wire.Tag.Integer).Int32(7)),
+            "past the end of its section"
+        },
+        {
+            "section shorter than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
+                .Section(Wire.Section.Metadata, _ => { })
+                .Section(Wire.Section.Documents, section => section.Varint(0)).ToArray(),
+            "past the end of its section"
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(SectionBoundFrames))]
+    public void Content_is_bounded_by_its_section(string because, byte[] frame, string expected)
+    {
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+
+        Assert.Contains(expected, exception.Message, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrEmpty(because));
+    }
+
+    private static byte[] FollowedByUnknownSection(Action<TestFrameEncoder> documents) => new TestFrameEncoder()
+        .Header(Wire.FrameKind.Query)
+        .Section(Wire.Section.Metadata, section => section.Byte(0))
+        .Section(Wire.Section.Documents, documents)
+        .Section(9, section => section.Raw(new byte[64 * 1024]))
+        .ToArray();
 
     public static TheoryData<string, byte[]> MalformedFrames => new()
     {
@@ -85,7 +133,7 @@ public sealed class SnapshotDecoderTests
                 .Byte(Wire.Section.Metadata).Int32(1000).Byte(0).ToArray()
         },
         {
-            "section shorter than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
+            "section longer than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
                 .Section(Wire.Section.Metadata, section => section.Byte(0).Byte(0))
                 .Section(Wire.Section.Documents, section => section.Varint(0)).ToArray()
         },
@@ -187,7 +235,7 @@ public sealed class SnapshotDecoderTests
     // The real worst case (docs/wire-format.md): a frame that decodes costs at most about 43 bytes of .NET memory per
     // frame byte on CoreCLR, which is what these tests run on (a chain of one-entry maps, 3 bytes and ~128 bytes of
     // objects each; Mono's larger array headers would add about 5). A malformed frame is rejected as soon as its
-    // declared counts exceed the bytes left; it keeps what its valid prefix cost (up to the same bound) plus at most
+    // declared counts exceed the bytes left in the section; it keeps what its valid prefix cost (up to the same bound) plus at most
     // one slot per byte its open containers claimed (32 for arrays, 20 for maps). Plus about 5 KB of working memory
     // on a thread's first decode.
     private const int BytesPerFrameByte = 48;
@@ -280,15 +328,12 @@ public sealed class SnapshotDecoderTests
             }
         });
 
-        _ = Record.Exception(() => SnapshotDecoder.Decode(frame)); // warm the per-thread scratch
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        (Exception? failure, long allocated) = MeasureDecode(frame);
 
         if (shape is "map claiming one more entry than the frame holds" or "outer array reserved but never filled"
             or "hostile nested counts" or "map claiming half the frame, holding a map claiming the rest")
         {
-            // Rejected as soon as the declared counts stop fitting in the bytes left, before allocating for them.
+            // Rejected as soon as the declared counts stop fitting in the bytes left in the section, before allocating for them.
             Assert.Contains("Declared counts need", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
         }
         else
@@ -299,6 +344,15 @@ public sealed class SnapshotDecoderTests
         long bound = (long)BytesPerFrameByte * frame.Length + FixedOverhead;
         TestContext.Current.SendDiagnosticMessage($"{shape} x {size}: {(double)allocated / frame.Length:F1} B per frame byte");
         Assert.True(allocated <= bound, $"{shape} x {size}: {allocated:N0} bytes for a {frame.Length:N0}-byte frame (bound {bound:N0}).");
+    }
+
+    // Decodes once to warm the per-thread scratch, then measures a second decode's allocation and outcome.
+    private static (Exception? Failure, long Allocated) MeasureDecode(byte[] frame)
+    {
+        _ = Record.Exception(() => SnapshotDecoder.Decode(frame));
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
+        return (failure, GC.GetAllocatedBytesForCurrentThread() - before);
     }
 
     // A fixed budget for a typical frame, so decode allocation can't regress silently. 100 documents x 20 fields

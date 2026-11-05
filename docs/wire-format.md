@@ -118,7 +118,7 @@ map-body = count:varint (key:string value)*count
 - A count (array items, map entries, documents, bytes) can't exceed the bytes left in its section. An array item takes
   at least one byte (its tag), a map entry at least two (a key length and a tag), and a document at least two (a path
   length and its flags). So in a frame that can decode, the minimum size of everything the open containers still
-  declare always fits in the bytes left. Decoders **reject a frame as soon as its declared counts stop fitting**,
+  declare always fits in the bytes left in the section. Decoders **reject a frame as soon as its declared counts stop fitting**,
   before allocating for them; a frame that nests counts claiming the same bytes over and over is caught at the second
   level. The .NET decoder then allocates each container at its declared size. Its memory per frame byte is at most
   about **48 bytes**, whether the frame decodes or is rejected:

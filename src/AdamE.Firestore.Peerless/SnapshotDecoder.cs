@@ -11,8 +11,8 @@ namespace AdamE.Firestore.Peerless;
 /// thread-safe, and the result does not reference the input buffer, so the caller may reuse or free it afterwards.
 /// </summary>
 /// <remarks>
-/// Every array item takes at least one byte and every map entry at least two, so the minimum size of everything the
-/// open containers still declare must fit in the bytes left to read. A frame whose declared counts don't is rejected the
+/// Every array item takes at least one byte, every map entry and every document at least two, so the minimum size of
+/// everything the open containers still declare must fit in the bytes left in the section being read. A frame whose declared counts don't is rejected the
 /// moment they stop fitting; otherwise each container is read straight into an array of its declared size. Memory
 /// therefore stays proportional to the frame's size, however hostile its counts: about 48 bytes per frame byte at most,
 /// whether the frame decodes or is rejected after a valid prefix (docs/wire-format.md).
@@ -71,7 +71,7 @@ public static class SnapshotDecoder
         private int limit = frame.Length;
 
         // The minimum unread bytes the items declared but not yet started still need, across all open containers: one
-        // per array item, two per map entry (a key length and a value tag).
+        // per array item, two per map entry (a key length and a value tag) or document (a path length and its flags).
         private long reserved;
 
         public FirestoreSnapshot ReadFrame()
@@ -91,6 +91,7 @@ public static class SnapshotDecoder
             Span<ulong> sectionsSeen = stackalloc ulong[4]; // one bit per section ID, known or not
             while (position < frame.Length)
             {
+                limit = frame.Length; // Section headers are bounded by the frame, section content by its section.
                 int sectionStart = position;
                 byte id = ReadByte();
                 ref ulong word = ref sectionsSeen[id >> 6];
@@ -104,7 +105,8 @@ public static class SnapshotDecoder
                     throw Fail("A section runs past the end of the frame.", sectionStart);
 
                 int length = (int)declared;
-                limit = position + length;
+                int contentStart = position;
+                limit = contentStart + length;
                 switch (id)
                 {
                     case Wire.Section.Metadata:
@@ -118,10 +120,9 @@ public static class SnapshotDecoder
                         break;
                 }
 
+                // Content can't run past the section (Take stops it), so this only catches content that ends early.
                 if (position != limit)
-                    throw Fail($"Section {id} declared {length} bytes but its content used {position - (limit - length)}.", sectionStart);
-
-                limit = frame.Length;
+                    throw Fail($"Section {id} declared {length} bytes but its content used only {position - contentStart}.", sectionStart);
             }
 
             if (metadata is not { } snapshotMetadata)
@@ -144,13 +145,17 @@ public static class SnapshotDecoder
                 (flags & Wire.MetadataFlags.HasPendingWrites) != 0);
         }
 
-        // Only one level of documents, so its count is allocated exactly: at most 4 bytes of array per frame byte.
+        // Only one level of documents, so its count is allocated exactly: at most 4 bytes of array per frame byte. The
+        // documents still to come stay reserved, so a fields map can't claim their bytes too.
         private FirestoreDocument[] ReadDocuments(byte kind)
         {
+            int sectionStart = position;
             int count = ReadCount(minimumBytesEach: 2);
+            Reserve(2L * count, sectionStart);
             var documents = new FirestoreDocument[count];
             for (int index = 0; index < count; index++)
             {
+                reserved -= 2;
                 int start = position;
                 string path = ReadString();
                 if (!FirestoreDocument.IsValidPath(path))
@@ -269,8 +274,9 @@ public static class SnapshotDecoder
             return FirestoreMap.Owning(names, values);
         }
 
-        // An array item takes at least one byte (its tag) and a map entry at least two (a key length and a tag), so in a
-        // frame that can decode, the minimum size of everything still declared always fits in the bytes left. A frame
+        // An array item takes at least one byte (its tag), a map entry at least two (a key length and a tag) and a document
+        // at least two (a path length and its flags), so in a frame that can decode, the minimum size of everything still
+        // declared always fits in the bytes left in the section. A frame
         // whose declared counts don't is rejected here, before anything is allocated for them.
         private void Reserve(long bytes, int start)
         {
@@ -318,7 +324,7 @@ public static class SnapshotDecoder
             }
         }
 
-        // A count can never exceed the bytes left, which stops a corrupt count from forcing a huge allocation.
+        // A count can never exceed the bytes left in the section, which stops a corrupt count from forcing a huge allocation.
         private int ReadCount(int minimumBytesEach)
         {
             int start = position;
@@ -352,7 +358,12 @@ public static class SnapshotDecoder
         private ReadOnlySpan<byte> Take(int count)
         {
             if (count > limit - position)
-                throw Fail("There are not enough bytes left to read the value.");
+            {
+                throw Fail(limit == frame.Length
+                    ? "The frame ends in the middle of a value."
+                    : string.Create(CultureInfo.InvariantCulture, $"A value runs past the end of its section, which ends at byte {limit}."));
+            }
+
             ReadOnlySpan<byte> taken = frame.Slice(position, count);
             position += count;
             return taken;
