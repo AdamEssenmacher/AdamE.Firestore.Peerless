@@ -18,6 +18,6 @@ typedef void (^AdamEPeerlessTestingCallback)(id _Nullable snapshot, NSError *_Nu
 /// to call in place of Firestore; it holds the listener weakly, as Firestore's block does.
 void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback on_frame,
                                     adame_peerless_error_callback on_error, id<FIRListenerRegistration> registration,
-                                    AdamEPeerlessTestingCallback _Nullable *_Nonnull callback);
+                                    BOOL timed, AdamEPeerlessTestingCallback _Nullable *_Nonnull callback);
 
 NS_ASSUME_NONNULL_END

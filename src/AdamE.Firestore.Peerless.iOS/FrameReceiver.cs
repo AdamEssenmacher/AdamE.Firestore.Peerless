@@ -57,7 +57,6 @@ internal sealed unsafe class FrameReceiver : IDisposable
     private readonly FrameDecoder decode;
     private readonly Action<FirestoreSnapshot> onSnapshot;
     private readonly IFrameObserver? observer;
-    private nint listener; // for the timing hook only
 
     private FrameReceiver(
         FrameDecoder decode, Action<FirestoreSnapshot> onSnapshot, Action<Exception> onError, IFrameObserver? observer)
@@ -96,7 +95,6 @@ internal sealed unsafe class FrameReceiver : IDisposable
                 $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}");
         }
 
-        Volatile.Write(ref receiver.listener, created);
         // A first callback on another queue may already have failed: Attach then removes it and posts the error.
         receiver.gate.Attach(() => Native.Remove(created, &OnRelease));
         return receiver;
@@ -106,10 +104,10 @@ internal sealed unsafe class FrameReceiver : IDisposable
     public void Dispose() => gate.Stop();
 
     [UnmanagedCallersOnly]
-    private static void OnFrame(nint context, byte* data, nuint length)
+    private static void OnFrame(nint context, byte* data, nuint length, FrameTiming* timing)
     {
         if (GCHandle.FromIntPtr(context).Target is FrameReceiver receiver)
-            receiver.Deliver((nint)data, length);
+            receiver.Deliver((nint)data, length, timing);
     }
 
     [UnmanagedCallersOnly]
@@ -134,18 +132,17 @@ internal sealed unsafe class FrameReceiver : IDisposable
             handle.Free();
     }
 
-    private void Deliver(nint data, nuint length) => gate.Run(() =>
+    private void Deliver(nint data, nuint length, FrameTiming* timing) => gate.Run(() =>
     {
         if (observer is not null)
         {
-            FrameTiming timing = default;
-            Native.Timing(Volatile.Read(ref listener), &timing);
+            // The shim supplies callback-local timing whenever this listener requests it.
             observer.Arrived(new FrameArrival(
-                (long)timing.StartNanos,
-                (long)timing.StartCpuNanos,
-                (long)timing.EncodeNanos,
-                (long)timing.EncodeCpuNanos,
-                (long)timing.DataNanos,
+                (long)timing->StartNanos,
+                (long)timing->StartCpuNanos,
+                (long)timing->EncodeNanos,
+                (long)timing->EncodeCpuNanos,
+                (long)timing->DataNanos,
                 length > int.MaxValue ? -1 : (int)length,
                 PeerlessListener.NowNanoseconds()));
         }

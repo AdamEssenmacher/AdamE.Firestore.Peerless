@@ -28,7 +28,7 @@ internal static unsafe class Native
     public static extern nint ListenQuery(
         nint query,
         nint context,
-        delegate* unmanaged<nint, byte*, nuint, void> onFrame,
+        delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError,
         int timed,
         byte* error,
@@ -38,7 +38,7 @@ internal static unsafe class Native
     public static extern nint ListenDocument(
         nint document,
         nint context,
-        delegate* unmanaged<nint, byte*, nuint, void> onFrame,
+        delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError,
         int timed,
         byte* error,
@@ -46,9 +46,6 @@ internal static unsafe class Native
 
     [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);
-
-    [DllImport(Library, EntryPoint = "adame_peerless_listener_timing")]
-    public static extern void Timing(nint listener, FrameTiming* timing);
 
     [DllImport(Library, EntryPoint = "adame_peerless_compiled_firebase_version")]
     public static extern byte* CompiledFirebaseVersion();

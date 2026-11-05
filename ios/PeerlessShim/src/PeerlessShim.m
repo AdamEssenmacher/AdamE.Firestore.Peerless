@@ -66,7 +66,6 @@ const char *adame_peerless_runtime_firestore_version(void) {
     BOOL _releaseDeferred;
     id<FIRListenerRegistration> _deferredRegistration; // taken out by a removal from inside a callback
     BOOL _timed;
-    adame_peerless_frame_timing _timing;
 }
 
 - (instancetype)init {
@@ -162,15 +161,17 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
             removeAfterUnlock = AdamEPeerlessStopLocked(listener);
             listener->_onError(listener->_context, ADAME_PEERLESS_ENCODE_FAILED, failure.UTF8String);
         } else {
+            adame_peerless_frame_timing timing;
             if (listener->_timed)
-                listener->_timing = (adame_peerless_frame_timing){
+                timing = (adame_peerless_frame_timing){
                     .start_nanos = start,
                     .start_cpu_nanos = startCpu,
                     .encode_nanos = adame_peerless_now_nanos() - start,
                     .encode_cpu_nanos = adame_peerless_thread_cpu_nanos() - startCpu,
                     .data_nanos = listener->_writer.dataNanos,
                 };
-            listener->_onFrame(listener->_context, listener->_writer.bytes, listener->_writer.length);
+            listener->_onFrame(listener->_context, listener->_writer.bytes, listener->_writer.length,
+                               listener->_timed ? &timing : NULL);
         }
     }
 
@@ -276,20 +277,13 @@ void adame_peerless_listener_remove(void *pointer, adame_peerless_release_callba
         release(context);
 }
 
-void adame_peerless_listener_timing(void *pointer, adame_peerless_frame_timing *timing) {
-    if (pointer == NULL || timing == NULL)
-        return;
-    AdamEPeerlessListener *listener = (__bridge AdamEPeerlessListener *)pointer;
-    *timing = listener->_timing;
-}
-
 // Test-only: compiled into scripts/test-ios-shim.sh's executable, never into the shipped library (build-shim.sh
 // doesn't define ADAME_PEERLESS_TESTING).
 #ifdef ADAME_PEERLESS_TESTING
 void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback onFrame,
                                     adame_peerless_error_callback onError, id<FIRListenerRegistration> registration,
-                                    AdamEPeerlessTestingCallback *callback) {
-    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, NO);
+                                    BOOL timed, AdamEPeerlessTestingCallback *callback) {
+    AdamEPeerlessListener *listener = AdamEPeerlessNewListener(context, onFrame, onError, timed);
     __weak AdamEPeerlessListener *weak = listener;
     *callback = ^(id snapshot, NSError *error, void (^encode)(AdamEPeerlessFrameWriter *writer)) {
         AdamEPeerlessListener *strong = weak;

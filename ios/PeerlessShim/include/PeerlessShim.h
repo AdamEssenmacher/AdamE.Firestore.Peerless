@@ -30,8 +30,18 @@
 extern "C" {
 #endif
 
-/// One encoded snapshot. `data` is valid only during the call: the listener reuses its buffer for the next frame.
-typedef void (*adame_peerless_frame_callback)(void *context, const uint8_t *data, size_t length);
+/// Measurement of the frame being delivered. Clock: adame_peerless_now_nanos.
+typedef struct adame_peerless_frame_timing {
+    uint64_t start_nanos;       // when the Firestore callback began
+    uint64_t start_cpu_nanos;   // the callback thread's CPU time then
+    uint64_t encode_nanos;      // wall time spent encoding
+    uint64_t encode_cpu_nanos;  // thread CPU time spent encoding
+    uint64_t data_nanos;        // of encode_nanos, the time inside Firestore's -[FIRDocumentSnapshot data]
+} adame_peerless_frame_timing;
+
+/// One encoded snapshot. `data` and `timing` are valid only during the call. `timing` is NULL for untimed listeners.
+typedef void (*adame_peerless_frame_callback)(void *context, const uint8_t *data, size_t length,
+                                              const adame_peerless_frame_timing *timing);
 
 /// The listener failed and has stopped. `code` is Firestore's FIRFirestoreErrorCode (gRPC numbering) when the error is
 /// in FIRFirestoreErrorDomain, 2 (unknown) for any other NSError, and -1 when the shim itself could not encode a
@@ -43,15 +53,6 @@ typedef void (*adame_peerless_release_callback)(void *context);
 
 /// The shim's code for "could not encode a snapshot" (a value it refuses, or a frame over 2 GB).
 #define ADAME_PEERLESS_ENCODE_FAILED (-1)
-
-/// Measurement of the frame being delivered. Clock: adame_peerless_now_nanos.
-typedef struct adame_peerless_frame_timing {
-    uint64_t start_nanos;       // when the Firestore callback began
-    uint64_t start_cpu_nanos;   // the callback thread's CPU time then
-    uint64_t encode_nanos;      // wall time spent encoding
-    uint64_t encode_cpu_nanos;  // thread CPU time spent encoding
-    uint64_t data_nanos;        // of encode_nanos, the time inside Firestore's -[FIRDocumentSnapshot data]
-} adame_peerless_frame_timing;
 
 /// Listens to a FIRQuery (passed as its Objective-C object pointer). Returns the listener, or NULL if `query` isn't
 /// a FIRQuery. Callbacks run on the Firestore instance's callback queue (the main queue unless the app chose
@@ -72,10 +73,6 @@ void *adame_peerless_listen_document(void *document, void *context, adame_peerle
 /// Stops the listener (see the contract above) and invalidates the listener pointer. Safe from any thread, and more
 /// than once per listener is a caller error.
 void adame_peerless_listener_remove(void *listener, adame_peerless_release_callback release);
-
-/// Fills in the timing of the frame being delivered. Only meaningful during a frame callback of a timed listener.
-/// Timing starts once the callback holds the listener's lock, so time spent waiting for it isn't counted.
-void adame_peerless_listener_timing(void *listener, adame_peerless_frame_timing *timing);
 
 /// The Firebase iOS SDK version the shim was compiled against (for example "12.18.0").
 const char *adame_peerless_compiled_firebase_version(void);
