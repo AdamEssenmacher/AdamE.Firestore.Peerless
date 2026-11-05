@@ -50,9 +50,6 @@ lock the callback also takes; either deadlocks. The first error stops the listen
 thread, the first callback can arrive before `Listen` returns (an early error is held and posted after it returns).
 Exceptions thrown from your callbacks are not caught, as with ordinary Firestore listeners.
 
-Known build issue: after editing the Java shim, the first `dotnet build` can still bind the previous AAR (Gradle
-rebuilds it during that build); build again, or run `./gradlew :peerless-shim:assembleRelease` in `android/` first.
-
 ## Benchmarks (Android)
 
 The benchmark app seeds collections of 10, 100, 500 and 1000 realistic documents (16 fields: strings, longs, doubles, a

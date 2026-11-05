@@ -10,6 +10,9 @@ settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
 
 def f(row, key): return float(row.get(key) or 0.0)
 def med(values): return statistics.median(values) if values else 0.0
+# Write to snapshot fully converted. Runs before the column was renamed call it write_to_callback_ms; step-1 runs
+# (results/android-peered) measured only to callback entry, so their figures are not comparable with this one.
+def write_to_done(row): return f(row, "write_to_done_ms" if "write_to_done_ms" in row else "write_to_callback_ms")
 has_peak = bool(rows) and "gref_peak" in rows[0]
 
 # The settle point before each sample: before-listen for an initial snapshot, otherwise the latest of after-initial /
@@ -46,7 +49,7 @@ lines = [f"# {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().
          "straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached",
          "java.lang.Class references that ART's own table (below) includes."
          + ("" if has_peak else " n/a: this run predates peak sampling."), "",
-         "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |",
+         "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→done ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|"]
 def after_settle(row):
     seq = int(row["seq"])
@@ -68,7 +71,7 @@ for (phase, size, kind), group in groups.items():
         f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}",
         rng([f(r, "gref_peak") for r in group]) if has_peak else "n/a",
         rng([peak_over_settled(r) for r in group]),
-        f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
+        f"{med([write_to_done(r) for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
 skipped = [r for r in rows if r["phase"] == "skipped"]
 if any(r.get("java_encode_us") for r in rows):

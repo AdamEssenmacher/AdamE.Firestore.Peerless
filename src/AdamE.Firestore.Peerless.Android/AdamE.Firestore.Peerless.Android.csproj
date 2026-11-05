@@ -24,13 +24,22 @@
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Android" />
   </ItemGroup>
 
-  <!-- Builds the Java shim with Gradle when its sources are newer than the AAR. A packaged build will ship the AAR. -->
+  <!-- Builds the Java shim with Gradle when its sources or Gradle configuration are newer than the AAR. A packaged
+       build will ship the AAR. It runs before _CategorizeAndroidLibraries, the first target that reads the AAR, so the
+       same build binds and packages the rebuilt one. -->
   <ItemGroup>
     <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/src/main/**/*" />
-    <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/build.gradle.kts" />
+    <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/*.gradle.kts;$(PeerlessShimDirectory)peerless-shim/*.pro" />
+    <PeerlessShimSource Include="$(PeerlessShimDirectory)*.gradle.kts;$(PeerlessShimDirectory)gradle.properties" />
+    <PeerlessShimSource Include="$(PeerlessShimDirectory)gradle/**/*.properties;$(PeerlessShimDirectory)gradle/**/*.toml" />
   </ItemGroup>
-  <Target Name="BuildPeerlessShim" BeforeTargets="PrepareForBuild;_ResolveLibraryProjectImports;ResolveAssemblyReferences"
+  <PropertyGroup>
+    <PeerlessGradle Condition="'$(OS)' == 'Windows_NT'">gradlew.bat</PeerlessGradle>
+    <PeerlessGradle Condition="'$(OS)' != 'Windows_NT'">./gradlew</PeerlessGradle>
+  </PropertyGroup>
+  <Target Name="BuildPeerlessShim"
+          BeforeTargets="_CategorizeAndroidLibraries;PrepareForBuild;_ResolveLibraryProjectImports;ResolveAssemblyReferences"
           Inputs="@(PeerlessShimSource)" Outputs="$(PeerlessShimAar)">
-    <Exec Command="./gradlew :peerless-shim:assembleRelease --console=plain -q" WorkingDirectory="$(PeerlessShimDirectory)" />
+    <Exec Command="$(PeerlessGradle) :peerless-shim:assembleRelease --console=plain -q" WorkingDirectory="$(PeerlessShimDirectory)" />
   </Target>
 </Project>

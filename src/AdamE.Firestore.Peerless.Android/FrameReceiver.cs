@@ -131,11 +131,17 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
         return decode(new ReadOnlySpan<byte>((void*)address, length));
     }
 
+    // Inside the gate. A buffer .NET can't read fails the listener like any other bad frame, rather than throwing
+    // into the Java callback.
     private void ReplaceBuffer(Java.Nio.ByteBuffer newBuffer)
     {
         nint newAddress = JNIEnv.GetDirectBufferAddress(newBuffer.Handle);
         if (newAddress == 0)
-            throw new InvalidOperationException("The shim passed a buffer that is not direct.");
+        {
+            newBuffer.Dispose();
+            gate.Fail(new PeerlessFormatException("The shim passed a buffer that is not direct.", 0));
+            return;
+        }
 
         buffer?.Dispose();
         buffer = newBuffer;

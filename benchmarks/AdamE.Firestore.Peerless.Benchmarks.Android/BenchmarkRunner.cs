@@ -215,12 +215,12 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         Query query = listening.Collection(collection).OrderBy(FieldPath.DocumentId());
         var peered = new ModelListener();
         IListenerRegistration peeredRegistration = query.AddSnapshotListener(peered);
-        using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => direct.TrySetResult(snapshot),
-            error => direct.TrySetException(error), FrameDelivery.DirectBuffer, observer: null);
-        using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => bytes.TrySetResult(snapshot),
-            error => bytes.TrySetException(error), FrameDelivery.ByteArray, observer: null);
         try
         {
+            using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => direct.TrySetResult(snapshot),
+                error => direct.TrySetException(error), FrameDelivery.DirectBuffer, observer: null);
+            using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => bytes.TrySetResult(snapshot),
+                error => bytes.TrySetException(error), FrameDelivery.ByteArray, observer: null);
             FirestoreSnapshot expected = await peered.First.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
             string? directDifference = SnapshotAssertions.Difference(expected, await direct.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
             string? bytesDifference = SnapshotAssertions.Difference(expected, await bytes.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
@@ -448,7 +448,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         try
         {
             Sample initial = await NextAsync(sampler, size).ConfigureAwait(false);
-            results?.Sample(phase, size, 0, "initial", initial, writeToCallbackMilliseconds: null, lastSettledGlobal);
+            results?.Sample(phase, size, 0, "initial", initial, writeToDoneMilliseconds: null, lastSettledGlobal);
             Probes.DumpArtReferenceTables($"{phase},{size},after-initial-unsettled");
             await SettledAsync(phase, size, "after-initial").ConfigureAwait(false);
 
@@ -473,7 +473,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         try
         {
             Sample initial = await NextAsync(sampler, 1).ConfigureAwait(false);
-            results?.Sample(phase, 1, 0, "initial", initial, writeToCallbackMilliseconds: null, lastSettledGlobal);
+            results?.Sample(phase, 1, 0, "initial", initial, writeToDoneMilliseconds: null, lastSettledGlobal);
             await SettledAsync(phase, 1, "after-initial").ConfigureAwait(false);
             await UpdatesAsync(phase, 1, options.SingleDocumentUpdates, sampler, seeding.Collection(collection), 1)
                 .ConfigureAwait(false);
@@ -498,6 +498,8 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             long written = Stopwatch.GetTimestamp();
             await TouchAsync(target, update + 1).ConfigureAwait(false);
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
+            // Ends when the snapshot is fully converted: Peerless has no earlier .NET point (its callback entry comes
+            // after encoding), so both modes measure to the same place. Step 1 measured to callback entry instead.
             double latency = Probes.Microseconds(written, sample.DoneTimestamp) / 1000.0;
             results?.Sample(phase, size, update, "update", sample, latency, lastSettledGlobal);
             if (update % settleEvery == 0)
@@ -516,7 +518,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 throw new InvalidOperationException($"Listener failed: {sample.Error}");
             if (sample.Documents == expectedDocuments)
                 return sample;
-            results?.Sample("skipped", expectedDocuments, -1, "partial", sample, writeToCallbackMilliseconds: null, lastSettledGlobal);
+            results?.Sample("skipped", expectedDocuments, -1, "partial", sample, writeToDoneMilliseconds: null, lastSettledGlobal);
         }
     }
 

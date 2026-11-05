@@ -192,8 +192,8 @@ public static class PeerlessListener
     // stopped and its peer released, so nothing stays allocated or registered. Only Firestore's refusals,
     // IllegalStateException (a terminated instance, a limitToLast query without orderBy), become the
     // InvalidOperationException the iOS listener throws; anything else is rethrown as it is. Once it has succeeded,
-    // Java holds the receiver, so a later failure removes the registration and stops the receiver but never disposes
-    // its peer under Java.
+    // Java holds the receiver, so a later failure stops the receiver (which removes the registration once) but never
+    // disposes its peer under Java.
     private static Registration Register(FrameReceiver receiver, Func<IListenerRegistration> listen)
     {
         IListenerRegistration registration;
@@ -219,7 +219,8 @@ public static class PeerlessListener
         }
         catch
         {
-            registration.Remove();
+            // Attach records the remover before anything in it can throw, so Stop removes the registration exactly
+            // once, through the gate, even when Attach already removed it.
             receiver.Stop();
             throw;
         }
