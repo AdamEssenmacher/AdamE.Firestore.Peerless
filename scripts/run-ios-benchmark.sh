@@ -8,7 +8,7 @@
 # Usage: scripts/run-ios-benchmark.sh <simulator-udid> [extra launch arguments, e.g. -sizes 10,100 -updates 5]
 #   FIRESTORE_PORT  the Firestore emulator's port (default 8181, as in firebase.json); the simulator shares the host's
 #                   network, so the app reaches it at 127.0.0.1:<port>
-#   The runner supplies -host and -port. Use FIRESTORE_PORT to select a different local emulator port.
+#   The runner supplies -host, -port and -runFiles. Use FIRESTORE_PORT to select a different local emulator port.
 #   FIREBASE_HUB_PORT  the emulator hub's port (default 4501), used to check FIRESTORE_PORT is really Firestore's
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 #
@@ -20,11 +20,12 @@ set -euo pipefail
 udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [launch args]}"
 shift
 mode="peered"
-# Keep launch arguments from sending the app to a different database than the one this runner clears.
+# Keep launch arguments from sending the app to a different database than the one this runner clears, or its files
+# somewhere other than the ones this runner watches.
 for arg in "$@"; do
   case "$arg" in
-    -host|-host=*|-port|-port=*)
-      echo "The iOS benchmark runner controls -host and -port. Set FIRESTORE_PORT to select the local emulator port." >&2
+    -host|-host=*|-port|-port=*|-runFiles|-runFiles=*)
+      echo "The iOS benchmark runner controls -host, -port and -runFiles. Set FIRESTORE_PORT to select the local emulator port." >&2
       exit 2
       ;;
   esac
@@ -91,6 +92,9 @@ echo "results: $out"
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
 grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+# The run must have used the emulator this script checked and cleared, however its launch arguments were spelled.
+grep -qx "emulator: $host:$port" "$out/$mode-run.txt" \
+  || { echo "run used a different emulator than $host:$port: $(grep '^emulator:' "$out/$mode-run.txt")" >&2; exit 1; }
 # A run without its verify check proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
 grep -q "^verify: read back as written" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
   || { echo "run has no passing verify check (launched with -verify NO? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }
