@@ -49,12 +49,9 @@ fi
 # the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
 # `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
-# count is accepted too. If the size can't be read, it isn't changed back, and the script says so.
+# count is accepted too. Only resize the main buffer when its original size can be read and restored.
 previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null \
   | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
-if [ -z "$previous_log_size" ]; then
-  echo "Could not read $serial's logcat buffer size; it will be enlarged but not restored afterwards." >&2
-fi
 log_resized=0
 reversed=0
 cleanup() {
@@ -67,7 +64,7 @@ cleanup() {
     adb -s "$serial" reverse --remove "tcp:$port" >/dev/null 2>&1 || true
   fi
   if [ "$log_resized" = "1" ] && [ -n "$previous_log_size" ]; then
-    adb -s "$serial" logcat -G "$previous_log_size" >/dev/null 2>&1 || true
+    adb -s "$serial" logcat -b main -G "$previous_log_size" >/dev/null 2>&1 || true
   fi
 }
 trap cleanup EXIT
@@ -106,10 +103,12 @@ if [ "$app_host" = "127.0.0.1" ]; then
   fi
 fi
 # ART's reference-table dumps are long: a bigger ring buffer keeps them from being overwritten before they're pulled.
-if adb -s "$serial" logcat -G 16M; then
+if [ -z "$previous_log_size" ]; then
+  echo "Could not read $serial's main logcat buffer size; long ART dumps may be cut off." >&2
+elif adb -s "$serial" logcat -b main -G 16M; then
   log_resized=1
 else
-  echo "Could not enlarge the logcat buffer; long ART dumps may be cut off." >&2
+  echo "Could not enlarge the main logcat buffer; long ART dumps may be cut off." >&2
 fi
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
