@@ -157,10 +157,10 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
   logcat. On a device it forwards the Firestore port with `adb reverse` and points the app at 127.0.0.1 (an emulator
   uses 10.0.2.2), and removes the forward on exit. It also enlarges the main, system and crash logcat buffers to 16 MB
   each so the ART dumps survive, restoring each one's size on exit and warning if that fails. A buffer whose size it
-  can't read is enlarged but not restored on an emulator, and left as it is on a device, where host.txt then notes
-  that the run's logcat may be incomplete. It refuses the CI runner's ports (8080, 9099, 4400), checks through the
-  emulator hub (4501) that the port is really Firestore's, and exits non-zero unless the run completed and its summary
-  was written.
+  can't read is enlarged but not restored on an emulator, and left as it is on a device. Whenever the main buffer
+  isn't enlarged (left alone, or a failed resize, on either), host.txt and summary.md note that the run's logcat may
+  be incomplete. It refuses the CI runner's ports (8080, 9099, 4400), checks through the emulator hub (4501) that
+  the port is really Firestore's, and exits non-zero unless the run completed and its summary was written.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
 - `FIRESTORE_PORT=8181 scripts/run-android-peered.sh [serial] [am-start extras]`, then

@@ -54,7 +54,8 @@ previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy 
 # count is accepted too. Each buffer that logcat.txt is read from (main, system, crash) is resized and restored on its
 # own, since their sizes can differ. A buffer whose size can't be read is still enlarged on an emulator, and left
 # enlarged afterwards (16 MB of logd memory on an AVD is harmless), but left alone on a device, where it couldn't be
-# put back; host.txt then notes that the run's logcat may be incomplete.
+# put back. Whenever main (which holds the ART dumps and the monodroid-gc lines) isn't enlarged, host.txt notes that
+# the run's logcat may be incomplete, and summary.md repeats it.
 log_buffers=(main system crash)
 previous_log_sizes=()
 log_enlarge=() # whether to enlarge each buffer: decided once here, used by the warning and the resize below
@@ -69,10 +70,10 @@ for buffer in "${log_buffers[@]}"; do
   log_enlarge+=("$enlarge")
   if [ -z "$size" ]; then
     if [ "$enlarge" = "1" ]; then
-      echo "Could not read $serial's $buffer logcat buffer size; it will be enlarged but not restored afterwards." >&2
+      echo "Could not read $serial's $buffer logcat buffer size; if it is enlarged, it won't be restored afterwards." >&2
     else
       echo "Could not read $serial's $buffer logcat buffer size; it won't be enlarged, so its entries (for main, the long ART dumps) may be cut off." >&2
-      log_incomplete="$log_incomplete $buffer"
+      if [ "$buffer" = "main" ]; then log_incomplete="$log_incomplete $buffer"; fi
     fi
   fi
 done
@@ -135,7 +136,7 @@ for i in "${!log_buffers[@]}"; do
     log_resized[$i]=1
   else
     echo "Could not enlarge the ${log_buffers[$i]} logcat buffer; its entries may be cut off." >&2
-    log_incomplete="$log_incomplete ${log_buffers[$i]}"
+    if [ "${log_buffers[$i]}" = "main" ]; then log_incomplete="$log_incomplete ${log_buffers[$i]}"; fi
   fi
 done
 adb -s "$serial" logcat -c
@@ -160,7 +161,7 @@ done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 {
   echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load: $(uptime)"
-  # A buffer that wasn't enlarged may have dropped entries, so the ART/GREF counts from logcat.txt may be too low.
+  # Only main is tracked: it holds the ART dumps and monodroid-gc lines, so their counts from logcat.txt may be too low.
   if [ -n "$log_incomplete" ]; then echo "logcat may be incomplete (buffers not enlarged:$log_incomplete)"; fi
 } | tee -a "$out/host.txt"
 echo "results: $out"
