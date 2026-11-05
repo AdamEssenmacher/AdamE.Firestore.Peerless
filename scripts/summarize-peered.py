@@ -77,14 +77,16 @@ forced = [l.split("monodroid-gc: ", 1)[1].strip() for l in ((run / "logcat.txt")
 if have_logcat:
     lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`, whole run): {len(forced)}"
               + (f" (e.g. \"{forced[0]}\")" if forced else "")]
-    host = (run / "host.txt").read_text(errors="replace").splitlines() if (run / "host.txt").exists() else []
-    incomplete = next((l.strip() for l in host if l.startswith("logcat may be incomplete")), None)
-    if incomplete:
-        lines += ["", f"**Warning:** {incomplete}, so the emergency-GC count above and the ART tables below may be too low."]
 elif "Emergency GCs" not in previous:
     lines += ["", "Emergency GCs forced by the runtime's GREF threshold: unknown (this run's logcat isn't available)"]
 else:
     lines += ["", next(l for l in previous.splitlines() if l.startswith("Emergency GCs"))]
+# host.txt is committed and logcat.txt isn't, so this is read whether or not the counts come from a summary.md kept
+# from an earlier pass.
+host = (run / "host.txt").read_text(errors="replace").splitlines() if (run / "host.txt").exists() else []
+incomplete = next((l.strip() for l in host if l.startswith("logcat may be incomplete")), None)
+if incomplete:
+    lines += ["", f"**Warning:** {incomplete}, so the emergency-GC count above and the ART tables below may be too low."]
 lines += ["", f"Partial snapshots skipped: {len(skipped)}", "", "## Settled references (after forced .NET + Java GC)", "",
           "| phase | docs | point | GREF | weak GREF | surfaced peers |", "|---|---:|---|---:|---:|---:|"]
 lines += [f"| {s['phase']} | {s['size']} | {s['point']} | {s['gref']} | {s['wgref']} | {s['surfaced_peers']} |" for s in settled]

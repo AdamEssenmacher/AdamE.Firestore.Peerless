@@ -60,7 +60,6 @@ log_buffers=(main system crash)
 previous_log_sizes=()
 log_enlarge=() # whether to enlarge each buffer: decided once here, used by the warning and the resize below
 log_resized=()
-log_incomplete=""
 for buffer in "${log_buffers[@]}"; do
   size="$(adb -s "$serial" logcat -g -b "$buffer" 2>/dev/null \
     | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
@@ -72,8 +71,8 @@ for buffer in "${log_buffers[@]}"; do
     if [ "$enlarge" = "1" ]; then
       echo "Could not read $serial's $buffer logcat buffer size; if it is enlarged, it won't be restored afterwards." >&2
     else
-      echo "Could not read $serial's $buffer logcat buffer size; it won't be enlarged, so its entries (for main, the long ART dumps) may be cut off." >&2
-      if [ "$buffer" = "main" ]; then log_incomplete="$log_incomplete $buffer"; fi
+      if [ "$buffer" = "main" ]; then what="its entries, including the long ART dumps,"; else what="its entries"; fi
+      echo "Could not read $serial's $buffer logcat buffer size; it won't be enlarged, so $what may be cut off." >&2
     fi
   fi
 done
@@ -136,9 +135,12 @@ for i in "${!log_buffers[@]}"; do
     log_resized[$i]=1
   else
     echo "Could not enlarge the ${log_buffers[$i]} logcat buffer; its entries may be cut off." >&2
-    if [ "${log_buffers[$i]}" = "main" ]; then log_incomplete="$log_incomplete ${log_buffers[$i]}"; fi
   fi
 done
+# Only main is tracked: it holds the ART dumps and monodroid-gc lines, so their counts from logcat.txt may be too low.
+# log_buffers[0] is main; it is unresized both when it was skipped above and when its -G failed.
+log_incomplete=""
+if [ "${log_resized[0]}" != "1" ]; then log_incomplete=" main"; fi
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
 adb -s "$serial" shell am start -W -n "$activity" --es host "$app_host" --ei port "$port" "$@"
@@ -161,7 +163,6 @@ done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 {
   echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load: $(uptime)"
-  # Only main is tracked: it holds the ART dumps and monodroid-gc lines, so their counts from logcat.txt may be too low.
   if [ -n "$log_incomplete" ]; then echo "logcat may be incomplete (buffers not enlarged:$log_incomplete)"; fi
 } | tee -a "$out/host.txt"
 echo "results: $out"
