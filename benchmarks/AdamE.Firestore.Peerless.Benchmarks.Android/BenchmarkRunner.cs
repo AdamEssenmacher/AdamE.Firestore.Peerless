@@ -300,7 +300,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                     {
                         if (Interlocked.Increment(ref selfCallbacks) > 1)
                             Interlocked.Increment(ref violations);
-                        self!.Dispose();
+                        if (self is null)
+                            Interlocked.Increment(ref violations); // delivered before Listen returned; the finally below stops it
+                        else
+                            self.Dispose();
                         selfDisposed.TrySetResult();
                     },
                     error => selfDisposed.TrySetException(error));
@@ -312,16 +315,26 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }))
             throw new InvalidOperationException("Could not post the self-disposal listener to the main thread.");
 
-        await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
-        for (int write = 0; write < 5; write++)
+        try
         {
-            await target.Document(DocumentId(write)).Update(
-                    "version", Java.Lang.Long.ValueOf(1000 + write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            for (int write = 0; write < 5; write++)
+            {
+                await target.Document(DocumentId(write)).Update(
+                        "version", Java.Lang.Long.ValueOf(1000 + write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+                    .AsTask()
+                    .ConfigureAwait(false);
+            }
+
+            await Task.Delay(300).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Queued behind the registration on the same looper, so it also stops a listener registered after a timeout.
+            // Dispose is idempotent, so this is a no-op once the callback has disposed the listener itself.
+            handler.Post(() => self?.Dispose());
         }
 
-        await Task.Delay(300).ConfigureAwait(false);
         string verdict = violations == 0
             ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
             : $"VIOLATED {violations} times";
