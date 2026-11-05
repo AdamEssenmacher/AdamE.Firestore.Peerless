@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CoreFoundation;
 
 namespace AdamE.Firestore.Peerless.iOS;
 
@@ -60,23 +61,28 @@ internal sealed unsafe class FrameReceiver : IDisposable
     private nint listener; // for the timing hook only
 
     private FrameReceiver(
-        FrameDecoder decode, Action<FirestoreSnapshot> onSnapshot, Action<Exception> onError, IFrameObserver? observer)
+        DispatchQueue callbackQueue,
+        FrameDecoder decode,
+        Action<FirestoreSnapshot> onSnapshot,
+        Action<Exception> onError,
+        IFrameObserver? observer)
     {
         this.decode = decode;
         this.onSnapshot = onSnapshot;
         this.observer = observer;
-        gate = new ListenerGate(onError, PostToMainQueue, release: static () => { });
+        gate = new ListenerGate(onError, callbackQueue.DispatchAsync, release: static () => { });
     }
 
     public static FrameReceiver Start(
         NSObject target,
+        DispatchQueue callbackQueue,
         FrameDecoder decode,
         Action<FirestoreSnapshot> onSnapshot,
         Action<Exception> onError,
         IFrameObserver? observer,
         bool isDocument)
     {
-        var receiver = new FrameReceiver(decode, onSnapshot, onError, observer);
+        var receiver = new FrameReceiver(callbackQueue, decode, onSnapshot, onError, observer);
         GCHandle self = GCHandle.Alloc(receiver);
         nint context = GCHandle.ToIntPtr(self);
         int timed = observer is null ? 0 : 1; // production frames take no clock reads
@@ -168,7 +174,4 @@ internal sealed unsafe class FrameReceiver : IDisposable
         onSnapshot(snapshot);
         observer?.Completed();
     });
-
-    // An error that arrived before Listen returned is delivered from here, after the app has its handle.
-    private static void PostToMainQueue(Action action) => CoreFoundation.DispatchQueue.MainQueue.DispatchAsync(action);
 }

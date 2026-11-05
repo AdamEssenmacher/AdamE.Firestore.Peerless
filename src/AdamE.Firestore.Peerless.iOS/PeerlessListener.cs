@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using CoreFoundation;
 using Firebase.CloudFirestore;
 
 namespace AdamE.Firestore.Peerless.iOS;
@@ -111,9 +112,9 @@ public sealed class FirestoreListenException : Exception
 /// registered.
 /// </para>
 /// <para>
-/// <b>Calling Listen off the main queue.</b> Firestore may then deliver the first callback before <c>Listen</c>
-/// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
-/// held and posted to the main queue after <c>Listen</c> has returned.
+/// <b>Registration timing.</b> A callback on another thread can run before the calling code assigns the returned
+/// handle. An error that arrives before the native registration is attached is held and posted to Firestore's
+/// callback queue after attachment.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> Until it is disposed or fails, a listener is rooted: the shim holds a GC handle to its callbacks, so
@@ -168,6 +169,7 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             query,
+            query.Handle == IntPtr.Zero ? DispatchQueue.MainQueue : query.Firestore.Settings.DispatchQueue,
             static frame => SnapshotDecoder.DecodeQuery(frame),
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
@@ -187,6 +189,7 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             document,
+            document.Handle == IntPtr.Zero ? DispatchQueue.MainQueue : document.Firestore.Settings.DispatchQueue,
             static frame => SnapshotDecoder.DecodeDocument(frame),
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
