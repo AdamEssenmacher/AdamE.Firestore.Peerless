@@ -43,7 +43,8 @@ internal sealed class SnapshotSampler : Java.Lang.Object, IEventListener
         bool fromCache = false;
         int documents = 0;
         object? converted = null;
-        string? failure = error?.Message;
+        // ToString, not Message: the message can be null, and the type and code say more.
+        string? failure = error?.ToString();
         int peak = before.GlobalReferences;
 
         try

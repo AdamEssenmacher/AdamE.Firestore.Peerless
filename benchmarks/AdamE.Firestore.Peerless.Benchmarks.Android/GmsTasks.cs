@@ -24,7 +24,7 @@ internal static class GmsTasks
                 completion.TrySetCanceled();
             else
                 completion.TrySetException(new InvalidOperationException(
-                    task.Exception?.Message ?? "A Play Services task failed without an exception."));
+                    task.Exception?.Message ?? "A Play Services task failed without an exception.", task.Exception));
         }
     }
 }

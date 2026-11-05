@@ -33,6 +33,18 @@ def peak_over_settled(row):
     base = last_settled(row)
     return None if base is None or not has_peak else f(row, "gref_peak") - base
 
+# The settle cadence per phase, read from the recorded after-update-N settle points (it follows the run's updates and
+# singleUpdates extras, so it is not fixed).
+def cadence(phase):
+    keys = sorted({k for (p, _), points in settles.items() if p == phase for k, _ in points if k > 0})
+    return keys[0] if keys else None
+def every(n): return "every update" if n == 1 else f"every {n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')} update"
+def cadence_text():
+    parts = [f"{every(n)} in the {label}" for phase, label in
+             (("query", "query phases"), ("document", "single-document phase"), ("warmup", "warmup"))
+             if (n := cadence(phase)) is not None]
+    return "after " + "; ".join(parts) if parts else "no settles after updates"
+
 lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().replace("\n", "  \n"), "",
          "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB.", "",
          "*GREF peak* is the highest .NET-side JNI global reference count seen during the callback (sampled after each",
@@ -40,8 +52,7 @@ lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().re
          "does. *Peak over settled* is that peak minus the count at the last settle point (forced .NET and Java GC).",
          "Subtracting removes only the references that survive a full GC; references earlier callbacks left for the GC",
          "since that settle are still included, so the figure grows with the number of callbacks since the settle.",
-         "Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the",
-         "single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come",
+         f"Cadence: a settle before listening, after the initial snapshot, and {cadence_text()}. *Update, after a settle* rows are the updates that come",
          "straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached",
          "java.lang.Class references that ART's own table (below) includes."
          + ("" if has_peak else " n/a: this run predates peak sampling."), "",

@@ -22,7 +22,11 @@ internal sealed record BenchmarkOptions(string Host, int Port, int[] Sizes, int 
     private static int[]? ParseSizes(string? text) =>
         string.IsNullOrWhiteSpace(text)
             ? null
-            : text.Split(',').Select(static part => int.Parse(part, CultureInfo.InvariantCulture)).ToArray();
+            : text.Split(',', StringSplitOptions.TrimEntries).Select(part =>
+                    int.TryParse(part, NumberStyles.None, CultureInfo.InvariantCulture, out int size) && size > 0
+                        ? size
+                        : throw new ArgumentException($"The sizes extra must be positive whole numbers separated by commas; got '{text}'."))
+                .ToArray();
 }
 
 /// <summary>
@@ -55,6 +59,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         writer.Note("device", $"{Android.OS.Build.Model} API {(int)Android.OS.Build.VERSION.SdkInt} {Android.OS.Build.SupportedAbis?.FirstOrDefault()}");
         writer.Note("sizes", string.Join(',', options.Sizes));
         writer.Note("updatesPerSize", options.UpdatesPerSize.ToString(CultureInfo.InvariantCulture));
+        writer.Note("singleUpdates", options.SingleDocumentUpdates.ToString(CultureInfo.InvariantCulture));
         GCMemoryInfo memory = GC.GetGCMemoryInfo();
         writer.Note("gc", $"server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} "
             + $"available={memory.TotalAvailableMemoryBytes} gen0size={Environment.GetEnvironmentVariable("DOTNET_GCgen0size") ?? "default"}");
@@ -126,8 +131,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             registration.Remove();
         }
 
-        GC.KeepAlive(sampler.Latest);
+        // After the settle, so the last conversion stays alive through it, as an app's view model would keep it.
         await SettledAsync(phase, size, "after-remove").ConfigureAwait(false);
+        GC.KeepAlive(sampler.Latest);
     }
 
     private async Task DocumentPhaseAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
@@ -154,6 +160,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
 
         await SettledAsync(phase, 1, "after-remove").ConfigureAwait(false);
+        GC.KeepAlive(sampler.Latest);
     }
 
     // Each update changes one document through the seeder, so the listener sees exactly one server-driven snapshot.

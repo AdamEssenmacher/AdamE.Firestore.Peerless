@@ -129,7 +129,10 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
 7. **The peered map walk was later made fair.** These runs converted each nested Java map with `keySet()` plus a
    `get(new String(key))` per entry. That costs an extra Java string and hash lookup per entry, which inflates the
    baseline. The code now walks `entrySet()` once. All numbers in this file predate the change. PR #3 re-ran the peered
-   path with the new walk and found allocation and GREF peaks unchanged (see its FINDINGS).
+   path with the new walk and found allocation and GREF peaks unchanged (see its FINDINGS). That re-run still read each
+   document's 16 top-level fields through the binding's `JavaDictionary`, whose enumerator also walks `keySet()` and
+   calls `get()` per key; the top-level map now goes through the same single `entrySet()` walk, and no run here or in
+   PR #3 has measured that yet.
 8. **Seeding is not free either.** Building 400-document write batches through the peered binding drove the runtime
    to its emergency GC threshold (`monodroid-gc: 46080 outstanding GREFs. Performing a full GC!`, 3 times while seeding
    1000 docs). Writes are out of scope, but a peered write path also gets close to ART's 51,200 limit. The summaries'

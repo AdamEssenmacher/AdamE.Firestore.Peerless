@@ -114,7 +114,8 @@ adb -s "$serial" install -r "$apk"
 adb -s "$serial" shell am force-stop "$package"
 adb -s "$serial" shell rm -f "$files/peered-samples.csv" "$files/peered-settled.csv" "$files/peered-run.txt"
 # Start each run from an empty emulator database.
-curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
+curl -fsS -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null \
+  || { echo "Could not clear the Firestore emulator database on port $port." >&2; exit 1; }
 # The app reads ART's JNI reference tables through a hidden API (dalvik.system.VMDebug). API 36 Google APIs images
 # allow it already; this keeps it working on stricter images. It changes the emulator's (or device's) settings, not
 # the host's, and is restored on exit.
