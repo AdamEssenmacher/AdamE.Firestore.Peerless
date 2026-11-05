@@ -104,9 +104,10 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   frameworks as step 4.
 - **The C API** (`ios/PeerlessShim/include/PeerlessShim.h`; every symbol is prefixed `adame_peerless_` and every
   Objective-C class `AdamEPeerless`, so neither collides with an app's own):
-  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error)` and `adame_peerless_listen_document(...)`.
-    The frame callback receives the context, bytes, length and an optional timing pointer. Timing travels with the
-    frame so it is available even if the callback runs before the listener handle is returned. The error callback
+  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error, timed, error, error_capacity)` and
+    `adame_peerless_listen_document(...)`. The frame callback receives the context, bytes, length and a timing
+    pointer, which is non-NULL only when `timed` is nonzero. Timing travels with the frame so it is available even if
+    the callback runs before the listener handle is returned. The error callback
     carries the code and a UTF-8 message, with code −1 when the shim could not encode a snapshot.
   - `adame_peerless_listener_remove(listener, release)` stops the listener, safe from any thread, with the same
     contract as Android's .NET listener:

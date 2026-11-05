@@ -134,13 +134,15 @@ static void FirstFrameTimingDoesNotRequireTheListenerHandle(void) {
     uint64_t after = adame_peerless_now_nanos();
     adame_peerless_frame_timing timing = probe.firstFrameTiming;
     uint64_t cpuAfter = adame_peerless_thread_cpu_nanos();
-    BOOL ok = probe.listener == NULL && probe.frames == 1 && atomic_load(&probe.timedFrames) == 1
+    BOOL timed = probe.listener == NULL && probe.frames == 1 && atomic_load(&probe.timedFrames) == 1
         && timing.start_nanos >= before && timing.start_nanos <= after
         && timing.encode_nanos <= after - timing.start_nanos
         && timing.start_cpu_nanos > 0 && timing.start_cpu_nanos <= cpuAfter
         && timing.encode_cpu_nanos <= cpuAfter - timing.start_cpu_nanos
-        && timing.data_nanos <= timing.encode_nanos;
+        // Encode reads no document, so no time inside -[FIRDocumentSnapshot data] can have been counted.
+        && timing.data_nanos == 0;
     adame_peerless_listener_remove(listener, OnRelease);
+    BOOL ok = timed && probe.releases == 1 && registration.removes == 1;
     ListenerTestsRecord(ok, @"first frame carries its timing before the caller stores the listener handle",
                         Counts(&probe, registration));
 }
@@ -153,8 +155,9 @@ static void AnUntimedListenerGetsNoTiming(void) {
 
     callback(@"snapshot", nil, Encode);
     callback(@"snapshot", nil, Encode);
-    BOOL ok = probe.frames == 2 && atomic_load(&probe.timedFrames) == 0;
+    BOOL untimed = probe.frames == 2 && atomic_load(&probe.timedFrames) == 0;
     adame_peerless_listener_remove(listener, OnRelease);
+    BOOL ok = untimed && probe.releases == 1 && registration.removes == 1;
     ListenerTestsRecord(ok, @"an untimed listener's frames carry NULL timing",
                         [NSString stringWithFormat:@"%@ timedFrames=%d", Counts(&probe, registration),
                                                    atomic_load(&probe.timedFrames)]);
