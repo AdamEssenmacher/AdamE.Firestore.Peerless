@@ -25,8 +25,10 @@ embedded() { plutil -extract CFBundleShortVersionString raw "$app/Frameworks/$1.
 if [[ "$(embedded FirebaseFirestoreInternal)" != "$framework_version" || "$(embedded FirebaseCore)" != "$framework_version" ]]; then
   dotnet build "$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS" -c Release --no-incremental >/dev/null
 fi
-# The app build's shim target skips itself while the xcframework is up to date, so it may not have extracted them.
-[[ -f "$headers/.complete" ]] || "$root/ios/build-shim.sh" >/dev/null
+# Always, after the app build: the app build's shim target skips itself while the xcframework is up to date (so it may
+# not have extracted the headers), and this checks that the shipped library still builds (-Wextra, the device slice,
+# no ADAME_PEERLESS_TESTING), which the test's own compile below does not.
+"$root/ios/build-shim.sh" >/dev/null
 [[ -d "$headers/FirebaseFirestoreInternal.xcframework" ]] || { echo "No extracted Firebase $version in $out (build-shim.sh failed?)" >&2; exit 1; }
 slice=ios-arm64_x86_64-simulator
 sysroot="$(xcrun --sdk iphonesimulator --show-sdk-path)"
