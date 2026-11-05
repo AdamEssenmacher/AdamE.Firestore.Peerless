@@ -28,6 +28,15 @@ public static class SnapshotDecoder
     [ThreadStatic]
     private static Scratch? cachedScratch;
 
+    // FNV-1a from a seeded offset basis. Internal so the tests can check that their crafted keys really collide.
+    internal static uint KeyHash(ReadOnlySpan<byte> bytes, uint seed)
+    {
+        uint hash = 2166136261 ^ seed;
+        foreach (byte value in bytes)
+            hash = (hash ^ value) * 16777619;
+        return hash ^ (hash >> 15);
+    }
+
     /// <summary>Decodes a query or document snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or uses an unsupported version.</exception>
     public static FirestoreSnapshot Decode(ReadOnlySpan<byte> frame)
@@ -372,7 +381,6 @@ public static class SnapshotDecoder
         private const int KeyCacheSize = 256;
         private const int KeyCacheLimit = KeyCacheSize / 2;
         private const int MaxProbes = 8;
-        private const int MaxDuplicateKeyProbes = 32;
 
         // Random per process, so the cache's slots can't be predicted by whoever writes the data.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
@@ -393,7 +401,9 @@ public static class SnapshotDecoder
 
 
         // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
-        // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch.
+        // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch. A key
+        // that probes past 4 * log2(table size) slots (keys crafted to collide; random hashes stay well under it) switches
+        // the whole map to an O(n log n) sort of the key indexes, so the check never goes quadratic.
         public bool HasDuplicateKey(string[] names, int hashBottom, out string? duplicate)
         {
             ReadOnlySpan<uint> keyHashes = hashes.AsSpan(hashBottom, names.Length);
@@ -419,6 +429,7 @@ public static class SnapshotDecoder
             if (seen.Length < size)
                 seen = new int[size];
             int mask = size - 1;
+            int maxProbes = 4 * BitOperations.Log2((uint)size);
             try
             {
                 for (int index = 0; index < names.Length; index++)
@@ -434,8 +445,8 @@ public static class SnapshotDecoder
                             return true;
                         }
 
-                        if (++probes == MaxDuplicateKeyProbes)
-                            return HasDuplicateKeyBySorting(names, out duplicate);
+                        if (++probes == maxProbes)
+                            return HasDuplicateKeyBySorting(names, hashBottom, out duplicate);
 
                         slot = (slot + 1) & mask;
                     }
@@ -452,14 +463,16 @@ public static class SnapshotDecoder
         }
 
         // Reuse the table as a sortable list of indexes. Collisions cannot force quadratic probing, and sorting
-        // the indexes preserves the decoded map's key order and its correspondence with the values.
-        private bool HasDuplicateKeyBySorting(string[] names, out string? duplicate)
+        // the indexes preserves the decoded map's key order and its correspondence with the values. Equal keys have
+        // equal hashes, so ordering by hash first still puts duplicates next to each other while most comparisons
+        // stay integer ones.
+        private bool HasDuplicateKeyBySorting(string[] names, int hashBottom, out string? duplicate)
         {
             Span<int> indexes = seen.AsSpan(0, names.Length);
             for (int index = 0; index < indexes.Length; index++)
                 indexes[index] = index;
 
-            indexes.Sort(new OrdinalKeyIndexComparer(names));
+            indexes.Sort(new KeyIndexComparer(names, hashes, hashBottom));
             for (int index = 1; index < indexes.Length; index++)
             {
                 string key = names[indexes[index]];
@@ -474,19 +487,20 @@ public static class SnapshotDecoder
             return false;
         }
 
-        private readonly struct OrdinalKeyIndexComparer(string[] names) : IComparer<int>
+        private readonly struct KeyIndexComparer(string[] names, uint[] hashes, int hashBottom) : IComparer<int>
         {
-            public int Compare(int left, int right) => string.CompareOrdinal(names[left], names[right]);
+            public int Compare(int left, int right)
+            {
+                int byHash = hashes[hashBottom + left].CompareTo(hashes[hashBottom + right]);
+                return byHash != 0 ? byHash : string.CompareOrdinal(names[left], names[right]);
+            }
         }
 
         // Field names, decoded once per frame. The probe length is capped, so even keys crafted to collide cost a
         // bounded number of comparisons each; past the cap a key is simply decoded without caching.
         public string Key(ReadOnlySpan<byte> bytes)
         {
-            uint hash = 2166136261 ^ Seed;
-            foreach (byte value in bytes)
-                hash = (hash ^ value) * 16777619;
-            hash ^= hash >> 15;
+            uint hash = KeyHash(bytes, Seed);
 
             if (HashTop == hashes.Length)
                 Array.Resize(ref hashes, hashes.Length * 2);

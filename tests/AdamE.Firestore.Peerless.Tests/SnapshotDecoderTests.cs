@@ -1,3 +1,4 @@
+using System.Text;
 using Xunit;
 
 namespace AdamE.Firestore.Peerless.Tests;
@@ -340,6 +341,33 @@ public sealed class SnapshotDecoderTests
             SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[^1]])));
 
         Assert.Contains("appears twice", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_crafted_map_keys_collide_for_any_seed()
+    {
+        // The two tests above only reach the sorting fallback while these keys share one hash; if the hash changes so
+        // they no longer do, this fails instead of the fallback silently losing its coverage.
+        string[] keys = CollidingKeys();
+        var random = new Random(7);
+        for (int trial = 0; trial < 100; trial++)
+        {
+            uint seed = (uint)random.Next() | 1;
+            uint expected = SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(keys[0]), seed);
+            Assert.All(keys, key => Assert.Equal(expected, SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(key), seed)));
+        }
+    }
+
+    [Fact]
+    public void A_large_map_with_random_keys_and_one_late_duplicate_is_rejected()
+    {
+        var random = new Random(11);
+        string[] keys = [.. Enumerable.Range(0, 40_000).Select(index => $"{index}-{random.Next():x8}")];
+
+        var error = Assert.Throws<PeerlessFormatException>(() =>
+            SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[12_345]])));
+
+        Assert.Contains($"\"{keys[12_345]}\" appears twice", error.Message, StringComparison.Ordinal);
     }
 
     private static string[] CollidingKeys()
