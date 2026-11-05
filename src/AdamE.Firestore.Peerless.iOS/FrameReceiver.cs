@@ -33,8 +33,9 @@ internal interface IFrameObserver
 
 /// <summary>
 /// The .NET end of one shim listener, and the <see cref="IDisposable"/> the app holds. Its concurrency contract
-/// (removal safe from any thread, first error stops, early errors deferred until after attaching, release once) is the platform-neutral
-/// <see cref="ListenerGate"/>, shared with Android and tested in the core; this class adapts it to the shim's C API.
+/// (removal safe from any thread, first error stops, early errors deferred until after attaching, release once) is
+/// the platform-neutral <see cref="ListenerGate"/>, shared with Android and tested in the core; this class adapts it to
+/// the shim's C API.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -59,10 +60,10 @@ internal sealed unsafe class FrameReceiver : IDisposable
     private readonly Action<FirestoreSnapshot> onSnapshot;
     private readonly IFrameObserver? observer;
     private nint listener; // for the timing hook only
+    private Func<DispatchQueue>? callbackQueue; // only while Start runs: the gate posts an early error from Attach
 
     private FrameReceiver(
-        NSObject target,
-        Func<NSObject, DispatchQueue> callbackQueue,
+        Func<DispatchQueue> callbackQueue,
         FrameDecoder decode,
         Action<FirestoreSnapshot> onSnapshot,
         Action<Exception> onError,
@@ -71,22 +72,23 @@ internal sealed unsafe class FrameReceiver : IDisposable
         this.decode = decode;
         this.onSnapshot = onSnapshot;
         this.observer = observer;
-        gate = new ListenerGate(
-            onError, action => PostEarlyError(callbackQueue(target), action), release: static () => { });
+        this.callbackQueue = callbackQueue;
+        gate = new ListenerGate(onError, PostEarlyError, release: static () => { });
     }
 
     // callbackQueue returns the queue Firestore delivers target's callbacks on. It is called only when an early error
-    // is posted, after the native listen has started the client (which fixes its settings).
+    // is posted, after the native listen has started the client (which fixes its settings), and dropped once Start
+    // returns, so a live listener doesn't keep target alive through it.
     public static FrameReceiver Start(
         NSObject target,
-        Func<NSObject, DispatchQueue> callbackQueue,
+        Func<DispatchQueue> callbackQueue,
         FrameDecoder decode,
         Action<FirestoreSnapshot> onSnapshot,
         Action<Exception> onError,
         IFrameObserver? observer,
         bool isDocument)
     {
-        var receiver = new FrameReceiver(target, callbackQueue, decode, onSnapshot, onError, observer);
+        var receiver = new FrameReceiver(callbackQueue, decode, onSnapshot, onError, observer);
         GCHandle self = GCHandle.Alloc(receiver);
         nint context = GCHandle.ToIntPtr(self);
         int timed = observer is null ? 0 : 1; // production frames take no clock reads
@@ -101,6 +103,7 @@ internal sealed unsafe class FrameReceiver : IDisposable
         {
             // Nothing was registered and the shim kept no reference to the context.
             self.Free();
+            receiver.callbackQueue = null;
             string reason = Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(error));
             throw new InvalidOperationException(
                 $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}");
@@ -109,6 +112,7 @@ internal sealed unsafe class FrameReceiver : IDisposable
         Volatile.Write(ref receiver.listener, created);
         // A first callback on another queue may already have failed: Attach then removes it and posts the error.
         receiver.gate.Attach(() => Native.Remove(created, &OnRelease));
+        receiver.callbackQueue = null; // the gate posts only from Attach
         return receiver;
     }
 
@@ -182,8 +186,10 @@ internal sealed unsafe class FrameReceiver : IDisposable
     // An error that arrived before Listen returned. It goes through the main queue first, so a caller on the main
     // thread (or on a serial callback queue) has assigned its handle before onError runs, and then on to Firestore's
     // callback queue, where the app expects its callbacks.
-    private static void PostEarlyError(DispatchQueue callbackQueue, Action action)
+    private void PostEarlyError(Action action)
     {
+        DispatchQueue callbackQueue = (this.callbackQueue ?? throw new InvalidOperationException(
+            "An early error is posted only from Attach, inside Start."))();
         DispatchQueue main = DispatchQueue.MainQueue;
         if (callbackQueue.Handle == main.Handle)
             main.DispatchAsync(action);

@@ -170,7 +170,7 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             query,
-            static target => CallbackQueue(((Query)target).Firestore),
+            CallbackQueue(query),
             static frame => SnapshotDecoder.DecodeQuery(frame),
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
@@ -190,13 +190,20 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             document,
-            static target => CallbackQueue(((DocumentReference)target).Firestore),
+            CallbackQueue(document),
             static frame => SnapshotDecoder.DecodeDocument(frame),
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer,
             isDocument: true);
     }
+
+    // Built in their own methods, not as lambdas inside Listen: there they would share a closure with onSnapshot's
+    // wrapper and keep the target alive for the listener's whole life.
+    private static Func<DispatchQueue> CallbackQueue(Query query) => () => CallbackQueue(query.Firestore);
+
+    private static Func<DispatchQueue> CallbackQueue(DocumentReference document) =>
+        () => CallbackQueue(document.Firestore);
 
     // -settings returns a copy; dispose its peer rather than leave it to the finalizer.
     private static DispatchQueue CallbackQueue(Firebase.CloudFirestore.Firestore firestore)
