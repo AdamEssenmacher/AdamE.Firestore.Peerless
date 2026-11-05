@@ -140,7 +140,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         bool singleDocument)
     {
         Report($"{phase} {size}: listening");
-        var sampler = new SnapshotSampler();
+        // Disposed on return, after registration.Remove() has muted the listener (Remove mutes it synchronously, so no
+        // later event reaches it), so its GREF is gone before the after-remove settle.
+        using var sampler = new SnapshotSampler();
         IListenerRegistration registration;
         using (CollectionReference target = listening.Collection(collection))
         {
