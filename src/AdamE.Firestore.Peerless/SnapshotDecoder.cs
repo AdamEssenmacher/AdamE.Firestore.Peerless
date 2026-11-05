@@ -372,6 +372,7 @@ public static class SnapshotDecoder
         private const int KeyCacheSize = 256;
         private const int KeyCacheLimit = KeyCacheSize / 2;
         private const int MaxProbes = 8;
+        private const int MaxDuplicateKeyProbes = 32;
 
         // Random per process, so the cache's slots can't be predicted by whoever writes the data.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
@@ -393,7 +394,7 @@ public static class SnapshotDecoder
 
         // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
         // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch.
-        public bool HasDuplicateKey(ReadOnlySpan<string> names, int hashBottom, out string? duplicate)
+        public bool HasDuplicateKey(string[] names, int hashBottom, out string? duplicate)
         {
             ReadOnlySpan<uint> keyHashes = hashes.AsSpan(hashBottom, names.Length);
             duplicate = null;
@@ -423,6 +424,7 @@ public static class SnapshotDecoder
                 for (int index = 0; index < names.Length; index++)
                 {
                     int slot = (int)keyHashes[index] & mask;
+                    int probes = 0;
                     while (seen[slot] is var occupied and > 0)
                     {
                         int other = occupied - 1;
@@ -431,6 +433,9 @@ public static class SnapshotDecoder
                             duplicate = names[index];
                             return true;
                         }
+
+                        if (++probes == MaxDuplicateKeyProbes)
+                            return HasDuplicateKeyBySorting(names, out duplicate);
 
                         slot = (slot + 1) & mask;
                     }
@@ -444,6 +449,34 @@ public static class SnapshotDecoder
             {
                 Array.Clear(seen, 0, size);
             }
+        }
+
+        // Reuse the table as a sortable list of indexes. Collisions cannot force quadratic probing, and sorting
+        // the indexes preserves the decoded map's key order and its correspondence with the values.
+        private bool HasDuplicateKeyBySorting(string[] names, out string? duplicate)
+        {
+            Span<int> indexes = seen.AsSpan(0, names.Length);
+            for (int index = 0; index < indexes.Length; index++)
+                indexes[index] = index;
+
+            indexes.Sort(new OrdinalKeyIndexComparer(names));
+            for (int index = 1; index < indexes.Length; index++)
+            {
+                string key = names[indexes[index]];
+                if (string.Equals(key, names[indexes[index - 1]], StringComparison.Ordinal))
+                {
+                    duplicate = key;
+                    return true;
+                }
+            }
+
+            duplicate = null;
+            return false;
+        }
+
+        private readonly struct OrdinalKeyIndexComparer(string[] names) : IComparer<int>
+        {
+            public int Compare(int left, int right) => string.CompareOrdinal(names[left], names[right]);
         }
 
         // Field names, decoded once per frame. The probe length is capped, so even keys crafted to collide cost a

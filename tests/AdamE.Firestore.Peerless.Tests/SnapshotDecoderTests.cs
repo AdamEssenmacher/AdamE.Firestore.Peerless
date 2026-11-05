@@ -319,6 +319,47 @@ public sealed class SnapshotDecoderTests
         Assert.Equal(1_999, decoded[$"{new string('k', 200)}-1999"].AsInteger());
     }
 
+    [Fact]
+    public void Colliding_map_keys_keep_their_wire_order_and_values()
+    {
+        string[] keys = CollidingKeys();
+
+        FirestoreMap decoded = SnapshotDecoder.DecodeDocument(CollidingMapFrame(keys)).Document.Fields["field"].AsMap();
+
+        Assert.Equal(keys, decoded.Keys);
+        for (int index = 0; index < keys.Length; index++)
+            Assert.Equal(index, decoded[keys[index]].AsInteger());
+    }
+
+    [Fact]
+    public void A_duplicate_among_colliding_map_keys_is_rejected()
+    {
+        string[] keys = CollidingKeys();
+
+        var error = Assert.Throws<PeerlessFormatException>(() =>
+            SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[^1]])));
+
+        Assert.Contains("appears twice", error.Message, StringComparison.Ordinal);
+    }
+
+    private static string[] CollidingKeys()
+    {
+        // These blocks of U+0000 and U+0001 have the same FNV-1a transition for every initial hash state. Each
+        // combination is a distinct ordinal string that hashes to the same value even when the decoder's seed changes.
+        string left = new("00001111111010011101011".Select(static bit => (char)(bit - '0')).ToArray());
+        string right = new("10001001100000111101010".Select(static bit => (char)(bit - '0')).ToArray());
+        const int Blocks = 6;
+        return [.. Enumerable.Range(0, 1 << Blocks).Select(index =>
+            string.Concat(Enumerable.Range(0, Blocks).Select(bit => (index & (1 << bit)) == 0 ? left : right)))];
+    }
+
+    private static byte[] CollidingMapFrame(string[] keys) => DocumentWith(raw =>
+    {
+        raw.Byte(Wire.Tag.Map).Varint(keys.Length);
+        for (int index = 0; index < keys.Length; index++)
+            raw.String(keys[index]).Byte(Wire.Tag.Integer).Int64(index);
+    });
+
     [Theory]
     [InlineData("/")]
     [InlineData("a")]
