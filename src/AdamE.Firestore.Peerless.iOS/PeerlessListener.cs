@@ -113,8 +113,9 @@ public sealed class FirestoreListenException : Exception
 /// </para>
 /// <para>
 /// <b>Registration timing.</b> A callback on another thread can run before the calling code assigns the returned
-/// handle. An error that arrives before the native registration is attached is held and posted to Firestore's
-/// callback queue after attachment.
+/// handle. An error that arrives before the native registration is attached is held, then posted to the main queue and
+/// from there to Firestore's callback queue. So a caller on the main thread, or on a serial callback queue, has its
+/// handle before that <c>onError</c> runs; a caller on any other thread may not.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> Until it is disposed or fails, a listener is rooted: the shim holds a GC handle to its callbacks, so
@@ -169,7 +170,7 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             query,
-            query.Handle == IntPtr.Zero ? DispatchQueue.MainQueue : query.Firestore.Settings.DispatchQueue,
+            static target => CallbackQueue(((Query)target).Firestore),
             static frame => SnapshotDecoder.DecodeQuery(frame),
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
@@ -189,12 +190,19 @@ public static class PeerlessListener
         EnsureCompatibleFirebase();
         return FrameReceiver.Start(
             document,
-            document.Handle == IntPtr.Zero ? DispatchQueue.MainQueue : document.Firestore.Settings.DispatchQueue,
+            static target => CallbackQueue(((DocumentReference)target).Firestore),
             static frame => SnapshotDecoder.DecodeDocument(frame),
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer,
             isDocument: true);
+    }
+
+    // -settings returns a copy; dispose its peer rather than leave it to the finalizer.
+    private static DispatchQueue CallbackQueue(Firebase.CloudFirestore.Firestore firestore)
+    {
+        using FirestoreSettings settings = firestore.Settings;
+        return settings.DispatchQueue;
     }
 
     /// <summary>The Firebase iOS SDK version the shim was compiled against.</summary>

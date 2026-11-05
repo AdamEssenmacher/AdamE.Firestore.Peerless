@@ -11,7 +11,8 @@ namespace AdamE.Firestore.Peerless;
 /// is the last.</item>
 /// <item>The first failure closes the listener, removes the native registration and reports the error, once. A failure
 /// before <see cref="Attach"/> (the native listener fired before <c>Listen</c> returned) is held and delivered after
-/// attaching, through the platform's callback scheduler, so the app's handle exists by then.</item>
+/// attaching, through the platform's callback scheduler, which decides when the app's handle can be counted on (see
+/// each platform's <c>PeerlessListener</c> remarks).</item>
 /// <item>The release action (for example, freeing a native buffer) runs exactly once, after closing, and never while
 /// a callback is running.</item>
 /// </list>
