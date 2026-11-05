@@ -53,7 +53,10 @@ returned task, the task's completion listener, and the status line's `Handler` a
 phase shows it: the count at callback entry climbs by 40 per update while each callback adds 34, so by the 12th update
 about 72 of its 481 peak over settled are harness references (about 15%; a smaller share at larger sizes). The code
 now disposes those peers as soon as they are used and reuses one `Handler` and `Runnable`; no committed run has
-measured that change yet. The cadence: a settle before listening, after the initial snapshot, and after every
+measured that change yet. The committed callbacks also include one harness `SnapshotMetadata` peer and JNI call each
+(the from-cache flag was read inside the measured window), and their *after-remove* counts include the sampler,
+listener registration and query reference peers. The code now reads the metadata after the window and disposes it,
+and releases those peers before the after-remove settle; no committed run has measured either change yet. The cadence: a settle before listening, after the initial snapshot, and after every
 5th update (every 12th in the single-document phase; every update in warmup). Between two settles, the count at
 callback entry climbs (1000 docs: from 4,120 to 9,188 over five updates) and drops again at the next settle. That is
 why *update, after a settle* rows show a lower peak over settled than the other updates. An earlier version of this

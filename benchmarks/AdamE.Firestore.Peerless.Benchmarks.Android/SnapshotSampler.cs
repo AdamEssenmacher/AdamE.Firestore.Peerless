@@ -53,15 +53,11 @@ internal sealed class SnapshotSampler : Java.Lang.Object, IEventListener
             {
                 case QuerySnapshot query:
                     List<PlainDocument> list = PlainValues.Query(query, ref peak);
-                    fromCache = query.Metadata.IsFromCache;
                     documents = list.Count;
                     converted = list;
                     break;
                 case DocumentSnapshot document:
-                    PlainDocument single = PlainValues.Document(document);
-                    fromCache = document.Metadata.IsFromCache;
-                    documents = 1;
-                    converted = single;
+                    converted = PlainValues.Document(document);
                     break;
                 case null:
                     break;
@@ -77,7 +73,23 @@ internal sealed class SnapshotSampler : Java.Lang.Object, IEventListener
 
         ProbeReading after = ProbeReading.Take();
 
-        // Bookkeeping outside the measured window: counting values proves the conversion was complete.
+        // Bookkeeping outside the measured window. The metadata and Exists reads are the harness's own JNI calls, and
+        // the metadata peer is released straight away, so neither counts as conversion cost.
+        try
+        {
+            using SnapshotMetadata? metadata = (value as QuerySnapshot)?.Metadata ?? (value as DocumentSnapshot)?.Metadata;
+            fromCache = metadata?.IsFromCache ?? false;
+            // A missing document (for example an initial snapshot from an empty cache) is not the document the phase
+            // waits for, so it counts as no documents and is skipped as partial.
+            if (value is DocumentSnapshot single && converted is not null)
+                documents = single.Exists() ? 1 : 0;
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception.ToString();
+        }
+
+        // Counting values proves the conversion was complete.
         Latest = converted ?? Latest;
         int values = converted switch
         {

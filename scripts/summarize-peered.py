@@ -61,9 +61,11 @@ lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().re
 def after_settle(row):
     seq = int(row["seq"])
     return seq >= 1 and any(k == seq - 1 for k, _ in settles.get((row["phase"], int(row["size"])), []))
+# Partial snapshots: kind "partial" under the phase they came from (older runs wrote them all as phase "skipped").
+def is_partial(row): return row["phase"] == "skipped" or row["kind"] == "partial"
 groups = {}
 for row in rows:
-    if row["phase"] == "skipped": continue
+    if is_partial(row): continue
     kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
     groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
 def rng(values, scale=1.0):
@@ -80,11 +82,15 @@ for (phase, size, kind), group in groups.items():
         rng([peak_over_settled(r) for r in group]),
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
-skipped = [r for r in rows if r["phase"] == "skipped"]
+skipped = [r for r in rows if is_partial(r)]
+skipped_by = {}
+for r in skipped: skipped_by[f"{r['phase']} {r['size']}"] = skipped_by.get(f"{r['phase']} {r['size']}", 0) + 1
 previous = (run / "summary.md").read_text() if (run / "summary.md").exists() else ""
 have_logcat = (run / "logcat.txt").exists()
-forced = [l.split("monodroid-gc: ", 1)[1].strip() for l in ((run / "logcat.txt").read_text(errors="replace").splitlines()
-          if have_logcat else []) if "outstanding GREFs" in l]
+# Read once: with three 16 MB buffers the file can be tens of MB.
+logcat = (run / "logcat.txt").read_text(errors="replace").splitlines() if have_logcat else []
+# The message after the tag when the line has the usual "monodroid-gc: " form, otherwise the whole line.
+forced = [l.partition("monodroid-gc: ")[2].strip() or l.strip() for l in logcat if "outstanding GREFs" in l]
 if have_logcat:
     lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`, whole run): {len(forced)}"
               + (f" (e.g. \"{forced[0]}\")" if forced else "")]
@@ -98,13 +104,13 @@ host = (run / "host.txt").read_text(errors="replace").splitlines() if (run / "ho
 incomplete = next((l.strip() for l in host if l.startswith("logcat may be incomplete")), None)
 if incomplete:
     lines += ["", f"**Warning:** {incomplete}, so anything this summary takes from logcat (the emergency-GC count, the ART tables) may be too low or missing."]
-lines += ["", f"Partial snapshots skipped: {len(skipped)}", "", "## Settled references (after forced .NET + Java GC)", "",
+lines += ["", f"Partial snapshots skipped: {len(skipped)}"
+          + (" (" + ", ".join(f"{k}: {n}" for k, n in skipped_by.items()) + ")" if skipped else ""), "", "## Settled references (after forced .NET + Java GC)", "",
           "| phase | docs | point | GREF | weak GREF | surfaced peers |", "|---|---:|---|---:|---:|---:|"]
 lines += [f"| {s['phase']} | {s['size']} | {s['point']} | {s['gref']} | {s['wgref']} | {s['surfaced_peers']} |" for s in settled]
 # ART's own JNI tables, dumped after each "ART_GREF_DUMP <phase>,<size>,<point>" marker. Ground truth: the .NET-side
 # counter (gref column above) does not see every global reference under NativeAOT.
 import re
-logcat = (run / "logcat.txt").read_text(errors="replace").splitlines() if (run / "logcat.txt").exists() else []
 dumps, current, table, summary = [], None, None, []
 for line in logcat:
     if "ART_GREF_DUMP " in line and "unavailable" not in line:
