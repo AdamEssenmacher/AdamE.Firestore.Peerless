@@ -2,7 +2,10 @@ using System.Runtime.InteropServices;
 
 namespace AdamE.Firestore.Peerless.iOS;
 
-/// <summary>The measurement the shim records for the frame being delivered (ios/PeerlessShim/include/PeerlessShim.h).</summary>
+/// <summary>
+/// The measurement the shim delivers with a timed frame (ios/PeerlessShim/include/PeerlessShim.h). The callback receives
+/// it as a <c>const</c> pointer into the shim's stack, valid only during the call: copy it, never write through it.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct FrameTiming
 {

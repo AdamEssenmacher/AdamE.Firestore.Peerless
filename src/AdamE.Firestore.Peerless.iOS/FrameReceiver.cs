@@ -132,19 +132,30 @@ internal sealed unsafe class FrameReceiver : IDisposable
             handle.Free();
     }
 
-    private void Deliver(nint data, nuint length, FrameTiming* timing) => gate.Run(() =>
+    private void Deliver(nint data, nuint length, FrameTiming* timing)
     {
-        // The shim supplies callback-local timing whenever this listener requests it (observer set), and NULL otherwise.
-        if (observer is not null && timing is not null)
+        // The shim supplies timing whenever this listener requests it (observer set), and NULL otherwise. It points at
+        // the shim's stack and is read-only, so it is copied here, before anything can defer or write through it.
+        FrameTiming? frameTiming = timing is null ? null : *timing;
+        _ = gate.Run(() => Deliver(data, length, frameTiming));
+    }
+
+    private void Deliver(nint data, nuint length, FrameTiming? frameTiming)
+    {
+        // Completed is reported only for a frame whose Arrived was, so the observer never pairs one frame's arrival
+        // with another's completion.
+        bool arrived = false;
+        if (observer is not null && frameTiming is { } timing)
         {
             observer.Arrived(new FrameArrival(
-                (long)timing->StartNanos,
-                (long)timing->StartCpuNanos,
-                (long)timing->EncodeNanos,
-                (long)timing->EncodeCpuNanos,
-                (long)timing->DataNanos,
+                (long)timing.StartNanos,
+                (long)timing.StartCpuNanos,
+                (long)timing.EncodeNanos,
+                (long)timing.EncodeCpuNanos,
+                (long)timing.DataNanos,
                 length > int.MaxValue ? -1 : (int)length,
                 PeerlessListener.NowNanoseconds()));
+            arrived = true;
         }
 
         // Only decoding is guarded: a PeerlessFormatException thrown by the app's own callback is the app's exception,
@@ -163,8 +174,9 @@ internal sealed unsafe class FrameReceiver : IDisposable
         }
 
         onSnapshot(snapshot);
-        observer?.Completed();
-    });
+        if (arrived)
+            observer!.Completed();
+    }
 
     // An error that arrived before Listen returned is delivered from here, after the app has its handle.
     private static void PostToMainQueue(Action action) => CoreFoundation.DispatchQueue.MainQueue.DispatchAsync(action);

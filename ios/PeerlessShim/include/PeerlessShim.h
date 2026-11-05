@@ -57,8 +57,8 @@ typedef void (*adame_peerless_release_callback)(void *context);
 /// Listens to a FIRQuery (passed as its Objective-C object pointer). Returns the listener, or NULL if `query` isn't
 /// a FIRQuery. Callbacks run on the Firestore instance's callback queue (the main queue unless the app chose
 /// another), with metadata-only changes excluded, as addSnapshotListener: does by default. With `timed` nonzero the
-/// listener records adame_peerless_frame_timing for each frame (a few clock reads, plus two per document); production
-/// listeners pass 0 and take no clock reads.
+/// listener measures each frame (a few clock reads, plus two per document) and passes the adame_peerless_frame_timing
+/// as on_frame's `timing` argument; production listeners pass 0, take no clock reads, and receive `timing` == NULL.
 /// If Firestore refuses the query (it raises for, e.g., limit(toLast:) without an orderBy, or a terminated instance),
 /// returns NULL and writes the reason, UTF-8 and NUL-terminated, into `error` (up to `error_capacity` bytes). Nothing
 /// is left registered and the context is not referenced.
