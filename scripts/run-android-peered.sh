@@ -35,7 +35,9 @@ is_emulator() {
   [ "$(adb -s "$serial" shell getprop ro.boot.qemu 2>/dev/null | tr -d '\r')" = "1" ] && return 0
   [ "$(adb -s "$serial" shell getprop ro.kernel.qemu 2>/dev/null | tr -d '\r')" = "1" ]
 }
+on_emulator=0
 if is_emulator; then
+  on_emulator=1
   app_host="10.0.2.2" # the emulator's alias for the host's loopback
 else
   if [ "${ALLOW_DEVICE:-0}" != "1" ]; then
@@ -49,10 +51,25 @@ fi
 # the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
 # `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
-# count is accepted too. Only resize the main buffer when its original size can be read and restored.
-previous_log_size="$(adb -s "$serial" logcat -g -b main 2>/dev/null \
-  | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
-log_resized=0
+# count is accepted too. Each buffer that logcat.txt is read from (main, system, crash) is resized and restored on its
+# own, since their sizes can differ. A buffer whose size can't be read is still enlarged on an emulator (disposable,
+# so leaving it enlarged costs nothing) but left alone on a device, where it couldn't be put back.
+log_buffers=(main system crash)
+previous_log_sizes=()
+log_resized=()
+for buffer in "${log_buffers[@]}"; do
+  size="$(adb -s "$serial" logcat -g -b "$buffer" 2>/dev/null \
+    | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
+  previous_log_sizes+=("$size")
+  log_resized+=(0)
+  if [ -z "$size" ]; then
+    if [ "$on_emulator" = "1" ]; then
+      echo "Could not read $serial's $buffer logcat buffer size; it will be enlarged but not restored afterwards." >&2
+    else
+      echo "Could not read $serial's $buffer logcat buffer size; it won't be enlarged, so its entries (for main, the long ART dumps) may be cut off." >&2
+    fi
+  fi
+done
 reversed=0
 cleanup() {
   if [ "$previous_policy" = "null" ] || [ -z "$previous_policy" ]; then
@@ -63,9 +80,11 @@ cleanup() {
   if [ "$reversed" = "1" ]; then
     adb -s "$serial" reverse --remove "tcp:$port" >/dev/null 2>&1 || true
   fi
-  if [ "$log_resized" = "1" ] && [ -n "$previous_log_size" ]; then
-    adb -s "$serial" logcat -b main -G "$previous_log_size" >/dev/null 2>&1 || true
-  fi
+  for i in "${!log_buffers[@]}"; do
+    if [ "${log_resized[$i]}" = "1" ] && [ -n "${previous_log_sizes[$i]}" ]; then
+      adb -s "$serial" logcat -b "${log_buffers[$i]}" -G "${previous_log_sizes[$i]}" >/dev/null 2>&1 || true
+    fi
+  done
 }
 trap cleanup EXIT
 
@@ -103,13 +122,14 @@ if [ "$app_host" = "127.0.0.1" ]; then
   fi
 fi
 # ART's reference-table dumps are long: a bigger ring buffer keeps them from being overwritten before they're pulled.
-if [ -z "$previous_log_size" ]; then
-  echo "Could not read $serial's main logcat buffer size; long ART dumps may be cut off." >&2
-elif adb -s "$serial" logcat -b main -G 16M; then
-  log_resized=1
-else
-  echo "Could not enlarge the main logcat buffer; long ART dumps may be cut off." >&2
-fi
+for i in "${!log_buffers[@]}"; do
+  if [ -z "${previous_log_sizes[$i]}" ] && [ "$on_emulator" != "1" ]; then continue; fi
+  if adb -s "$serial" logcat -b "${log_buffers[$i]}" -G 16M; then
+    log_resized[$i]=1
+  else
+    echo "Could not enlarge the ${log_buffers[$i]} logcat buffer; its entries may be cut off." >&2
+  fi
+done
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
 adb -s "$serial" shell am start -W -n "$activity" --es host "$app_host" --ei port "$port" "$@"

@@ -155,8 +155,9 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
   on the emulator (and warns if that fails) so it keeps working on stricter images. It restores the previous value
   when it exits, and refuses a serial that isn't an emulator unless `ALLOW_DEVICE=1` is set, because it also clears
   logcat. On a device it forwards the Firestore port with `adb reverse` and points the app at 127.0.0.1 (an emulator
-  uses 10.0.2.2), and removes the forward on exit. It also enlarges the logcat buffer to 16 MB so the ART dumps
-  survive, refuses the CI runner's ports (8080, 9099, 4400), checks through the emulator hub (4501) that the port is
+  uses 10.0.2.2), and removes the forward on exit. It also enlarges the main, system and crash logcat buffers to 16 MB
+  each so the ART dumps survive, restoring each one's size on exit (on a device, a buffer whose size it can't read is
+  left as it is, with a warning, so that run's ART dumps may be incomplete), refuses the CI runner's ports (8080, 9099, 4400), checks through the emulator hub (4501) that the port is
   really Firestore's, and exits non-zero unless the run completed and its summary was written.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
