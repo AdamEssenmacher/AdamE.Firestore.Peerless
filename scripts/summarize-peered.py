@@ -86,7 +86,7 @@ else:
 host = (run / "host.txt").read_text(errors="replace").splitlines() if (run / "host.txt").exists() else []
 incomplete = next((l.strip() for l in host if l.startswith("logcat may be incomplete")), None)
 if incomplete:
-    lines += ["", f"**Warning:** {incomplete}, so the emergency-GC count above and the ART tables below may be too low."]
+    lines += ["", f"**Warning:** {incomplete}, so anything this summary takes from logcat (the emergency-GC count, the ART tables) may be too low or missing."]
 lines += ["", f"Partial snapshots skipped: {len(skipped)}", "", "## Settled references (after forced .NET + Java GC)", "",
           "| phase | docs | point | GREF | weak GREF | surfaced peers |", "|---|---:|---|---:|---:|---:|"]
 lines += [f"| {s['phase']} | {s['size']} | {s['point']} | {s['gref']} | {s['wgref']} | {s['surfaced_peers']} |" for s in settled]

@@ -51,8 +51,9 @@ fi
 # the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
 # `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
-# count is accepted too. Each buffer that logcat.txt is read from (main, system, crash) is resized and restored on its
-# own, since their sizes can differ. A buffer whose size can't be read is still enlarged on an emulator, and left
+# count is accepted too. The main, system and crash buffers (the ones logcat.txt's entries come from; `logcat -d` may
+# also read the kernel buffer, which is left alone) are each resized and restored on their own, since their sizes can
+# differ. A buffer whose size can't be read is still enlarged on an emulator, and left
 # enlarged afterwards (16 MB of logd memory on an AVD is harmless), but left alone on a device, where it couldn't be
 # put back. Whenever main (which holds the ART dumps and the monodroid-gc lines) isn't enlarged, host.txt notes that
 # the run's logcat may be incomplete, and summary.md repeats it.
@@ -139,8 +140,8 @@ for i in "${!log_buffers[@]}"; do
 done
 # Only main is tracked: it holds the ART dumps and monodroid-gc lines, so their counts from logcat.txt may be too low.
 # log_buffers[0] is main; it is unresized both when it was skipped above and when its -G failed.
-log_incomplete=""
-if [ "${log_resized[0]}" != "1" ]; then log_incomplete=" main"; fi
+main_not_enlarged=0
+if [ "${log_resized[0]}" != "1" ]; then main_not_enlarged=1; fi
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
 adb -s "$serial" shell am start -W -n "$activity" --es host "$app_host" --ei port "$port" "$@"
@@ -163,7 +164,7 @@ done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 {
   echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load: $(uptime)"
-  if [ -n "$log_incomplete" ]; then echo "logcat may be incomplete (buffers not enlarged:$log_incomplete)"; fi
+  if [ "$main_not_enlarged" = "1" ]; then echo "logcat may be incomplete (the main buffer was not enlarged)"; fi
 } | tee -a "$out/host.txt"
 echo "results: $out"
 if [ "$outcome" != "done" ]; then
