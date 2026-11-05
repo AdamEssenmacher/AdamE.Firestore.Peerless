@@ -162,7 +162,8 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
             listener->_onError(listener->_context, ADAME_PEERLESS_ENCODE_FAILED, failure.UTF8String);
         } else {
             adame_peerless_frame_timing timing;
-            if (listener->_timed)
+            const adame_peerless_frame_timing *timingArg = NULL; // untimed listeners get NULL
+            if (listener->_timed) {
                 timing = (adame_peerless_frame_timing){
                     .start_nanos = start,
                     .start_cpu_nanos = startCpu,
@@ -170,8 +171,9 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
                     .encode_cpu_nanos = adame_peerless_thread_cpu_nanos() - startCpu,
                     .data_nanos = listener->_writer.dataNanos,
                 };
-            listener->_onFrame(listener->_context, listener->_writer.bytes, listener->_writer.length,
-                               listener->_timed ? &timing : NULL);
+                timingArg = &timing;
+            }
+            listener->_onFrame(listener->_context, listener->_writer.bytes, listener->_writer.length, timingArg);
         }
     }
 

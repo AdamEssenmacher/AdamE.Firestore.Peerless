@@ -53,6 +53,7 @@ typedef struct Probe {
     atomic_bool removalReturned;
     int lastCode;
     adame_peerless_frame_timing firstFrameTiming;
+    atomic_int timedFrames; // frames that arrived with non-NULL timing
 } Probe;
 
 static void OnFrame(void *context, const uint8_t *data, size_t length,
@@ -64,6 +65,8 @@ static void OnFrame(void *context, const uint8_t *data, size_t length,
         atomic_fetch_add(&probe->overlaps, 1);
     if (atomic_fetch_add(&probe->frames, 1) == 0 && timing != NULL)
         probe->firstFrameTiming = *timing;
+    if (timing != NULL)
+        atomic_fetch_add(&probe->timedFrames, 1);
     switch (probe->behaviour) {
         case BehaviourSlow:
             usleep(100 * 1000);
@@ -135,6 +138,21 @@ static void FirstFrameTimingDoesNotRequireTheListenerHandle(void) {
     adame_peerless_listener_remove(listener, OnRelease);
     ListenerTestsRecord(ok, @"first frame carries its timing before the caller stores the listener handle",
                         Counts(&probe, registration));
+}
+
+static void AnUntimedListenerGetsNoTiming(void) {
+    Probe probe = {.behaviour = BehaviourCount};
+    AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
+    AdamEPeerlessTestingCallback callback = nil;
+    void *listener = Listen(&probe, OnFrame, registration, &callback);
+
+    callback(@"snapshot", nil, Encode);
+    callback(@"snapshot", nil, Encode);
+    BOOL ok = probe.frames == 2 && atomic_load(&probe.timedFrames) == 0;
+    adame_peerless_listener_remove(listener, OnRelease);
+    ListenerTestsRecord(ok, @"an untimed listener's frames carry NULL timing",
+                        [NSString stringWithFormat:@"%@ timedFrames=%d", Counts(&probe, registration),
+                                                   atomic_load(&probe.timedFrames)]);
 }
 
 static void DisposeBeforeFirstCallback(void) {
@@ -321,6 +339,7 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
 
 void RunListenerTests(void) {
     FirstFrameTimingDoesNotRequireTheListenerHandle();
+    AnUntimedListenerGetsNoTiming();
     DisposeBeforeFirstCallback();
     ErrorStopsAndReleasesAfterTheCallback();
     EncodeFailureIsCodeMinusOne();

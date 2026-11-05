@@ -32,7 +32,7 @@ extern "C" {
 
 /// Measurement of the frame being delivered. Clock: adame_peerless_now_nanos.
 typedef struct adame_peerless_frame_timing {
-    uint64_t start_nanos;       // when the Firestore callback began
+    uint64_t start_nanos;       // when the callback took the listener's lock (any wait for it isn't counted)
     uint64_t start_cpu_nanos;   // the callback thread's CPU time then
     uint64_t encode_nanos;      // wall time spent encoding
     uint64_t encode_cpu_nanos;  // thread CPU time spent encoding
