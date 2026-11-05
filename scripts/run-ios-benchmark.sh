@@ -8,6 +8,7 @@
 # Usage: scripts/run-ios-benchmark.sh <simulator-udid> [extra launch arguments, e.g. -sizes 10,100 -updates 5]
 #   FIRESTORE_PORT  the Firestore emulator's port (default 8181, as in firebase.json); the simulator shares the host's
 #                   network, so the app reaches it at 127.0.0.1:<port>
+#   The runner supplies -host and -port. Use FIRESTORE_PORT to select a different local emulator port.
 #   FIREBASE_HUB_PORT  the emulator hub's port (default 4501), used to check FIRESTORE_PORT is really Firestore's
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 #
@@ -19,6 +20,16 @@ set -euo pipefail
 udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [launch args]}"
 shift
 mode="peered"
+# Keep launch arguments from sending the app to a different database than the one this runner clears.
+for arg in "$@"; do
+  case "$arg" in
+    -host|-host=*|-port|-port=*)
+      echo "The iOS benchmark runner controls -host and -port. Set FIRESTORE_PORT to select the local emulator port." >&2
+      exit 2
+      ;;
+  esac
+done
+host="127.0.0.1"
 port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS"
@@ -31,7 +42,7 @@ case "$port" in
   8080|9099|4400) echo "Port $port belongs to another Firebase emulator setup on this machine (the CI runner's); use 8181." >&2; exit 1 ;;
 esac
 hub="${FIREBASE_HUB_PORT:-4501}"
-reported="$(curl -sf "http://127.0.0.1:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
+reported="$(curl -sf "http://$host:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
 if [ "$reported" != "$port" ]; then
   echo "The Firebase emulator hub on $hub doesn't report a Firestore emulator on $port (it reports: ${reported:-nothing}). Start it with: firebase emulators:start --only firestore --project demo-peerless" >&2
   exit 1
@@ -47,13 +58,13 @@ xcrun simctl install "$udid" "$app"
 container="$(xcrun simctl get_app_container "$udid" "$bundle" data)"
 rm -rf "$container/Library/Caches/peerless"
 # Start each run from an empty emulator database.
-curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
+curl -sf -X DELETE "http://$host:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
 
 mkdir -p "$out"
 files="$container/Library/Caches/peerless"
 load_before="$(uptime)"
 # -runFiles names the files this script watches, so even a failure to parse the other arguments lands there.
-xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -port "$port" "$@"
+xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -host "$host" -port "$port" "$@"
 
 # A simulator app is an ordinary host process, so pgrep finds it (by this simulator's path) without simctl.
 echo "Waiting for the run to finish…"
