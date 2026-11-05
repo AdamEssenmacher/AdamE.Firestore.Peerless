@@ -1,3 +1,4 @@
+using System.Text;
 using Xunit;
 
 namespace AdamE.Firestore.Peerless.Tests;
@@ -396,6 +397,74 @@ public sealed class SnapshotDecoderTests
         Assert.Equal(2_000, decoded.Count);
         Assert.Equal(1_999, decoded[$"{new string('k', 200)}-1999"].AsInteger());
     }
+
+    [Fact]
+    public void Colliding_map_keys_keep_their_wire_order_and_values()
+    {
+        string[] keys = CollidingKeys();
+
+        FirestoreMap decoded = SnapshotDecoder.DecodeDocument(CollidingMapFrame(keys)).Document.Fields["field"].AsMap();
+
+        Assert.Equal(keys, decoded.Keys);
+        for (int index = 0; index < keys.Length; index++)
+            Assert.Equal(index, decoded[keys[index]].AsInteger());
+    }
+
+    [Fact]
+    public void A_duplicate_among_colliding_map_keys_is_rejected()
+    {
+        string[] keys = CollidingKeys();
+
+        var error = Assert.Throws<PeerlessFormatException>(() =>
+            SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[^1]])));
+
+        Assert.Contains("appears twice", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_crafted_map_keys_collide_for_any_seed()
+    {
+        // The two tests above only reach the sorting fallback while these keys share one hash; if the hash changes so
+        // they no longer do, this fails instead of the fallback silently losing its coverage.
+        string[] keys = CollidingKeys();
+        var random = new Random(7);
+        for (int trial = 0; trial < 100; trial++)
+        {
+            uint seed = (uint)random.Next() | 1;
+            uint expected = SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(keys[0]), seed);
+            Assert.All(keys, key => Assert.Equal(expected, SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(key), seed)));
+        }
+    }
+
+    [Fact]
+    public void A_large_map_with_random_keys_and_one_late_duplicate_is_rejected()
+    {
+        var random = new Random(11);
+        string[] keys = [.. Enumerable.Range(0, 40_000).Select(index => $"{index}-{random.Next():x8}")];
+
+        var error = Assert.Throws<PeerlessFormatException>(() =>
+            SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[12_345]])));
+
+        Assert.Contains($"\"{keys[12_345]}\" appears twice", error.Message, StringComparison.Ordinal);
+    }
+
+    private static string[] CollidingKeys()
+    {
+        // These blocks of U+0000 and U+0001 have the same FNV-1a transition for every initial hash state. Each
+        // combination is a distinct ordinal string that hashes to the same value even when the decoder's seed changes.
+        string left = new("00001111111010011101011".Select(static bit => (char)(bit - '0')).ToArray());
+        string right = new("10001001100000111101010".Select(static bit => (char)(bit - '0')).ToArray());
+        const int Blocks = 6;
+        return [.. Enumerable.Range(0, 1 << Blocks).Select(index =>
+            string.Concat(Enumerable.Range(0, Blocks).Select(bit => (index & (1 << bit)) == 0 ? left : right)))];
+    }
+
+    private static byte[] CollidingMapFrame(string[] keys) => DocumentWith(raw =>
+    {
+        raw.Byte(Wire.Tag.Map).Varint(keys.Length);
+        for (int index = 0; index < keys.Length; index++)
+            raw.String(keys[index]).Byte(Wire.Tag.Integer).Int64(index);
+    });
 
     [Theory]
     [InlineData("/")]
