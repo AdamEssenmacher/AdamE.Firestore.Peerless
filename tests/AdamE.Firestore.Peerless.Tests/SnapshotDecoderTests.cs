@@ -37,6 +37,26 @@ public sealed class SnapshotDecoderTests
         Assert.Equal("1", snapshot.Document.Id);
     }
 
+    [Fact]
+    public void A_document_count_cannot_claim_bytes_from_the_next_section()
+    {
+        const int count = 128 * 1024;
+        byte[] frame = new TestFrameEncoder()
+            .Header(Wire.FrameKind.Query)
+            .Section(Wire.Section.Metadata, section => section.Byte(0))
+            .Section(Wire.Section.Documents, section => section.Varint(count))
+            .Section(9, section => section.Raw(new byte[2 * count]))
+            .ToArray();
+
+        _ = Record.Exception(() => SnapshotDecoder.Decode(frame)); // warm the per-thread scratch
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.IsType<PeerlessFormatException>(failure);
+        Assert.True(allocated <= FixedOverhead, $"Decoding allocated {allocated:N0} bytes for a count with no documents.");
+    }
+
     public static TheoryData<string, byte[]> MalformedFrames => new()
     {
         { "empty", [] },

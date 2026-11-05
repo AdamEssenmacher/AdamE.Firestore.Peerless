@@ -68,6 +68,7 @@ public static class SnapshotDecoder
         private readonly ReadOnlySpan<byte> frame = frame;
         private readonly Scratch scratch = scratch;
         private int position;
+        private int limit = frame.Length;
 
         // The minimum unread bytes the items declared but not yet started still need, across all open containers: one
         // per array item, two per map entry (a key length and a value tag).
@@ -103,7 +104,7 @@ public static class SnapshotDecoder
                     throw Fail("A section runs past the end of the frame.", sectionStart);
 
                 int length = (int)declared;
-                int end = position + length;
+                limit = position + length;
                 switch (id)
                 {
                     case Wire.Section.Metadata:
@@ -113,12 +114,14 @@ public static class SnapshotDecoder
                         documents = ReadDocuments(kind);
                         break;
                     default:
-                        position = end; // A section from a newer minor version.
+                        position = limit; // A section from a newer minor version.
                         break;
                 }
 
-                if (position != end)
-                    throw Fail($"Section {id} declared {length} bytes but its content used {position - (end - length)}.", sectionStart);
+                if (position != limit)
+                    throw Fail($"Section {id} declared {length} bytes but its content used {position - (limit - length)}.", sectionStart);
+
+                limit = frame.Length;
             }
 
             if (metadata is not { } snapshotMetadata)
@@ -271,10 +274,10 @@ public static class SnapshotDecoder
         // whose declared counts don't is rejected here, before anything is allocated for them.
         private void Reserve(long bytes, int start)
         {
-            if (reserved + bytes > frame.Length - position)
+            if (reserved + bytes > limit - position)
             {
                 throw Fail(string.Create(CultureInfo.InvariantCulture,
-                    $"Declared counts need at least {reserved + bytes:N0} more bytes, but only {frame.Length - position:N0} are left in the frame."), start);
+                    $"Declared counts need at least {reserved + bytes:N0} more bytes, but only {limit - position:N0} are left in the section."), start);
             }
 
             reserved += bytes;
@@ -337,8 +340,8 @@ public static class SnapshotDecoder
                 }
             }
 
-            if (value > int.MaxValue || value > (uint)(frame.Length - position) / (uint)minimumBytesEach)
-                throw Fail($"Length {value} runs past the end of the frame.", start);
+            if (value > int.MaxValue || value > (uint)(limit - position) / (uint)minimumBytesEach)
+                throw Fail($"Length {value} runs past the end of the section.", start);
             return (int)value;
         }
 
@@ -348,8 +351,8 @@ public static class SnapshotDecoder
 
         private ReadOnlySpan<byte> Take(int count)
         {
-            if (count > frame.Length - position)
-                throw Fail("The frame ends in the middle of a value.");
+            if (count > limit - position)
+                throw Fail("There are not enough bytes left to read the value.");
             ReadOnlySpan<byte> taken = frame.Slice(position, count);
             position += count;
             return taken;
