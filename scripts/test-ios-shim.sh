@@ -19,8 +19,10 @@ headers="$out/firebase-$version"
 
 # Builds the app only when its embedded frameworks are missing or of another Firebase version. Nonincremental, because
 # an incremental build reuses the frameworks it extracted for the previous package version.
+# A framework's short version has three parts, so a package's fourth (revision) part, as in 12.5.0.4, is left out.
+framework_version="$(cut -d. -f1-3 <<<"$version")"
 embedded() { plutil -extract CFBundleShortVersionString raw "$app/Frameworks/$1.framework/Info.plist" 2>/dev/null || true; }
-if [[ "$(embedded FirebaseFirestoreInternal)" != "$version" || "$(embedded FirebaseCore)" != "$version" ]]; then
+if [[ "$(embedded FirebaseFirestoreInternal)" != "$framework_version" || "$(embedded FirebaseCore)" != "$framework_version" ]]; then
   dotnet build "$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS" -c Release --no-incremental >/dev/null
 fi
 # The app build's shim target skips itself while the xcframework is up to date, so it may not have extracted them.
