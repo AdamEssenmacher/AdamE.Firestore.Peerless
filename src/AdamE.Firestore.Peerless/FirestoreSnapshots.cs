@@ -71,15 +71,32 @@ public abstract class FirestoreSnapshot
 public sealed class FirestoreQuerySnapshot : FirestoreSnapshot
 {
     /// <summary>Creates a query snapshot from <paramref name="documents"/>, which are copied.</summary>
+    /// <exception cref="ArgumentException">A document is null or does not exist; a query only returns existing documents.</exception>
     public FirestoreQuerySnapshot(SnapshotMetadata metadata, IEnumerable<FirestoreDocument> documents)
-        : this(metadata, [.. documents ?? throw new ArgumentNullException(nameof(documents))])
+        : this(metadata, Validated([.. documents ?? throw new ArgumentNullException(nameof(documents))]), false)
     {
     }
 
-    // Takes ownership of an array nothing else holds.
-    internal FirestoreQuerySnapshot(SnapshotMetadata metadata, FirestoreDocument[] documents)
+    private static FirestoreDocument[] Validated(FirestoreDocument[] documents)
+    {
+        foreach (FirestoreDocument? document in documents)
+        {
+            if (document is null)
+                throw new ArgumentException("A query snapshot cannot contain a null document.", nameof(documents));
+            if (!document.Exists)
+                throw new ArgumentException($"A query snapshot only contains existing documents; \"{document.Path}\" does not exist.", nameof(documents));
+        }
+
+        return documents;
+    }
+
+    private FirestoreQuerySnapshot(SnapshotMetadata metadata, FirestoreDocument[] documents, bool _)
         : base(metadata) =>
         Documents = Array.AsReadOnly(documents);
+
+    // Takes ownership of an array nothing else holds, already checked by the decoder.
+    internal static FirestoreQuerySnapshot Owning(SnapshotMetadata metadata, FirestoreDocument[] documents) =>
+        new(metadata, documents, false);
 
     /// <summary>The documents, in query order.</summary>
     public IReadOnlyList<FirestoreDocument> Documents { get; }

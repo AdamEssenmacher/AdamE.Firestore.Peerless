@@ -29,8 +29,8 @@ public sealed class FirestoreArray : IReadOnlyList<FirestoreValue>, IEquatable<F
     /// <summary>The items as a span, without copying.</summary>
     public ReadOnlySpan<FirestoreValue> AsSpan() => items;
 
-    /// <summary>Returns an allocation-free enumerator.</summary>
-    public ReadOnlySpan<FirestoreValue>.Enumerator GetEnumerator() => AsSpan().GetEnumerator();
+    /// <summary>Returns an allocation-free enumerator. It is not a ref struct, so a <c>foreach</c> body may <c>await</c>.</summary>
+    public Enumerator GetEnumerator() => new(items);
 
     IEnumerator<FirestoreValue> IEnumerable<FirestoreValue>.GetEnumerator() => ((IEnumerable<FirestoreValue>)items).GetEnumerator();
 
@@ -57,6 +57,25 @@ public sealed class FirestoreArray : IReadOnlyList<FirestoreValue>, IEquatable<F
 
     /// <inheritdoc />
     public override string ToString() => "[" + string.Join(", ", items) + "]";
+
+    /// <summary>An allocation-free enumerator over a <see cref="FirestoreArray"/>.</summary>
+    public struct Enumerator
+    {
+        private readonly FirestoreValue[] items;
+        private int position;
+
+        internal Enumerator(FirestoreValue[] items)
+        {
+            this.items = items;
+            position = -1;
+        }
+
+        /// <summary>The current item.</summary>
+        public readonly FirestoreValue Current => items[position];
+
+        /// <summary>Advances to the next item.</summary>
+        public bool MoveNext() => ++position < items.Length;
+    }
 }
 
 /// <summary>
@@ -75,11 +94,20 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
     /// <summary>Creates a map from <paramref name="entries"/>. Duplicate keys throw.</summary>
     public FirestoreMap(IEnumerable<KeyValuePair<string, FirestoreValue>> entries)
     {
-        var copy = new Dictionary<string, FirestoreValue>(StringComparer.Ordinal);
+        // Order comes from the lists, not from Dictionary enumeration, so keys keep their insertion order by contract.
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var keyList = new List<string>();
+        var valueList = new List<FirestoreValue>();
         foreach ((string key, FirestoreValue value) in entries)
-            copy.Add(key ?? throw new ArgumentException("A map key cannot be null.", nameof(entries)), value);
-        keys = [.. copy.Keys];
-        values = [.. copy.Values];
+        {
+            if (!seen.Add(key ?? throw new ArgumentException("A map key cannot be null.", nameof(entries))))
+                throw new ArgumentException($"The key \"{key}\" appears more than once.", nameof(entries));
+            keyList.Add(key);
+            valueList.Add(value);
+        }
+
+        keys = [.. keyList];
+        values = [.. valueList];
     }
 
     private FirestoreMap(string[] keys, FirestoreValue[] values)
@@ -184,14 +212,19 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
         return false;
     }
 
-    /// <inheritdoc />
-    public IEnumerator<KeyValuePair<string, FirestoreValue>> GetEnumerator()
+    /// <summary>Returns an allocation-free enumerator over the entries, in <see cref="Keys"/> order.</summary>
+    public Enumerator GetEnumerator() => new(keys, values);
+
+    IEnumerator<KeyValuePair<string, FirestoreValue>> IEnumerable<KeyValuePair<string, FirestoreValue>>.GetEnumerator() =>
+        Entries().GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => Entries().GetEnumerator();
+
+    private IEnumerable<KeyValuePair<string, FirestoreValue>> Entries()
     {
         for (int position = 0; position < keys.Length; position++)
             yield return new KeyValuePair<string, FirestoreValue>(keys[position], values[position]);
     }
-
-    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     /// <inheritdoc />
     public bool Equals(FirestoreMap? other)
@@ -256,5 +289,26 @@ public sealed class FirestoreMap : IReadOnlyDictionary<string, FirestoreValue>, 
         for (int position = 0; position < keys.Length; position++)
             built.TryAdd(keys[position], position);
         return built;
+    }
+
+    /// <summary>An allocation-free enumerator over a <see cref="FirestoreMap"/>'s entries.</summary>
+    public struct Enumerator
+    {
+        private readonly string[] keys;
+        private readonly FirestoreValue[] values;
+        private int position;
+
+        internal Enumerator(string[] keys, FirestoreValue[] values)
+        {
+            this.keys = keys;
+            this.values = values;
+            position = -1;
+        }
+
+        /// <summary>The current entry.</summary>
+        public readonly KeyValuePair<string, FirestoreValue> Current => new(keys[position], values[position]);
+
+        /// <summary>Advances to the next entry.</summary>
+        public bool MoveNext() => ++position < keys.Length;
     }
 }

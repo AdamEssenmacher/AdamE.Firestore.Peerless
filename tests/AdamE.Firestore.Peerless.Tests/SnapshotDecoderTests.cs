@@ -644,6 +644,72 @@ public sealed class SnapshotDecoderTests
     }
 
     [Fact]
+    public void A_query_snapshot_refuses_null_and_missing_documents()
+    {
+        Assert.Throws<ArgumentException>(() => new FirestoreQuerySnapshot(Live, [null!]));
+        Assert.Throws<ArgumentException>(() =>
+            new FirestoreQuerySnapshot(Live, [new FirestoreDocument("a/1", false, Live, FirestoreMap.Empty)]));
+    }
+
+    [Fact]
+    public async Task Arrays_and_maps_can_be_enumerated_with_await_in_the_loop_body()
+    {
+        var array = new FirestoreArray([FirestoreValue.FromInteger(1), FirestoreValue.FromInteger(2)]);
+        var map = new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.FromInteger(3))]);
+        long sum = 0;
+
+        foreach (FirestoreValue value in array)
+        {
+            await Task.Yield();
+            sum += value.AsInteger();
+        }
+
+        foreach ((string _, FirestoreValue value) in map)
+        {
+            await Task.Yield();
+            sum += value.AsInteger();
+        }
+
+        Assert.Equal(6, sum);
+    }
+
+    [Fact]
+    public void Foreach_over_an_array_or_a_map_does_not_allocate()
+    {
+        var array = new FirestoreArray([FirestoreValue.FromInteger(1), FirestoreValue.FromInteger(2)]);
+        var map = new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.FromInteger(3))]);
+        long sum = Sum(array, map); // warm up
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        sum += Sum(array, map);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(12, sum);
+        Assert.Equal(0, allocated);
+
+        static long Sum(FirestoreArray array, FirestoreMap map)
+        {
+            long total = 0;
+            foreach (FirestoreValue value in array)
+                total += value.AsInteger();
+            foreach (KeyValuePair<string, FirestoreValue> entry in map)
+                total += entry.Value.AsInteger();
+            return total;
+        }
+    }
+
+    [Fact]
+    public void A_built_map_keeps_insertion_order_and_refuses_duplicate_keys()
+    {
+        string[] keys = [.. Enumerable.Range(0, 50).Select(index => $"k{(index * 37) % 50}")];
+        var map = new FirestoreMap(keys.Select(key => KeyValuePair.Create(key, FirestoreValue.Null)));
+
+        Assert.Equal(keys, map.Keys);
+        Assert.Throws<ArgumentException>(() =>
+            new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.Null), KeyValuePair.Create("a", FirestoreValue.Null)]));
+    }
+
+    [Fact]
     public void Repeated_field_names_decode_to_one_shared_string_per_frame()
     {
         FirestoreDocument[] documents = [.. Enumerable.Range(0, 3).Select(index =>

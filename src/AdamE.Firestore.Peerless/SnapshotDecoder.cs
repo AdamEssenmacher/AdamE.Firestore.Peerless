@@ -146,7 +146,7 @@ public static class SnapshotDecoder
                 throw Fail("The frame has no documents section.");
 
             if (kind == Wire.FrameKind.Query)
-                return new FirestoreQuerySnapshot(snapshotMetadata, documents);
+                return FirestoreQuerySnapshot.Owning(snapshotMetadata, documents);
             return new FirestoreDocumentSnapshot(snapshotMetadata, documents[0]);
         }
 
@@ -410,7 +410,8 @@ public static class SnapshotDecoder
     /// <summary>
     /// Per-thread working memory for one decode: the field-name cache, the key hashes and the duplicate-key table.
     /// Kept between decodes while it stays small, so after a thread's first decode the only allocation here is a copy
-    /// of each new field name's bytes, once per frame.
+    /// of each new field name's bytes, once per frame. Normally about 5 KB; a thread that decoded a map with thousands
+    /// of keys keeps tables of up to <see cref="MaxRetainedTable"/> entries each (about 128 KB), and a larger one is dropped.
     /// </summary>
     private sealed class Scratch
     {
@@ -420,7 +421,9 @@ public static class SnapshotDecoder
         private const int KeyCacheLimit = KeyCacheSize / 2;
         private const int MaxProbes = 8;
 
-        // Random per process, so the cache's slots can't be predicted by whoever writes the data.
+        // Random per process, so ordinary keys don't land in the same cache slots and hash buckets in every process. It is
+        // not a defense: FNV-1a with a seeded basis still has seed-independent collisions (see CollidingKeys in the
+        // tests). Crafted keys are bounded by MaxProbes here and by the probe limit and sort fallback in HasDuplicateKey.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
 
         private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
