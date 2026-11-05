@@ -291,6 +291,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                     observer: null);
 
                 using var stop = new CancellationTokenSource();
+                Exception? bodyFailure = null;
                 Task writes = Task.Run(async () =>
                 {
                     for (int write = 0; !stop.IsCancellationRequested; write++)
@@ -314,6 +315,11 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
                     await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
                 }
+                catch (Exception exception)
+                {
+                    bodyFailure = exception;
+                    throw;
+                }
                 finally
                 {
                     // A timeout must not leave the listener or the writes running into the checks that follow. A write
@@ -321,7 +327,15 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                     // stalled write from hanging the run.
                     registration.Dispose();
                     await stop.CancelAsync().ConfigureAwait(false);
-                    await writes.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                    try
+                    {
+                        await writes.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                    }
+                    catch (Exception writeFailure) when (bodyFailure is not null && !(bodyFailure is TimeoutException && writes.IsFaulted))
+                    {
+                        // Any other failure of the body (a listener error, say) is the real one: keep it, report this.
+                        Report($"dispose race: writes also failed: {writeFailure.GetType().Name}: {writeFailure.Message}");
+                    }
                 }
             }
 

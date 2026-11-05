@@ -56,10 +56,13 @@ for run in runs:
             art[(mode, m.group(1), int(m.group(2)), m.group(3))].append(int(m.group(4)))
     host = (run / "host.txt").read_text() if (run / "host.txt").exists() else ""
     loads = re.findall(r"load averages?: ([\d.]+)", host)
-    verify = re.search(r"^verify: (.*)$", (run / f"{mode}-run.txt").read_text(), re.M)
+    # The last verify note wins: a check that noted its verdict and then threw is noted again as THREW. Pipes are
+    # escaped so the note stays in its Markdown table cell.
+    verifies = re.findall(r"^verify: (.*)$", (run / f"{mode}-run.txt").read_text(), re.M)
+    verify = verifies[-1].replace("|", "\\|") if verifies else None
     outcome = re.search(r"^outcome: (.*)$", (run / f"{mode}-run.txt").read_text(), re.M)
     notes.append(f"| {run.name} | {mode} | {outcome.group(1) if outcome else '?'} | "
-                 f"{' → '.join(loads) if loads else '?'} | {verify.group(1) if verify else '?'} |")
+                 f"{' → '.join(loads) if loads else '?'} | {verify if verify else '?'} |")
 
 
 def med(rows, key, scale=1.0):
