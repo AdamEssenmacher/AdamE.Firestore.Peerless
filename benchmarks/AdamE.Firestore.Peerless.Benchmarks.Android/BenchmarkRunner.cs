@@ -100,9 +100,9 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                     await CheckAsync("disposeRace", () => DisposeRaceAsync(listening, seeding)).ConfigureAwait(false),
                     await CheckAsync("refusedListen", RefusedListenAsync).ConfigureAwait(false),
                 ];
-                if (failures.Any(failure => failure is not null))
-                    throw new InvalidOperationException(
-                        $"verification failed: {string.Join("; ", failures.Where(failure => failure is not null))}");
+                string[] failed = [.. failures.OfType<string>()];
+                if (failed.Length != 0)
+                    throw new InvalidOperationException($"verification failed: {string.Join("; ", failed)}");
             }
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
@@ -131,9 +131,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
         catch (Exception exception)
         {
-            string failure = $"THREW {exception.GetType().Name}: {exception.Message}";
-            results?.Note(name, $"THREW {exception}".ReplaceLineEndings(" | "));
-            Report($"{name}: {failure}");
+            // One line without the stack trace: compare-android.py copies the verify note into a Markdown table cell.
+            string failure = $"THREW {exception.GetType().Name}: {exception.Message}".ReplaceLineEndings(" ");
+            results?.Note(name, failure);
+            Report($"{name}: THREW {exception}");
             return $"{name}: {failure}";
         }
     }
@@ -253,115 +254,126 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         int violations = 0;
         int disposedMidCallback = 0;
 
-        for (int iteration = 0; iteration < iterations; iteration++)
+        try
         {
-            int inside = 0;
-            int returned = 0;
-            int frames = 0;
-            bool forceMidCallback = iteration % 2 == 0; // every other round disposes while a callback is certainly running
-            var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            IDisposable registration = PeerlessListener.Listen(
+            for (int iteration = 0; iteration < iterations; iteration++)
+            {
+                int inside = 0;
+                int returned = 0;
+                int frames = 0;
+                bool forceMidCallback = iteration % 2 == 0; // every other round disposes while a callback is certainly running
+                var flowing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                IDisposable registration = PeerlessListener.Listen(
+                    query,
+                    _ =>
+                    {
+                        if (Volatile.Read(ref returned) == 1)
+                            Interlocked.Increment(ref violations); // started after Dispose returned
+                        Volatile.Write(ref inside, 1);
+                        int frame = Interlocked.Increment(ref frames);
+                        if (forceMidCallback && frame >= 2)
+                        {
+                            started.TrySetResult();
+                            Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
+                        }
+                        else
+                        {
+                            Thread.Sleep(3); // widen the window a disposal can land in
+                        }
+
+                        if (frame >= 2)
+                            flowing.TrySetResult();
+                        Volatile.Write(ref inside, 0);
+                    },
+                    error => flowing.TrySetException(error),
+                    iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
+                    observer: null);
+
+                using var stop = new CancellationTokenSource();
+                Task writes = Task.Run(async () =>
+                {
+                    for (int write = 0; !stop.IsCancellationRequested; write++)
+                    {
+                        await TouchAsync(target.Document(DocumentId(write % 50)), write).ConfigureAwait(false);
+                    }
+                });
+
+                try
+                {
+                    await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                    await Task.Run(() =>
+                    {
+                        if (Volatile.Read(ref inside) == 1)
+                            Interlocked.Increment(ref disposedMidCallback);
+                        registration.Dispose();
+                        if (Volatile.Read(ref inside) == 1)
+                            Interlocked.Increment(ref violations); // still running after Dispose returned
+                        Volatile.Write(ref returned, 1);
+                    }).ConfigureAwait(false);
+
+                    await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+                }
+                finally
+                {
+                    // A timeout must not leave the listener or the writes running into the checks that follow. A write
+                    // fault is observed here (and, as the likely cause, replaces a timeout it led to); the bound keeps a
+                    // stalled write from hanging the run.
+                    registration.Dispose();
+                    await stop.CancelAsync().ConfigureAwait(false);
+                    await writes.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                }
+            }
+
+            // Disposal from inside a callback, on the callback thread.
+            int selfCallbacks = 0;
+            var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            IDisposable? self = null;
+            IDisposable listener = PeerlessListener.Listen(
                 query,
                 _ =>
                 {
-                    if (Volatile.Read(ref returned) == 1)
-                        Interlocked.Increment(ref violations); // started after Dispose returned
-                    Volatile.Write(ref inside, 1);
-                    int frame = Interlocked.Increment(ref frames);
-                    if (forceMidCallback && frame >= 2)
-                    {
-                        started.TrySetResult();
-                        Thread.Sleep(50); // Dispose is called during this sleep and must wait for it
-                    }
-                    else
-                    {
-                        Thread.Sleep(3); // widen the window a disposal can land in
-                    }
-
-                    if (frame >= 2)
-                        flowing.TrySetResult();
-                    Volatile.Write(ref inside, 0);
+                    // Off the main thread the first frame can arrive before Listen returns and assigns the handle (allowed
+                    // by PeerlessListener's contract); skip it and dispose on the next one, which the write below causes.
+                    IDisposable? handle = Volatile.Read(ref self);
+                    if (handle is null)
+                        return;
+                    if (Interlocked.Increment(ref selfCallbacks) > 1)
+                        Interlocked.Increment(ref violations);
+                    handle.Dispose();
+                    selfDisposed.TrySetResult();
                 },
-                error => flowing.TrySetException(error),
-                iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
-                observer: null);
-
-            using var stop = new CancellationTokenSource();
-            Task writes = Task.Run(async () =>
-            {
-                for (int write = 0; !stop.IsCancellationRequested; write++)
-                {
-                    await TouchAsync(target.Document(DocumentId(write % 50)), write).ConfigureAwait(false);
-                }
-            });
-
+                error => selfDisposed.TrySetException(error));
+            Volatile.Write(ref self, listener); // published to the callback thread, which reads it with Volatile.Read
             try
             {
-                await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
-                await Task.Run(() =>
-                {
-                    if (Volatile.Read(ref inside) == 1)
-                        Interlocked.Increment(ref disposedMidCallback);
-                    registration.Dispose();
-                    if (Volatile.Read(ref inside) == 1)
-                        Interlocked.Increment(ref violations); // still running after Dispose returned
-                    Volatile.Write(ref returned, 1);
-                }).ConfigureAwait(false);
-
-                await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+                if (!selfDisposed.Task.IsCompleted)
+                    await TouchAsync(target.Document(DocumentId(0)), 999).ConfigureAwait(false);
+                await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
             }
             finally
             {
-                // A timeout must not leave the listener or the writes running into the checks that follow.
-                registration.Dispose();
-                await stop.CancelAsync().ConfigureAwait(false);
+                listener.Dispose(); // already disposed from its callback unless that never happened
             }
 
-            await writes.ConfigureAwait(false);
-        }
+            for (int write = 0; write < 5; write++)
+                await TouchAsync(target.Document(DocumentId(write)), 1000 + write).ConfigureAwait(false);
 
-        // Disposal from inside a callback, on the callback thread.
-        int selfCallbacks = 0;
-        var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        IDisposable? self = null;
-        self = PeerlessListener.Listen(
-            query,
-            _ =>
-            {
-                // Off the main thread the first frame can arrive before Listen returns and assigns the handle (allowed
-                // by PeerlessListener's contract); skip it and dispose on the next one, which the write below causes.
-                IDisposable? handle = Volatile.Read(ref self);
-                if (handle is null)
-                    return;
-                if (Interlocked.Increment(ref selfCallbacks) > 1)
-                    Interlocked.Increment(ref violations);
-                handle.Dispose();
-                selfDisposed.TrySetResult();
-            },
-            error => selfDisposed.TrySetException(error));
-        try
+            await Task.Delay(300).ConfigureAwait(false);
+            int observed = Volatile.Read(ref violations); // read once, so the recorded verdict and the result agree
+            string verdict = observed == 0
+                ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
+                : $"VIOLATED {observed} times";
+            results?.Note("disposeRace", verdict);
+            Report($"dispose race: {verdict}");
+            return observed == 0 ? null : verdict;
+        }
+        catch (Exception exception) when (Volatile.Read(ref violations) is int counted and > 0)
         {
-            if (!selfDisposed.Task.IsCompleted)
-                await TouchAsync(target.Document(DocumentId(0)), 999).ConfigureAwait(false);
-            await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            // Keep the contract violations already found: they are what this check exists to catch.
+            throw new InvalidOperationException(
+                $"VIOLATED {counted} times, then threw {exception.GetType().Name}: {exception.Message}", exception);
         }
-        finally
-        {
-            Volatile.Read(ref self)?.Dispose(); // already disposed from its callback unless that never happened
-        }
-
-        for (int write = 0; write < 5; write++)
-            await TouchAsync(target.Document(DocumentId(write)), 1000 + write).ConfigureAwait(false);
-
-        await Task.Delay(300).ConfigureAwait(false);
-        int observed = Volatile.Read(ref violations); // read once, so the recorded verdict and the result agree
-        string verdict = observed == 0
-            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
-            : $"VIOLATED {observed} times";
-        results?.Note("disposeRace", verdict);
-        Report($"dispose race: {verdict}");
-        return observed == 0 ? null : verdict;
     }
 
     /// <summary>
