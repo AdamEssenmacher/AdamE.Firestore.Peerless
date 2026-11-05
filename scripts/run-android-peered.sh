@@ -52,21 +52,27 @@ fi
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
 # `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
 # count is accepted too. Each buffer that logcat.txt is read from (main, system, crash) is resized and restored on its
-# own, since their sizes can differ. A buffer whose size can't be read is still enlarged on an emulator (disposable,
-# so leaving it enlarged costs nothing) but left alone on a device, where it couldn't be put back.
+# own, since their sizes can differ. A buffer whose size can't be read is still enlarged on an emulator, and left
+# enlarged afterwards (16 MB of logd memory on an AVD is harmless), but left alone on a device, where it couldn't be
+# put back; host.txt then notes that the run's logcat may be incomplete.
 log_buffers=(main system crash)
 previous_log_sizes=()
+log_enlarge=() # whether to enlarge each buffer: decided once here, used by the warning and the resize below
 log_resized=()
+log_incomplete=""
 for buffer in "${log_buffers[@]}"; do
   size="$(adb -s "$serial" logcat -g -b "$buffer" 2>/dev/null \
     | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
   previous_log_sizes+=("$size")
   log_resized+=(0)
+  if [ -n "$size" ] || [ "$on_emulator" = "1" ]; then enlarge=1; else enlarge=0; fi
+  log_enlarge+=("$enlarge")
   if [ -z "$size" ]; then
-    if [ "$on_emulator" = "1" ]; then
+    if [ "$enlarge" = "1" ]; then
       echo "Could not read $serial's $buffer logcat buffer size; it will be enlarged but not restored afterwards." >&2
     else
       echo "Could not read $serial's $buffer logcat buffer size; it won't be enlarged, so its entries (for main, the long ART dumps) may be cut off." >&2
+      log_incomplete="$log_incomplete $buffer"
     fi
   fi
 done
@@ -82,7 +88,8 @@ cleanup() {
   fi
   for i in "${!log_buffers[@]}"; do
     if [ "${log_resized[$i]}" = "1" ] && [ -n "${previous_log_sizes[$i]}" ]; then
-      adb -s "$serial" logcat -b "${log_buffers[$i]}" -G "${previous_log_sizes[$i]}" >/dev/null 2>&1 || true
+      adb -s "$serial" logcat -b "${log_buffers[$i]}" -G "${previous_log_sizes[$i]}" >/dev/null 2>&1 \
+        || echo "Could not restore $serial's ${log_buffers[$i]} logcat buffer to ${previous_log_sizes[$i]}; it is still 16M." >&2
     fi
   done
 }
@@ -123,11 +130,12 @@ if [ "$app_host" = "127.0.0.1" ]; then
 fi
 # ART's reference-table dumps are long: a bigger ring buffer keeps them from being overwritten before they're pulled.
 for i in "${!log_buffers[@]}"; do
-  if [ -z "${previous_log_sizes[$i]}" ] && [ "$on_emulator" != "1" ]; then continue; fi
+  if [ "${log_enlarge[$i]}" != "1" ]; then continue; fi
   if adb -s "$serial" logcat -b "${log_buffers[$i]}" -G 16M; then
     log_resized[$i]=1
   else
     echo "Could not enlarge the ${log_buffers[$i]} logcat buffer; its entries may be cut off." >&2
+    log_incomplete="$log_incomplete ${log_buffers[$i]}"
   fi
 done
 adb -s "$serial" logcat -c
@@ -150,7 +158,11 @@ for name in peered-samples.csv peered-settled.csv peered-run.txt; do
   adb -s "$serial" pull "$files/$name" "$out/$name" >/dev/null 2>&1 || echo "missing: $name"
 done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
-{ echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load: $(uptime)"; } | tee -a "$out/host.txt"
+{
+  echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load: $(uptime)"
+  # A buffer that wasn't enlarged may have dropped entries, so the ART/GREF counts from logcat.txt may be too low.
+  if [ -n "$log_incomplete" ]; then echo "logcat may be incomplete (buffers not enlarged:$log_incomplete)"; fi
+} | tee -a "$out/host.txt"
 echo "results: $out"
 if [ "$outcome" != "done" ]; then
   # Its files may be missing, so it isn't summarized: the summary would fail and hide this message.
