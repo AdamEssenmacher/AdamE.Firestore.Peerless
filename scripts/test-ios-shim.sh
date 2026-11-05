@@ -12,8 +12,9 @@ shim="$root/ios/PeerlessShim"
 out="$root/ios/build"
 app="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS/bin/Release/net10.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"
 
-"$root/ios/build-shim.sh" >/dev/null
-[[ -d "$app/Frameworks" ]] || dotnet build "$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS" -c Release >/dev/null
+# Rebuild the app to refresh its embedded frameworks and let its shim target prepare the headers.
+# An incremental build can reuse the previously extracted frameworks after the package version changes.
+dotnet build "$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS" -c Release --no-incremental >/dev/null
 # The Firebase version build-shim.sh builds against (Directory.Packages.props), not whichever ios/build/firebase-*
 # happens to sort first: an older extraction may still be there.
 version="$(sed -n 's/.*"AdamE.Firebase.iOS.CloudFirestore" Version="\([^"]*\)".*/\1/p' "$root/Directory.Packages.props")"
