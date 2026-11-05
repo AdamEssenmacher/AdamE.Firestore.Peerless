@@ -93,9 +93,13 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
             if (options.Verify)
             {
-                await VerifyAsync(listening, seeding).ConfigureAwait(false);
-                await DisposeRaceAsync(listening, seeding).ConfigureAwait(false);
-                await RefusedListenAsync().ConfigureAwait(false);
+                // Every check runs and records its verdict before a failure ends the run.
+                bool verified = await VerifyAsync(listening, seeding).ConfigureAwait(false);
+                bool disposeRaceHeld = await DisposeRaceAsync(listening, seeding).ConfigureAwait(false);
+                bool refusedListenHeld = await RefusedListenAsync().ConfigureAwait(false);
+                if (!(verified && disposeRaceHeld && refusedListenHeld))
+                    throw new InvalidOperationException(
+                        $"verification failed (verify: {verified}, dispose race: {disposeRaceHeld}, refused listen: {refusedListenHeld})");
             }
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
@@ -169,7 +173,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// both Peerless deliveries must decode to equal values. Covers every value kind, including ones the benchmark
     /// documents don't use.
     /// </summary>
-    private async Task VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task<bool> VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
     {
         const string collection = "verify";
         Report("verify: seeding");
@@ -194,13 +198,13 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             FirestoreSnapshot expected = await peered.First.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
             string? directDifference = SnapshotAssertions.Difference(expected, await direct.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
             string? bytesDifference = SnapshotAssertions.Difference(expected, await bytes.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
-            string verdict = directDifference is null && bytesDifference is null
+            bool identical = directDifference is null && bytesDifference is null;
+            string verdict = identical
                 ? $"identical ({SnapshotAssertions.DocumentCount(expected)} documents, {PeeredConversion.CountValues(expected)} values)"
                 : $"DIFFERENT direct: {directDifference ?? "same"} | bytes: {bytesDifference ?? "same"}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
-            if (directDifference is not null || bytesDifference is not null)
-                throw new InvalidOperationException($"verify: {verdict}");
+            return identical;
         }
         finally
         {
@@ -213,7 +217,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// arriving (both deliveries), no callback may still be running when Dispose returns, and none may start after it.
     /// Then one listener disposes itself from inside its callback, which must neither deadlock nor see another frame.
     /// </summary>
-    private async Task DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task<bool> DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
     {
         const string collection = "dispose-race";
         const int iterations = 20;
@@ -294,12 +298,24 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             query,
             _ =>
             {
+                // Off the main thread the first frame can arrive before Listen returns and assigns the handle (allowed
+                // by PeerlessListener's contract); skip it and dispose on the next one, which the write below causes.
+                IDisposable? handle = Volatile.Read(ref self);
+                if (handle is null)
+                    return;
                 if (Interlocked.Increment(ref selfCallbacks) > 1)
                     Interlocked.Increment(ref violations);
-                self?.Dispose();
+                handle.Dispose();
                 selfDisposed.TrySetResult();
             },
             error => selfDisposed.TrySetException(error));
+        if (!selfDisposed.Task.IsCompleted)
+        {
+            await target.Document(DocumentId(0)).Update(
+                    "version", Java.Lang.Long.ValueOf(999), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+                .AsTask()
+                .ConfigureAwait(false);
+        }
         await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
         for (int write = 0; write < 5; write++)
         {
@@ -315,8 +331,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             : $"VIOLATED {violations} times";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
-        if (violations != 0)
-            throw new InvalidOperationException($"dispose race: {verdict}");
+        return violations == 0;
     }
 
     /// <summary>
@@ -324,7 +339,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// exception inside, as on iOS, and leave nothing behind: the settled global reference count is compared before
     /// and after ten refused listens.
     /// </summary>
-    private async Task RefusedListenAsync()
+    private async Task<bool> RefusedListenAsync()
     {
         FirebaseFirestore terminated = Connect("terminated");
         await terminated.Terminate().AsTask().ConfigureAwait(false);
@@ -360,8 +375,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             : $"FAILED: {failure}";
         results?.Note("refusedListen", verdict.ReplaceLineEndings(" "));
         Report($"refused listen: {verdict}");
-        if (failure is not null)
-            throw new InvalidOperationException($"refused listen: {verdict}");
+        return failure is null;
     }
 
     private async Task QueryPhaseAsync(
