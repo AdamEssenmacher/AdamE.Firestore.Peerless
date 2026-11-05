@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using AdamE.Firestore.Peerless.Android;
 using Android.Content;
+using Android.OS;
 using Android.Util;
 using Firebase;
 using Firebase.Firestore;
@@ -284,20 +285,33 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             await writes.ConfigureAwait(false);
         }
 
-        // Disposal from inside a callback, on the callback thread.
+        // Register on the callback thread so even a cached snapshot can only arrive after self is assigned.
         int selfCallbacks = 0;
         var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         IDisposable? self = null;
-        self = PeerlessListener.Listen(
-            query,
-            _ =>
+        using var handler = new Handler(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."));
+        if (!handler.Post(() =>
+        {
+            try
             {
-                if (Interlocked.Increment(ref selfCallbacks) > 1)
-                    Interlocked.Increment(ref violations);
-                self?.Dispose();
-                selfDisposed.TrySetResult();
-            },
-            error => selfDisposed.TrySetException(error));
+                self = PeerlessListener.Listen(
+                    query,
+                    _ =>
+                    {
+                        if (Interlocked.Increment(ref selfCallbacks) > 1)
+                            Interlocked.Increment(ref violations);
+                        self!.Dispose();
+                        selfDisposed.TrySetResult();
+                    },
+                    error => selfDisposed.TrySetException(error));
+            }
+            catch (Exception exception)
+            {
+                selfDisposed.TrySetException(exception);
+            }
+        }))
+            throw new InvalidOperationException("Could not post the self-disposal listener to the main thread.");
+
         await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
         for (int write = 0; write < 5; write++)
         {
