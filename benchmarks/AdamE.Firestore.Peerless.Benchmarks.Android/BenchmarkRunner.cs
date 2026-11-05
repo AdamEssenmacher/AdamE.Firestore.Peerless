@@ -199,6 +199,8 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 : $"DIFFERENT direct: {directDifference ?? "same"} | bytes: {bytesDifference ?? "same"}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
+            if (directDifference is not null || bytesDifference is not null)
+                throw new InvalidOperationException($"verify: {verdict}");
         }
         finally
         {
@@ -313,6 +315,8 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             : $"VIOLATED {violations} times";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
+        if (violations != 0)
+            throw new InvalidOperationException($"dispose race: {verdict}");
     }
 
     /// <summary>
