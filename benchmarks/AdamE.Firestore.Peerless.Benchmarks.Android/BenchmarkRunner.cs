@@ -93,13 +93,16 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
             if (options.Verify)
             {
-                // Every check runs and records its verdict before a failure ends the run.
-                bool verified = await VerifyAsync(listening, seeding).ConfigureAwait(false);
-                bool disposeRaceHeld = await DisposeRaceAsync(listening, seeding).ConfigureAwait(false);
-                bool refusedListenHeld = await RefusedListenAsync().ConfigureAwait(false);
-                if (!(verified && disposeRaceHeld && refusedListenHeld))
+                // Every check runs and records its verdict before a failure ends the run, including a check that throws.
+                string?[] failures =
+                [
+                    await CheckAsync("verify", () => VerifyAsync(listening, seeding)).ConfigureAwait(false),
+                    await CheckAsync("disposeRace", () => DisposeRaceAsync(listening, seeding)).ConfigureAwait(false),
+                    await CheckAsync("refusedListen", RefusedListenAsync).ConfigureAwait(false),
+                ];
+                if (failures.Any(failure => failure is not null))
                     throw new InvalidOperationException(
-                        $"verification failed (verify: {verified}, dispose race: {disposeRaceHeld}, refused listen: {refusedListenHeld})");
+                        $"verification failed: {string.Join("; ", failures.Where(failure => failure is not null))}");
             }
             await QueryPhaseAsync("warmup", listening, seeding, 10, updates: 3).ConfigureAwait(false);
             foreach (int size in options.Sizes)
@@ -116,6 +119,28 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             Report($"PEERLESS_DONE failed: {exception}");
         }
     }
+
+    // Runs one verification check. A check returns null when it held, or its failure verdict; one that throws is
+    // recorded under its note as a failure too, so the checks after it still run.
+    private async Task<string?> CheckAsync(string name, Func<Task<string?>> check)
+    {
+        try
+        {
+            string? failure = await check().ConfigureAwait(false);
+            return failure is null ? null : $"{name}: {failure}";
+        }
+        catch (Exception exception)
+        {
+            string failure = $"THREW {exception.GetType().Name}: {exception.Message}";
+            results?.Note(name, $"THREW {exception}".ReplaceLineEndings(" | "));
+            Report($"{name}: {failure}");
+            return $"{name}: {failure}";
+        }
+    }
+
+    private static Task TouchAsync(DocumentReference document, long version) => document.Update(
+            "version", Java.Lang.Long.ValueOf(version), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+        .AsTask();
 
     private FirebaseFirestore Connect(string appName)
     {
@@ -173,7 +198,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// both Peerless deliveries must decode to equal values. Covers every value kind, including ones the benchmark
     /// documents don't use.
     /// </summary>
-    private async Task<bool> VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task<string?> VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
     {
         const string collection = "verify";
         Report("verify: seeding");
@@ -204,7 +229,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 : $"DIFFERENT direct: {directDifference ?? "same"} | bytes: {bytesDifference ?? "same"}";
             results?.Note("verify", verdict.ReplaceLineEndings(" | "));
             Report($"verify: {verdict}");
-            return identical;
+            return identical ? null : verdict.ReplaceLineEndings(" | ");
         }
         finally
         {
@@ -217,7 +242,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// arriving (both deliveries), no callback may still be running when Dispose returns, and none may start after it.
     /// Then one listener disposes itself from inside its callback, which must neither deadlock nor see another frame.
     /// </summary>
-    private async Task<bool> DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task<string?> DisposeRaceAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
     {
         const string collection = "dispose-race";
         const int iterations = 20;
@@ -267,26 +292,32 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             {
                 for (int write = 0; !stop.IsCancellationRequested; write++)
                 {
-                    await target.Document(DocumentId(write % 50)).Update(
-                            "version", Java.Lang.Long.ValueOf(write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
-                        .AsTask()
-                        .ConfigureAwait(false);
+                    await TouchAsync(target.Document(DocumentId(write % 50)), write).ConfigureAwait(false);
                 }
             });
 
-            await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
-            await Task.Run(() =>
+            try
             {
-                if (Volatile.Read(ref inside) == 1)
-                    Interlocked.Increment(ref disposedMidCallback);
-                registration.Dispose();
-                if (Volatile.Read(ref inside) == 1)
-                    Interlocked.Increment(ref violations); // still running after Dispose returned
-                Volatile.Write(ref returned, 1);
-            }).ConfigureAwait(false);
+                await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+                await Task.Run(() =>
+                {
+                    if (Volatile.Read(ref inside) == 1)
+                        Interlocked.Increment(ref disposedMidCallback);
+                    registration.Dispose();
+                    if (Volatile.Read(ref inside) == 1)
+                        Interlocked.Increment(ref violations); // still running after Dispose returned
+                    Volatile.Write(ref returned, 1);
+                }).ConfigureAwait(false);
 
-            await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
-            await stop.CancelAsync().ConfigureAwait(false);
+                await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+            }
+            finally
+            {
+                // A timeout must not leave the listener or the writes running into the checks that follow.
+                registration.Dispose();
+                await stop.CancelAsync().ConfigureAwait(false);
+            }
+
             await writes.ConfigureAwait(false);
         }
 
@@ -309,29 +340,28 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 selfDisposed.TrySetResult();
             },
             error => selfDisposed.TrySetException(error));
-        if (!selfDisposed.Task.IsCompleted)
+        try
         {
-            await target.Document(DocumentId(0)).Update(
-                    "version", Java.Lang.Long.ValueOf(999), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            if (!selfDisposed.Task.IsCompleted)
+                await TouchAsync(target.Document(DocumentId(0)), 999).ConfigureAwait(false);
+            await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
         }
-        await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
-        for (int write = 0; write < 5; write++)
+        finally
         {
-            await target.Document(DocumentId(write)).Update(
-                    "version", Java.Lang.Long.ValueOf(1000 + write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            Volatile.Read(ref self)?.Dispose(); // already disposed from its callback unless that never happened
         }
 
+        for (int write = 0; write < 5; write++)
+            await TouchAsync(target.Document(DocumentId(write)), 1000 + write).ConfigureAwait(false);
+
         await Task.Delay(300).ConfigureAwait(false);
-        string verdict = violations == 0
+        int observed = Volatile.Read(ref violations); // read once, so the recorded verdict and the result agree
+        string verdict = observed == 0
             ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
-            : $"VIOLATED {violations} times";
+            : $"VIOLATED {observed} times";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
-        return violations == 0;
+        return observed == 0 ? null : verdict;
     }
 
     /// <summary>
@@ -339,7 +369,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// exception inside, as on iOS, and leave nothing behind: the settled global reference count is compared before
     /// and after ten refused listens.
     /// </summary>
-    private async Task<bool> RefusedListenAsync()
+    private async Task<string?> RefusedListenAsync()
     {
         FirebaseFirestore terminated = Connect("terminated");
         await terminated.Terminate().AsTask().ConfigureAwait(false);
@@ -375,7 +405,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             : $"FAILED: {failure}";
         results?.Note("refusedListen", verdict.ReplaceLineEndings(" "));
         Report($"refused listen: {verdict}");
-        return failure is null;
+        return failure is null ? null : verdict.ReplaceLineEndings(" ");
     }
 
     private async Task QueryPhaseAsync(
@@ -439,13 +469,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             Report($"{phase} {size}: update {update}/{updates}");
             DocumentReference target = seedingCollection.Document(DocumentId((update * 7) % size));
             long written = Stopwatch.GetTimestamp();
-            await target.Update(
-                    "version",
-                    Java.Lang.Long.ValueOf(update + 1),
-                    new Java.Lang.String("updatedAt"),
-                    Firebase.Timestamp.Now())
-                .AsTask()
-                .ConfigureAwait(false);
+            await TouchAsync(target, update + 1).ConfigureAwait(false);
             Sample sample = await NextAsync(sampler, expected).ConfigureAwait(false);
             double latency = Probes.Microseconds(written, sample.DoneTimestamp) / 1000.0;
             results?.Sample(phase, size, update, "update", sample, latency, lastSettledGlobal);
