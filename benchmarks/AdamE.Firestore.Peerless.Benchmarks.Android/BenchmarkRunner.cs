@@ -324,9 +324,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 {
                     // A timeout must not leave the listener or the writes running into the checks that follow. A write
                     // fault is observed here (and, as the likely cause, replaces a timeout it led to); the bound keeps a
-                    // stalled write from hanging the run.
-                    registration.Dispose();
+                    // stalled write from hanging the run. The writes are cancelled first, so a Dispose that throws can't
+                    // leave them running.
                     await stop.CancelAsync().ConfigureAwait(false);
+                    registration.Dispose();
                     try
                     {
                         await writes.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
