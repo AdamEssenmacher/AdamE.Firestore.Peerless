@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -69,6 +70,7 @@ public static class SnapshotDecoder
         private readonly Scratch scratch = scratch;
         private int position;
         private int limit = frame.Length;
+        private bool inSection; // Whether limit is a section's end rather than the frame's (Take's message depends on it).
 
         // The minimum unread bytes the items declared but not yet started still need, across all open containers: one
         // per array item, two per map entry (a key length and a value tag) or document (a path length and its flags).
@@ -92,6 +94,7 @@ public static class SnapshotDecoder
             while (position < frame.Length)
             {
                 limit = frame.Length; // Section headers are bounded by the frame, section content by its section.
+                inSection = false;
                 int sectionStart = position;
                 byte id = ReadByte();
                 ref ulong word = ref sectionsSeen[id >> 6];
@@ -107,6 +110,7 @@ public static class SnapshotDecoder
                 int length = (int)declared;
                 int contentStart = position;
                 limit = contentStart + length;
+                inSection = true;
                 switch (id)
                 {
                     case Wire.Section.Metadata:
@@ -123,6 +127,7 @@ public static class SnapshotDecoder
                 // Content can't run past the section (Take stops it), so this only catches content that ends early.
                 if (position != limit)
                     throw Fail($"Section {id} declared {length} bytes but its content used only {position - contentStart}.", sectionStart);
+                Debug.Assert(reserved == 0, "A section reader left bytes reserved for the next section.");
             }
 
             if (metadata is not { } snapshotMetadata)
@@ -149,9 +154,8 @@ public static class SnapshotDecoder
         // documents still to come stay reserved, so a fields map can't claim their bytes too.
         private FirestoreDocument[] ReadDocuments(byte kind)
         {
-            int sectionStart = position;
             int count = ReadCount(minimumBytesEach: 2);
-            Reserve(2L * count, sectionStart);
+            reserved += 2L * count; // Nothing else is reserved yet, and ReadCount already checked that these fit.
             var documents = new FirestoreDocument[count];
             for (int index = 0; index < count; index++)
             {
@@ -359,7 +363,7 @@ public static class SnapshotDecoder
         {
             if (count > limit - position)
             {
-                throw Fail(limit == frame.Length
+                throw Fail(!inSection
                     ? "The frame ends in the middle of a value."
                     : string.Create(CultureInfo.InvariantCulture, $"A value runs past the end of its section, which ends at byte {limit}."));
             }

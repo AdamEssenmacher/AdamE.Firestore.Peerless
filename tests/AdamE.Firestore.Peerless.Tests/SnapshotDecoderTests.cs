@@ -50,7 +50,9 @@ public sealed class SnapshotDecoderTests
 
         (Exception? failure, long allocated) = MeasureDecode(frame);
 
-        Assert.IsType<PeerlessFormatException>(failure);
+        var exception = Assert.IsType<PeerlessFormatException>(failure);
+        Assert.Contains($"Length {count} runs past the end of the section.", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(Wire.HeaderLength + 6 + 5, exception.Offset); // after the header, metadata section and documents header
         Assert.True(allocated <= FixedOverhead, $"Decoding allocated {allocated:N0} bytes for a count with no documents.");
     }
 
@@ -81,6 +83,12 @@ public sealed class SnapshotDecoderTests
             "past the end of its section"
         },
         {
+            // The same overrun with no section after it reports the section, not the frame, ending.
+            "a value in the last section", Frame(Wire.FrameKind.Query, section =>
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(1).Varint(0).Byte(Wire.Tag.Integer).Int32(7)),
+            "past the end of its section"
+        },
+        {
             "section shorter than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
                 .Section(Wire.Section.Metadata, _ => { })
                 .Section(Wire.Section.Documents, section => section.Varint(0)).ToArray(),
@@ -98,12 +106,8 @@ public sealed class SnapshotDecoderTests
         Assert.False(string.IsNullOrEmpty(because));
     }
 
-    private static byte[] FollowedByUnknownSection(Action<TestFrameEncoder> documents) => new TestFrameEncoder()
-        .Header(Wire.FrameKind.Query)
-        .Section(Wire.Section.Metadata, section => section.Byte(0))
-        .Section(Wire.Section.Documents, documents)
-        .Section(9, section => section.Raw(new byte[64 * 1024]))
-        .ToArray();
+    private static byte[] FollowedByUnknownSection(Action<TestFrameEncoder> documents) =>
+        Frame(Wire.FrameKind.Query, documents, unknownSectionBytes: 64 * 1024);
 
     public static TheoryData<string, byte[]> MalformedFrames => new()
     {
@@ -542,11 +546,16 @@ public sealed class SnapshotDecoderTests
     private static FirestoreDocument Doc(string path, params (string Key, FirestoreValue Value)[] fields) =>
         new(path, true, Live, new FirestoreMap(fields.Select(static field => KeyValuePair.Create(field.Key, field.Value))));
 
-    private static byte[] Frame(byte kind, Action<TestFrameEncoder> documents) =>
-        new TestFrameEncoder().Header(kind)
+    // A frame with plain metadata and the given documents section, optionally followed by an unknown section 9.
+    private static byte[] Frame(byte kind, Action<TestFrameEncoder> documents, int? unknownSectionBytes = null)
+    {
+        TestFrameEncoder encoder = new TestFrameEncoder().Header(kind)
             .Section(Wire.Section.Metadata, section => section.Byte(0))
-            .Section(Wire.Section.Documents, documents)
-            .ToArray();
+            .Section(Wire.Section.Documents, documents);
+        if (unknownSectionBytes is int bytes)
+            encoder.Section(9, section => section.Raw(new byte[bytes]));
+        return encoder.ToArray();
+    }
 
     private static byte[] ValidSections(TestFrameEncoder header) =>
         header.Section(Wire.Section.Metadata, section => section.Byte(0))
