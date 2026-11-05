@@ -21,7 +21,6 @@ internal sealed class ListenerGate
 {
     private readonly object sync = new();
     private readonly Action<Exception> onError;
-    private readonly Action<Action> postToCallbackThread;
     private readonly Action release;
 
     private Action? removeRegistration;
@@ -34,12 +33,10 @@ internal sealed class ListenerGate
     private int removed;
 
     /// <param name="onError">The app's error callback.</param>
-    /// <param name="postToCallbackThread">Runs an action later on the thread callbacks normally arrive on.</param>
     /// <param name="release">Frees the listener's resources; called exactly once.</param>
-    public ListenerGate(Action<Exception> onError, Action<Action> postToCallbackThread, Action release)
+    public ListenerGate(Action<Exception> onError, Action release)
     {
         this.onError = onError;
-        this.postToCallbackThread = postToCallbackThread;
         this.release = release;
     }
 
@@ -54,7 +51,12 @@ internal sealed class ListenerGate
     }
 
     /// <summary>Records how to remove the native registration, once <c>Listen</c> has it.</summary>
-    public void Attach(Action remove)
+    /// <param name="remove">Removes the native registration; called at most once.</param>
+    /// <param name="postToCallbackThread">
+    /// Runs an action later on the thread callbacks normally arrive on. Used only during this call, to deliver an error
+    /// held from before attaching.
+    /// </param>
+    public void Attach(Action remove, Action<Action> postToCallbackThread)
     {
         Exception? deliver;
         bool removeNow;

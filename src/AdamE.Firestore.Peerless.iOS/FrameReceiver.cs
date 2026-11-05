@@ -60,10 +60,8 @@ internal sealed unsafe class FrameReceiver : IDisposable
     private readonly Action<FirestoreSnapshot> onSnapshot;
     private readonly IFrameObserver? observer;
     private nint listener; // for the timing hook only
-    private Func<DispatchQueue>? callbackQueue; // only while Start runs: the gate posts an early error from Attach
 
     private FrameReceiver(
-        Func<DispatchQueue> callbackQueue,
         FrameDecoder decode,
         Action<FirestoreSnapshot> onSnapshot,
         Action<Exception> onError,
@@ -72,13 +70,12 @@ internal sealed unsafe class FrameReceiver : IDisposable
         this.decode = decode;
         this.onSnapshot = onSnapshot;
         this.observer = observer;
-        this.callbackQueue = callbackQueue;
-        gate = new ListenerGate(onError, PostEarlyError, release: static () => { });
+        gate = new ListenerGate(onError, release: static () => { });
     }
 
     // callbackQueue returns the queue Firestore delivers target's callbacks on. It is called only when an early error
-    // is posted, after the native listen has started the client (which fixes its settings), and dropped once Start
-    // returns, so a live listener doesn't keep target alive through it.
+    // is posted, after the native listen has started the client (which fixes its settings). Only Start's stack holds
+    // it, so a live listener doesn't keep target alive through it.
     public static FrameReceiver Start(
         NSObject target,
         Func<DispatchQueue> callbackQueue,
@@ -88,7 +85,7 @@ internal sealed unsafe class FrameReceiver : IDisposable
         IFrameObserver? observer,
         bool isDocument)
     {
-        var receiver = new FrameReceiver(callbackQueue, decode, onSnapshot, onError, observer);
+        var receiver = new FrameReceiver(decode, onSnapshot, onError, observer);
         GCHandle self = GCHandle.Alloc(receiver);
         nint context = GCHandle.ToIntPtr(self);
         int timed = observer is null ? 0 : 1; // production frames take no clock reads
@@ -103,7 +100,6 @@ internal sealed unsafe class FrameReceiver : IDisposable
         {
             // Nothing was registered and the shim kept no reference to the context.
             self.Free();
-            receiver.callbackQueue = null;
             string reason = Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(error));
             throw new InvalidOperationException(
                 $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}");
@@ -111,8 +107,7 @@ internal sealed unsafe class FrameReceiver : IDisposable
 
         Volatile.Write(ref receiver.listener, created);
         // A first callback on another queue may already have failed: Attach then removes it and posts the error.
-        receiver.gate.Attach(() => Native.Remove(created, &OnRelease));
-        receiver.callbackQueue = null; // the gate posts only from Attach
+        receiver.gate.Attach(() => Native.Remove(created, &OnRelease), EarlyErrorPost(callbackQueue));
         return receiver;
     }
 
@@ -183,13 +178,17 @@ internal sealed unsafe class FrameReceiver : IDisposable
         observer?.Completed();
     });
 
+    // Its own method, not a lambda inside Start: there it would share a closure with the remove lambda, which the gate
+    // keeps, and keep target alive through callbackQueue.
+    private static Action<Action> EarlyErrorPost(Func<DispatchQueue> callbackQueue) =>
+        action => PostEarlyError(callbackQueue, action);
+
     // An error that arrived before Listen returned. It goes through the main queue first, so a caller on the main
     // thread (or on a serial callback queue) has assigned its handle before onError runs, and then on to Firestore's
     // callback queue, where the app expects its callbacks.
-    private void PostEarlyError(Action action)
+    private static void PostEarlyError(Func<DispatchQueue> resolveCallbackQueue, Action action)
     {
-        DispatchQueue callbackQueue = (this.callbackQueue ?? throw new InvalidOperationException(
-            "An early error is posted only from Attach, inside Start."))();
+        DispatchQueue callbackQueue = resolveCallbackQueue();
         DispatchQueue main = DispatchQueue.MainQueue;
         if (callbackQueue.Handle == main.Handle)
             main.DispatchAsync(action);
