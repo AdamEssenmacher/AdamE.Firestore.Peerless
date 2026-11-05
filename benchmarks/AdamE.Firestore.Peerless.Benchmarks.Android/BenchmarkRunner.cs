@@ -287,6 +287,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
         // Register on the callback thread so even a cached snapshot can only arrive after self is assigned.
         int selfDisposeCalled = 0, selfEarly = 0;
+        var selfFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var selfDisposed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         IDisposable? self = null;
         Exception? selfError = null;
@@ -306,26 +307,29 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                         else if (self is null)
                         {
                             // Harness ordering, not the listener contract: delivered before Listen returned on this
-                            // looper. Not disposed here; the next callback disposes it, or the cleanup below does.
+                            // looper. Not disposed here; the harness writes once more so the next callback disposes it.
                             Interlocked.Increment(ref selfEarly);
                         }
                         else
                         {
                             Volatile.Write(ref selfDisposeCalled, 1);
                             self.Dispose();
+                            selfDisposed.TrySetResult();
                         }
 
-                        selfDisposed.TrySetResult();
+                        selfFirst.TrySetResult();
                     },
                     error =>
                     {
-                        // Kept as well, because an early callback may already have completed selfDisposed.
+                        // Kept as well, because the verification writes no longer await either task.
                         Interlocked.CompareExchange(ref selfError, error, null);
+                        selfFirst.TrySetException(error);
                         selfDisposed.TrySetException(error);
                     });
             }
             catch (Exception exception)
             {
+                selfFirst.TrySetException(exception);
                 selfDisposed.TrySetException(exception);
             }
         }))
@@ -334,9 +338,22 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         bool selfCompleted = false;
         try
         {
+            await selfFirst.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
+            if (!selfDisposed.Task.IsCompleted)
+            {
+                // The first callback came before self was assigned: bring another, so all five writes below follow the
+                // in-callback Dispose.
+                await target.Document(DocumentId(0)).Update(
+                        "version", Java.Lang.Long.ValueOf(999), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
+                    .AsTask()
+                    .ConfigureAwait(false);
+            }
+
             await selfDisposed.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
             for (int write = 0; write < 5; write++)
             {
+                if (Volatile.Read(ref selfError) is { } writeError)
+                    throw new InvalidOperationException("The self-disposal listener reported an error.", writeError);
                 await target.Document(DocumentId(write)).Update(
                         "version", Java.Lang.Long.ValueOf(1000 + write), new Java.Lang.String("updatedAt"), Firebase.Timestamp.Now())
                     .AsTask()
@@ -379,13 +396,14 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         }
 
         string verdict = violations == 0
-            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running"
-              + (selfDisposeCalled == 1 ? "; one from inside a callback)" : ")")
+            ? $"ok ({iterations} disposals from the thread pool while frames arrived, {disposedMidCallback} of them while a callback was running; one from inside a callback)"
             : $"VIOLATED {violations} times";
-        if (selfDisposeCalled == 0)
-            verdict += $"; harness: {selfEarly} self-disposal callbacks arrived before Listen returned, so the in-callback disposal check is inconclusive";
+        if (selfEarly != 0)
+            verdict += $"; harness: {selfEarly} self-disposal callbacks arrived before Listen returned";
         results?.Note("disposeRace", verdict);
         Report($"dispose race: {verdict}");
+        if (violations != 0)
+            throw new InvalidOperationException($"Dispose race: {verdict}");
     }
 
     /// <summary>
