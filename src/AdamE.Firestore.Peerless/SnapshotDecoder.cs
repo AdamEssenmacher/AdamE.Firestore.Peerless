@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace AdamE.Firestore.Peerless;
@@ -24,13 +25,80 @@ public static class SnapshotDecoder
     [ThreadStatic]
     private static Scratch? cachedScratch;
 
-    // FNV-1a from a seeded offset basis. Internal so the tests can check that their crafted keys really collide.
-    internal static uint KeyHash(ReadOnlySpan<byte> bytes, uint seed)
+    // Test-only: every key hashes to the same value on this thread, to drive the key cache's probe cap and the
+    // duplicate check's sorting fallback, which a keyed hash otherwise leaves out of reach of crafted keys.
+    [ThreadStatic]
+    private static bool collideKeyHashesForTesting;
+
+    // SipHash-1-3's key, random per process: a keyed hash, so whoever writes the data can't craft field names that
+    // collide in the key cache or the duplicate check (FNV-1a, used before, has collisions that hold for any seed).
+    private static readonly ulong HashKey0 = RandomKeyHalf();
+    private static readonly ulong HashKey1 = RandomKeyHalf();
+
+    internal static IDisposable CollideKeyHashesForTesting()
     {
-        uint hash = 2166136261 ^ seed;
-        foreach (byte value in bytes)
-            hash = (hash ^ value) * 16777619;
-        return hash ^ (hash >> 15);
+        collideKeyHashesForTesting = true;
+        return new CollisionScope();
+    }
+
+    private static ulong RandomKeyHalf()
+    {
+        Span<byte> bytes = stackalloc byte[8];
+        RandomNumberGenerator.Fill(bytes);
+        return BinaryPrimitives.ReadUInt64LittleEndian(bytes);
+    }
+
+    // SipHash-1-3 (one compression round per 8-byte word, three finalization rounds, as Rust and Python use for hash
+    // tables). Internal so the tests can check it against the reference vectors.
+    internal static ulong SipHash13(ReadOnlySpan<byte> bytes, ulong key0, ulong key1)
+    {
+        ulong v0 = 0x736f6d6570736575UL ^ key0;
+        ulong v1 = 0x646f72616e646f6dUL ^ key1;
+        ulong v2 = 0x6c7967656e657261UL ^ key0;
+        ulong v3 = 0x7465646279746573UL ^ key1;
+
+        int whole = bytes.Length & ~7;
+        for (int offset = 0; offset < whole; offset += 8)
+        {
+            ulong word = BinaryPrimitives.ReadUInt64LittleEndian(bytes.Slice(offset, 8));
+            v3 ^= word;
+            Round(ref v0, ref v1, ref v2, ref v3);
+            v0 ^= word;
+        }
+
+        ulong last = (ulong)bytes.Length << 56;
+        ReadOnlySpan<byte> tail = bytes[whole..];
+        for (int index = 0; index < tail.Length; index++)
+            last |= (ulong)tail[index] << (8 * index);
+        v3 ^= last;
+        Round(ref v0, ref v1, ref v2, ref v3);
+        v0 ^= last;
+
+        v2 ^= 0xff;
+        Round(ref v0, ref v1, ref v2, ref v3);
+        Round(ref v0, ref v1, ref v2, ref v3);
+        Round(ref v0, ref v1, ref v2, ref v3);
+        return v0 ^ v1 ^ v2 ^ v3;
+
+        static void Round(ref ulong v0, ref ulong v1, ref ulong v2, ref ulong v3)
+        {
+            v0 += v1; v1 = BitOperations.RotateLeft(v1, 13); v1 ^= v0; v0 = BitOperations.RotateLeft(v0, 32);
+            v2 += v3; v3 = BitOperations.RotateLeft(v3, 16); v3 ^= v2;
+            v0 += v3; v3 = BitOperations.RotateLeft(v3, 21); v3 ^= v0;
+            v2 += v1; v1 = BitOperations.RotateLeft(v1, 17); v1 ^= v2; v2 = BitOperations.RotateLeft(v2, 32);
+        }
+    }
+
+    // SipHash-1-3 folded to 32 bits: every bit still depends on the key, and the low bits pick the cache slot.
+    private static uint KeyHash(ReadOnlySpan<byte> bytes)
+    {
+        ulong hash = SipHash13(bytes, HashKey0, HashKey1);
+        return (uint)hash ^ (uint)(hash >> 32);
+    }
+
+    private sealed class CollisionScope : IDisposable
+    {
+        public void Dispose() => collideKeyHashesForTesting = false;
     }
 
     /// <summary>Decodes a query or document snapshot frame.</summary>
@@ -40,6 +108,7 @@ public static class SnapshotDecoder
         // Taken, not shared: a decode never sees another decode's scratch, even if one somehow nested on this thread.
         Scratch scratch = cachedScratch ?? new Scratch();
         cachedScratch = null;
+        scratch.CollideKeyHashes = collideKeyHashesForTesting;
         try
         {
             var reader = new FrameReader(frame, scratch);
@@ -421,10 +490,11 @@ public static class SnapshotDecoder
         private const int KeyCacheLimit = KeyCacheSize / 2;
         private const int MaxProbes = 8;
 
-        // Random per process, so ordinary keys don't land in the same cache slots and hash buckets in every process. It is
-        // not a defense: FNV-1a with a seeded basis still has seed-independent collisions (see CollidingKeys in the
-        // tests). Crafted keys are bounded by MaxProbes here and by the probe limit and sort fallback in HasDuplicateKey.
-        private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
+        // The key hash is keyed per process (see SipHash13), so crafted keys can't target the cache or the duplicate
+        // table. MaxProbes here and the probe limit and sort fallback in HasDuplicateKey still bound the worst case.
+
+        /// <summary>Test-only (see <see cref="CollideKeyHashesForTesting"/>); set at the start of each decode.</summary>
+        public bool CollideKeyHashes { get; set; }
 
         private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
         private readonly string?[] cachedKeys = new string[KeyCacheSize];
@@ -539,7 +609,7 @@ public static class SnapshotDecoder
         // bounded number of comparisons each; past the cap a key is simply decoded without caching.
         public string Key(ReadOnlySpan<byte> bytes)
         {
-            uint hash = KeyHash(bytes, Seed);
+            uint hash = CollideKeyHashes ? 0 : KeyHash(bytes);
 
             if (HashTop == hashes.Length)
                 Array.Resize(ref hashes, hashes.Length * 2);
