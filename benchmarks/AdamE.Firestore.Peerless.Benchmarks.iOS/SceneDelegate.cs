@@ -37,9 +37,17 @@ public sealed class SceneDelegate : UIResponder, IUIWindowSceneDelegate
         catch (Exception exception)
         {
             // Bad launch arguments: record why, where the script looks, instead of leaving it to see a dead process.
-            BenchmarkRunner.RecordStartupFailure(exception);
+            // It always logs PEERLESS_DONE and never throws, so a failure to write the files can't crash WillConnect.
+            bool recorded = BenchmarkRunner.RecordStartupFailure(exception);
             label.Text = $"Bad launch arguments: {exception.Message}";
             run = Task.CompletedTask;
+            if (!recorded)
+            {
+                // The script reads the console file, which couldn't be written either: end the process, as an unopenable
+                // result file does below, so it reports process-died at once instead of waiting out its timeout.
+                Environment.FailFast($"Bad launch arguments, and they could not be recorded: {exception.Message}", exception);
+            }
+
             return;
         }
 

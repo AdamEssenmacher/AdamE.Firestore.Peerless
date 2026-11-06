@@ -70,6 +70,9 @@ internal interface IBenchmarkPlatform<TSample>
     /// <summary>Writes <see cref="SeedSpec.Document"/> for indexes [start, start + count) in one batch, through the seeder.</summary>
     Task SeedBatchAsync(string collection, int start, int count);
 
+    /// <summary>Writes <see cref="SeedSpec.EveryKind"/> as one document, through the seeder.</summary>
+    Task SeedEveryKindAsync(string collection, string documentId);
+
     /// <summary>
     /// Starts listening to a whole collection through the measured instance. <c>Latest</c> returns the listener's most
     /// recent conversion, which the phase keeps alive through the after-remove settle, as an app's view model would.
@@ -126,6 +129,32 @@ internal static class BenchmarkPhases
     {
         for (int start = 0; start < size; start += BenchmarkPlan.SeedBatchSize)
             await platform.SeedBatchAsync(collection, start, Math.Min(BenchmarkPlan.SeedBatchSize, size - start)).ConfigureAwait(false);
+    }
+
+    /// <summary>The verify check's documents: <see cref="SeedSpec.Document"/> for these indexes, plus the every-kind one.</summary>
+    public const int VerifyDocuments = 10;
+
+    public const string EveryKindDocumentId = "every-kind";
+
+    /// <summary>
+    /// Seeds the verify check's collection: <see cref="VerifyDocuments"/> documents the way every phase seeds them
+    /// (<see cref="SeedAsync"/>), then the every-kind document.
+    /// </summary>
+    public static async Task SeedVerifyAsync<TSample>(IBenchmarkPlatform<TSample> platform, string collection)
+        where TSample : IBenchmarkSample
+    {
+        await SeedAsync(platform, collection, VerifyDocuments).ConfigureAwait(false);
+        await platform.SeedEveryKindAsync(collection, EveryKindDocumentId).ConfigureAwait(false);
+    }
+
+    /// <summary>What <see cref="SeedVerifyAsync"/> wrote, by document path (<c>collection/id</c>).</summary>
+    public static Dictionary<string, Dictionary<string, object?>> VerifyExpected(string collection)
+    {
+        var expected = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
+        for (int index = 0; index < VerifyDocuments; index++)
+            expected[$"{collection}/{BenchmarkPlan.DocumentId(index)}"] = SeedSpec.Document(index);
+        expected[$"{collection}/{EveryKindDocumentId}"] = SeedSpec.EveryKind();
+        return expected;
     }
 
     // One phase: seed, listen (to the whole collection, or to its first document), take the initial snapshot and the
