@@ -86,24 +86,19 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         "peerless");
 
     /// <summary>
-    /// Records a failure before the run could start (for example, bad launch arguments) in the files the script reads:
-    /// a run file with the failure and outcome, and the console line it waits for. The file names come from
-    /// <c>-runFiles</c>, which the script always passes (the mode whose files it watches), not from <c>-mode</c>,
-    /// which may be the very argument that failed.
+    /// Records a failure before the run could start (for example, bad launch arguments) in the files the script reads
+    /// (<see cref="StartupFailure"/>, shared with Android): a run file with the failure and outcome, and the console
+    /// file with the PEERLESS_DONE line it waits for. The file names come from <c>-runFiles</c>, which the script
+    /// always passes (the mode whose files it watches), not from <c>-mode</c>, which may be the very argument that
+    /// failed. The PEERLESS_DONE line always reaches the console and nothing is thrown; returns false when the files
+    /// could not be written.
     /// </summary>
-    public static void RecordStartupFailure(Exception exception)
-    {
-        string mode = NSUserDefaults.StandardUserDefaults.StringForKey("runFiles") is { Length: > 0 } requested
-            && requested.All(static c => char.IsAsciiLetterOrDigit(c) || c == '-')
-                ? requested
-                : "peered";
-        string directory = ResultsDirectory;
-        _ = Directory.CreateDirectory(directory);
-        string reason = exception.ToString().ReplaceLineEndings(" | ");
-        File.WriteAllText(Path.Combine(directory, $"{mode}-run.txt"), $"failure: startup: {reason}\noutcome: failed\n");
-        File.WriteAllText(Path.Combine(directory, $"{mode}-console.txt"), $"{Tag} PEERLESS_DONE failed: {reason}\n");
-        Console.WriteLine($"{Tag} PEERLESS_DONE failed: {reason}");
-    }
+    public static bool RecordStartupFailure(Exception exception) => StartupFailure.Record(
+        exception,
+        NSUserDefaults.StandardUserDefaults.StringForKey("runFiles"),
+        static () => ResultsDirectory,
+        static line => Console.WriteLine($"{Tag} {line}"),
+        consoleFileTag: Tag);
 
     public async Task RunAsync()
     {
@@ -128,6 +123,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
             writer.Note("processors", Environment.ProcessorCount.ToString(CultureInfo.InvariantCulture));
             writer.Note("sizes", string.Join(',', options.Plan.Sizes));
             writer.Note("updatesPerSize", options.Plan.UpdatesPerSize.ToString(CultureInfo.InvariantCulture));
+            writer.Note("singleUpdates", options.Plan.SingleDocumentUpdates.ToString(CultureInfo.InvariantCulture));
             writer.Note("stopwatchFrequency", Stopwatch.Frequency.ToString(CultureInfo.InvariantCulture));
             GCMemoryInfo memory = GC.GetGCMemoryInfo();
             writer.Note("gc", $"server={System.Runtime.GCSettings.IsServerGC} latency={System.Runtime.GCSettings.LatencyMode} "
@@ -253,52 +249,46 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     {
         const string collection = "verify";
         Report("verify: seeding");
-        CollectionReference reference = Seeding.GetCollection(collection);
-        WriteBatch batch = Seeding.CreateBatch();
-        var expected = new Dictionary<string, Dictionary<string, object?>>(StringComparer.Ordinal);
-        for (int index = 0; index < 10; index++)
-        {
-            string id = BenchmarkPlan.DocumentId(index);
-            _ = batch.SetData(SeedData.Document(Seeding, index), reference.GetDocument(id));
-            expected[$"{collection}/{id}"] = SeedSpec.Document(index);
-        }
-
-        _ = batch.SetData(SeedData.EveryKind(Seeding), reference.GetDocument("every-kind"));
-        expected[$"{collection}/every-kind"] = SeedSpec.EveryKind();
-        await WriteAsync(batch.CommitAsync(), "Seeding verify").ConfigureAwait(false);
+        await BenchmarkPhases.SeedVerifyAsync(this, collection).ConfigureAwait(false);
+        Dictionary<string, Dictionary<string, object?>> expected = BenchmarkPhases.VerifyExpected(collection);
 
         Query query = Listening.GetCollection(collection).OrderedBy(FieldPath.GetDocumentId());
         var model = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         var peerless = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
-        (IDisposable registration, PeeredSampler sampler) = Listen(sampler =>
-            query.AddSnapshotListener(sampler.OnQuery));
-        // The two listeners compared below register separately, so their first snapshots needn't be the same one: one
-        // may come from the cache before the target is current, the other after. Each keeps its first snapshot from the
-        // server instead, which is the same data with the same metadata.
-        IListenerRegistration modelRegistration = query.AddSnapshotListener((snapshot, error) =>
-        {
-            try
-            {
-                if (snapshot is null)
-                    model.TrySetException(new InvalidOperationException(error?.LocalizedDescription ?? "No snapshot."));
-                else if (!snapshot.Metadata.IsFromCache)
-                    model.TrySetResult(PeeredConversion.Query(snapshot));
-            }
-            catch (Exception exception)
-            {
-                model.TrySetException(exception);
-            }
-        });
-        using IDisposable peerlessRegistration = PeerlessListener.Listen(
-            query,
-            snapshot =>
-            {
-                if (!snapshot.Metadata.IsFromCache)
-                    peerless.TrySetResult(snapshot);
-            },
-            error => peerless.TrySetException(error));
+        // Every listener registers inside the try, so if one fails to register (Listen throwing, say) the ones before it
+        // are still removed.
+        IDisposable? registration = null;
+        IListenerRegistration? modelRegistration = null;
+        IDisposable? peerlessRegistration = null;
         try
         {
+            (registration, PeeredSampler sampler) = Listen(sampler => query.AddSnapshotListener(sampler.OnQuery));
+            // The two listeners compared below register separately, so their first snapshots needn't be the same one:
+            // one may come from the cache before the target is current, the other after. Each keeps its first snapshot
+            // from the server instead, which is the same data with the same metadata.
+            modelRegistration = query.AddSnapshotListener((snapshot, error) =>
+            {
+                try
+                {
+                    if (snapshot is null)
+                        model.TrySetException(new InvalidOperationException(error?.LocalizedDescription ?? "No snapshot."));
+                    else if (!snapshot.Metadata.IsFromCache)
+                        model.TrySetResult(PeeredConversion.Query(snapshot));
+                }
+                catch (Exception exception)
+                {
+                    model.TrySetException(exception);
+                }
+            });
+            peerlessRegistration = PeerlessListener.Listen(
+                query,
+                snapshot =>
+                {
+                    if (!snapshot.Metadata.IsFromCache)
+                        peerless.TrySetResult(snapshot);
+                },
+                error => peerless.TrySetException(error));
+
             using var timeout = new CancellationTokenSource(VerifyTimeout);
             // As BenchmarkPhases.NextAsync does, skip a partial snapshot from cache; a server snapshot is compared
             // whatever it holds. The documents compared are that sample's own conversion, not whatever came later.
@@ -340,8 +330,9 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         }
         finally
         {
-            registration.Dispose();
-            modelRegistration.Remove();
+            registration?.Dispose();
+            modelRegistration?.Remove();
+            peerlessRegistration?.Dispose();
         }
     }
 
@@ -399,6 +390,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                 });
 
             using var stop = new CancellationTokenSource();
+            Exception? bodyFailure = null;
             Task writes = Task.Run(async () =>
             {
                 for (int write = 0; !stop.IsCancellationRequested; write++)
@@ -420,11 +412,28 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
                 await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
             }
+            catch (Exception exception)
+            {
+                bodyFailure = exception;
+                throw;
+            }
             finally
             {
-                registration.Dispose(); // already disposed unless the round failed first, when this cleans it up
+                // As on Android. A timeout must not leave the listener or the writes running into the checks that follow.
+                // A write fault is observed here (and, as the likely cause, replaces a timeout it led to); the bound keeps
+                // a stalled write from hanging the run. The writes are cancelled first, so a Dispose that throws can't
+                // leave them running. The registration is already disposed unless the round failed first.
                 await stop.CancelAsync().ConfigureAwait(false);
-                await writes.ConfigureAwait(false);
+                registration.Dispose();
+                try
+                {
+                    await writes.WaitAsync(VerifyTimeout).ConfigureAwait(false);
+                }
+                catch (Exception writeFailure) when (bodyFailure is not null && !(bodyFailure is TimeoutException && writes.IsFaulted))
+                {
+                    // Any other failure of the body (a listener error, say) is the real one: keep it, report this.
+                    Report($"dispose race: writes also failed: {writeFailure.GetType().Name}: {writeFailure.Message}");
+                }
             }
         }
 
@@ -467,6 +476,10 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         await WriteAsync(batch.CommitAsync(), $"Seeding {collection}").ConfigureAwait(false);
     }
 
+    public Task SeedEveryKindAsync(string collection, string documentId) => WriteAsync(
+        Seeding.GetCollection(collection).GetDocument(documentId).SetDataAsync(SeedData.EveryKind(Seeding)),
+        $"Seeding {collection}/{documentId}");
+
     public (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) ListenToCollection(string collection)
     {
         return Listen(Listening.GetCollection(collection));
@@ -482,20 +495,20 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     {
         CollectionReference parent = Seeding.GetCollection(collection);
         DocumentReference target = parent.GetDocument(documentId);
-        NSNumber value = NSNumber.FromInt64(version);
-        NSString[] keys = [new NSString("version"), new NSString("updatedAt")];
         // Built here, not in the write: the phases start the write→callback timer between the two.
         Timestamp now = Timestamp.Create();
-        var fields = NSDictionary<NSObject, NSObject>.FromObjectsAndKeys([value, now], keys, keys.Length);
+        // The version and the keys get no peers (they may be tagged pointers, whose peers the listener's conversions
+        // can own); see UpdateFields.
+        NSDictionary<NSObject, NSObject> fields = UpdateFields.Create(version, now);
         return () =>
         {
             Task write = target.UpdateDataAsync(fields);
             // The peer table is process-wide, so the seeder's peers are disposed as soon as the write is issued (the SDK
             // holds its own retains): left for the GC, they would pile up between settles and be counted as listener
-            // cost. On the main queue, queued now: the listener's snapshot for this write is queued there only after
-            // a round trip to the emulator, and no conversion can be using a peer (a small NSNumber or NSString is a
-            // tagged pointer, so the listener's own values can share it) while it is disposed.
-            NSObject[] harness = [parent, target, value, keys[0], keys[1], now, fields];
+            // cost. Each is a new heap object, so the harness owns its peer. On the main queue, queued now, as the
+            // listener's conversions run there: its snapshot for this write is queued only after a round trip to the
+            // emulator.
+            NSObject[] harness = [parent, target, now, fields];
             DispatchQueue.MainQueue.DispatchAsync(() =>
             {
                 foreach (NSObject peer in harness)

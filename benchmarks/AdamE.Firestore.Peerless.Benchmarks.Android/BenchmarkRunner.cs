@@ -83,27 +83,17 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             ?? throw new InvalidOperationException("The app has no files directory.");
 
     /// <summary>
-    /// Records a failure before the run could start (bad intent extras) in the files the script reads: a run file with
-    /// the failure and outcome, and the PEERLESS_DONE line it waits for. The file name comes from the raw <c>mode</c>
-    /// extra the script passed (the mode whose files it pulls), even when that extra is what failed.
+    /// Records a failure before the run could start (bad intent extras) in the files the script reads
+    /// (<see cref="StartupFailure"/>, shared with iOS): a run file with the failure and outcome, and the PEERLESS_DONE
+    /// line it waits for, which is always logged. The file name comes from the raw <c>mode</c> extra the script passed
+    /// (the mode whose files it pulls), even when that extra is what failed. Never throws; a failure to write the run
+    /// file is added to the logged line.
     /// </summary>
-    public static void RecordStartupFailure(Context context, Intent? intent, Exception exception)
-    {
-        string reason = exception.ToString().ReplaceLineEndings(" | ");
-        try
-        {
-            string mode = intent?.GetStringExtra("mode") is { Length: > 0 } requested
-                && requested.All(static c => char.IsAsciiLetterOrDigit(c) || c == '-')
-                    ? requested
-                    : "peered";
-            File.WriteAllText(Path.Combine(ResultsDirectory(context), $"{mode}-run.txt"),
-                $"failure: startup: {reason}\noutcome: failed\n");
-        }
-        finally
-        {
-            Log.Error(Tag, $"PEERLESS_DONE failed: {reason}");
-        }
-    }
+    public static void RecordStartupFailure(Context context, Intent? intent, Exception exception) => _ = StartupFailure.Record(
+        exception,
+        intent?.GetStringExtra("mode"),
+        () => ResultsDirectory(context),
+        static line => Log.Error(Tag, line));
 
     public async Task RunAsync()
     {
@@ -138,7 +128,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 // Every check runs and records its verdict before a failure ends the run, including a check that throws.
                 string?[] failures =
                 [
-                    await CheckAsync("verify", () => VerifyAsync(listening, seeding)).ConfigureAwait(false),
+                    await CheckAsync("verify", () => VerifyAsync(listening)).ConfigureAwait(false),
                     await CheckAsync("disposeRace", DisposeRaceAsync).ConfigureAwait(false),
                     await CheckAsync("refusedListen", RefusedListenAsync).ConfigureAwait(false),
                 ];
@@ -248,16 +238,11 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     /// both Peerless deliveries must decode to equal values. Covers every value kind, including ones the benchmark
     /// documents don't use.
     /// </summary>
-    private async Task VerifyAsync(FirebaseFirestore listening, FirebaseFirestore seeding)
+    private async Task VerifyAsync(FirebaseFirestore listening)
     {
         const string collection = "verify";
         Report("verify: seeding");
-        CollectionReference reference = seeding.Collection(collection);
-        WriteBatch batch = seeding.Batch();
-        for (int index = 0; index < 10; index++)
-            _ = batch.Set(reference.Document(BenchmarkPlan.DocumentId(index)), SeedData.Document(seeding, index));
-        _ = batch.Set(reference.Document("every-kind"), SeedData.EveryKind(seeding));
-        await WriteAsync(batch.Commit(), "Seeding verify").ConfigureAwait(false);
+        await BenchmarkPhases.SeedVerifyAsync(this, collection).ConfigureAwait(false);
 
         var direct = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         var bytes = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -507,6 +492,10 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
             _ = batch.Set(reference.Document(BenchmarkPlan.DocumentId(index)), SeedData.Document(Seeding, index));
         await WriteAsync(batch.Commit(), $"Seeding {collection}").ConfigureAwait(false);
     }
+
+    public Task SeedEveryKindAsync(string collection, string documentId) => WriteAsync(
+        Seeding.Collection(collection).Document(documentId).Set(SeedData.EveryKind(Seeding)),
+        $"Seeding {collection}/{documentId}");
 
     // The collection and document references are released once the listen is registered, and disposing the
     // registration removes the listener and, in peered mode, then disposes the sampler, so none of their GREFs is left
