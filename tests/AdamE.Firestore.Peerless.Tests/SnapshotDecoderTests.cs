@@ -444,7 +444,8 @@ public sealed class SnapshotDecoderTests
     [Fact]
     public void Keys_crafted_to_collide_under_FNV_1a_spread_under_the_keyed_hash()
     {
-        // These keys collide under FNV-1a for every seed, which is why the decoder no longer uses it.
+        // These keys collide under FNV-1a for every seed, which is why the decoder no longer uses it. (A sanity check
+        // that they aren't special to SipHash; the folded hash and slot choice aren't tested here.)
         string[] keys = CollidingKeys();
         var random = new Random(7);
         for (int trial = 0; trial < 20; trial++)

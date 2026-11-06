@@ -49,7 +49,7 @@ public static class SnapshotDecoder
     }
 
     // SipHash-1-3 (one compression round per 8-byte word, three finalization rounds, as Rust and Python use for hash
-    // tables), folded to 32 bits. Internal so the tests can check it against the reference vectors.
+    // tables). Internal so the tests can check it against the reference vectors.
     internal static ulong SipHash13(ReadOnlySpan<byte> bytes, ulong key0, ulong key1)
     {
         ulong v0 = 0x736f6d6570736575UL ^ key0;
@@ -89,6 +89,7 @@ public static class SnapshotDecoder
         }
     }
 
+    // SipHash-1-3 folded to 32 bits: every bit still depends on the key, and the low bits pick the cache slot.
     private static uint KeyHash(ReadOnlySpan<byte> bytes)
     {
         ulong hash = SipHash13(bytes, HashKey0, HashKey1);
