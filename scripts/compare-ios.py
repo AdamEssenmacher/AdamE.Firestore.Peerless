@@ -8,6 +8,10 @@ import csv, re, statistics, sys
 from collections import defaultdict
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+sys.path.append(str(Path(__file__).resolve().parent))  # python3 -I leaves scripts/ off sys.path
+from settle_points import kind_of, last_settled, settle_points
+
 out = Path(sys.argv[1])
 runs = [Path(arg) for arg in sys.argv[2:]]
 MODES = ["peered", "peerless"]
@@ -17,37 +21,26 @@ def mode_of(run):
     return next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
 
 
-def settle_key(point):
-    if point == "before-listen": return -1
-    if point == "after-initial": return 0
-    if point.startswith("after-update-"): return int(point.rsplit("-", 1)[1])
-    return None
-
-
 samples = defaultdict(list)  # (mode, phase, size, kind) -> rows
 settled = defaultdict(list)  # (mode, phase, size, point) -> peer table entries
 notes = []
 for run in runs:
     mode = mode_of(run)
-    # As on Android: each sample's baseline is the peer table at the last settle point before it, and updates straight
-    # after a settle are kept apart (*update, after a settle*), since the previous snapshots' entries are gone then.
-    run_settles = defaultdict(list)
-    for row in csv.DictReader(open(run / f"{mode}-settled.csv")):
-        key = settle_key(row["point"])
-        if key is not None:
-            run_settles[(row["phase"], int(row["size"]))].append((key, int(row["peers"])))
+    # As on Android (scripts/settle_points.py): each sample's baseline is the peer table at the last settle point
+    # before it, and updates straight after a settle are kept apart (*update, after a settle*), since the previous
+    # snapshots' entries are gone then.
+    run_settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
+    run_settles = settle_points(run_settled, "peers")
+    for row in run_settled:
         if row["phase"] in ("query", "document"):
             settled[(mode, row["phase"], int(row["size"]), row["point"])].append(int(row["peers"]))
     for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
         # Partial snapshots are skipped: older runs wrote them under phase "skipped", newer ones as kind "partial".
         if row["phase"] not in ("query", "document") or row["kind"] == "partial":
             continue
-        seq, marks = int(row["seq"]), run_settles[(row["phase"], int(row["size"]))]
-        earlier = [p for k, p in marks if k < seq or (seq == 0 and k == -1)]
-        row["peers_over_settled"] = str(float(row["peers_peak"]) - earlier[-1]) if earlier else ""
-        kind = row["kind"]
-        if kind == "update" and any(k == seq - 1 for k, _ in marks):
-            kind = "update, after a settle"
+        base = last_settled(run_settles, row)
+        row["peers_over_settled"] = str(float(row["peers_peak"]) - base) if base is not None else ""
+        kind = kind_of(run_settles, row)
         samples[(mode, row["phase"], int(row["size"]), kind)].append(row)
     host = (run / "host.txt").read_text() if (run / "host.txt").exists() else ""
     loads = re.findall(r"load averages?: ([\d.]+)", host)

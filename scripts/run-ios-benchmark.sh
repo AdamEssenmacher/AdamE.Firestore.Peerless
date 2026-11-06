@@ -43,18 +43,12 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS"
 bundle="com.adame.firestore.peerless.benchmarks"
 out="${RESULTS_DIR:-$root/results/ios}/$(date +%Y%m%d-%H%M%S)-$mode${RUN_LABEL:+-$RUN_LABEL}"
+# shellcheck source-path=SCRIPTDIR source=lib/benchmark-checks.sh
+source "$root/scripts/lib/benchmark-checks.sh"
 
 # The run clears the emulator's database, so make sure it's ours: never the CI runner's emulators (8080/9099/4400),
-# and the hub must report a Firestore emulator on this port (as the Android script checks).
-case "$port" in
-  8080|9099|4400) echo "Port $port belongs to another Firebase emulator setup on this machine (the CI runner's); use 8181." >&2; exit 1 ;;
-esac
-hub="${FIREBASE_HUB_PORT:-4501}"
-reported="$(curl -sf "http://$host:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
-if [ "$reported" != "$port" ]; then
-  echo "The Firebase emulator hub on $hub doesn't report a Firestore emulator on $port (it reports: ${reported:-nothing}). Start it with: firebase emulators:start --only firestore --project demo-peerless" >&2
-  exit 1
-fi
+# and the hub must report a Firestore emulator on this port (scripts/lib/benchmark-checks.sh, shared with Android).
+check_firestore_emulator "$host" "$port"
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
@@ -97,14 +91,8 @@ echo "results: $out"
 
 # The run only counts if it finished, as NativeAOT, with its own checks (calibration, verify) passed.
 [[ "$outcome" == "done" ]] || { echo "run did not finish: $outcome" >&2; exit 1; }
-grep -qx "outcome: completed" "$out/$mode-run.txt" \
-  || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
-grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
-# The run must have used the emulator this script checked and cleared, however its launch arguments were spelled.
-grep -qx "emulator: $host:$port" "$out/$mode-run.txt" \
-  || { echo "run used a different emulator than $host:$port: $(grep '^emulator:' "$out/$mode-run.txt")" >&2; exit 1; }
-# A run without its verify check proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
-grep -q "^verify: read back as written" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
-  || { echo "run has no passing verify check (launched with -verify NO? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }
+# Completed, NativeAOT, against the emulator this script checked and cleared, verify passed (unless ALLOW_NO_VERIFY=1):
+# scripts/lib/benchmark-checks.sh, shared with Android.
+check_run_file "$out/$mode-run.txt" "read back as written" "launched with -verify NO?" "$host:$port"
 # Only a finished, passing run is summarized; a summarizer error still fails the script.
 python3 -I "$root/scripts/summarize-ios-benchmark.py" "$out" >/dev/null

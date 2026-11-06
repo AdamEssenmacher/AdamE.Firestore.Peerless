@@ -1,37 +1,29 @@
 #!/usr/bin/env python3
 """Summarizes one benchmark run directory into summary.md (medians and ranges per phase, size and kind)."""
-import csv, statistics, sys
+import csv, sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.append(str(Path(__file__).resolve().parent))  # python3 -I leaves scripts/ off sys.path
+from settle_points import f, group_samples, is_partial, last_settled as settled_before, med, rng, settle_points
 
 run = Path(sys.argv[1])
 mode = next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
 rows = list(csv.DictReader(open(run / f"{mode}-samples.csv")))
 settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
 
-def f(row, key): return float(row.get(key) or 0.0)
-def med(values): return statistics.median(values) if values else 0.0
 # Write to snapshot fully converted. Runs before the column was renamed call it write_to_callback_ms; step-1 runs
 # (results/android-peered) measured only to callback entry, so their figures are not comparable with this one.
 def write_to_done(row): return f(row, "write_to_done_ms" if "write_to_done_ms" in row else "write_to_callback_ms")
 has_peak = bool(rows) and "gref_peak" in rows[0]
 
 # The settle point before each sample: before-listen for an initial snapshot, otherwise the latest of after-initial /
-# after-update-N that came before it. Older runs did not record it per sample, so it is reconstructed from the order.
-def settle_key(point):
-    if point == "before-listen": return -1
-    if point == "after-initial": return 0
-    if point.startswith("after-update-"): return int(point.rsplit("-", 1)[1])
-    return None
-settles = {}
-for row in settled:
-    key = settle_key(row["point"])
-    if key is not None:
-        settles.setdefault((row["phase"], int(row["size"])), []).append((key, int(row["gref"])))
+# after-update-N that came before it. Older runs did not record it per sample, so it is reconstructed from the order
+# (scripts/settle_points.py, shared with the other summarizer and the comparison scripts).
+settles = settle_points(settled, "gref")
 def last_settled(row):
     if row.get("gref_last_settled"): return float(row["gref_last_settled"])
-    seq = int(row["seq"])
-    earlier = [g for k, g in settles.get((row["phase"], int(row["size"])), []) if k < seq or (seq == 0 and k == -1)]
-    return float(earlier[-1]) if earlier else None
+    return settled_before(settles, row)
 def peak_over_settled(row):
     if row.get("gref_peak_over_settled"): return float(row["gref_peak_over_settled"])
     base = last_settled(row)
@@ -62,20 +54,8 @@ lines = [f"# {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().
          + ("" if has_peak else " n/a: this run predates peak sampling."), "",
          "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→done ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|"]
-def after_settle(row):
-    seq = int(row["seq"])
-    return seq >= 1 and any(k == seq - 1 for k, _ in settles.get((row["phase"], int(row["size"])), []))
-# Partial snapshots: kind "partial" under the phase they came from (older runs wrote them all as phase "skipped").
-def is_partial(row): return row["phase"] == "skipped" or row["kind"] == "partial"
-groups = {}
-for row in rows:
-    if is_partial(row): continue
-    kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
-    groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
-def rng(values, scale=1.0):
-    values = [v / scale for v in values if v is not None]
-    if not values: return "n/a"
-    return f"{med(values):.1f} [{min(values):.1f}–{max(values):.1f}]"
+# Updates straight after a settle point are their own kind; partial snapshots are left out (listed below).
+groups = group_samples(rows, settles)
 for (phase, size, kind), group in groups.items():
     lines.append("| " + " | ".join([
         phase, str(size), kind, str(len(group)), str(int(med([f(r, "values") for r in group]))),

@@ -37,6 +37,10 @@ project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android"
 package="com.adame.firestore.peerless.benchmarks"
 files="/sdcard/Android/data/$package/files"
 out="${RESULTS_DIR:-$root/results/android}/$(date +%Y%m%d-%H%M%S)-$mode${RUN_LABEL:+-$RUN_LABEL}"
+# shellcheck source-path=SCRIPTDIR source=lib/benchmark-checks.sh
+source "$root/scripts/lib/benchmark-checks.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/logcat-buffers.sh
+source "$root/scripts/lib/logcat-buffers.sh"
 
 # This script changes a global setting and clears logcat, so it only runs against an emulator unless told otherwise.
 # It exits non-zero unless the run completed and its summary was written.
@@ -60,30 +64,39 @@ fi
 # Everything this script changes on the device is undone when it exits, however it exits: the hidden-API setting,
 # the logcat buffer size and a port forward it added. (Clearing logcat, done below, can't be undone.)
 previous_policy="$(adb -s "$serial" shell settings get global hidden_api_policy | tr -d '\r')"
-# `logcat -g` prints "ring buffer is 256 KiB" on newer Android and "256Kb" on Android 11 and earlier; a plain byte
-# count is accepted too. The main, system and crash buffers (the ones logcat.txt's entries come from; `logcat -d` may
-# also read the kernel buffer, which is left alone) are each resized and restored on their own, since their sizes can
-# differ. A buffer whose size can't be read is still enlarged on an emulator, and left
-# enlarged afterwards (16 MB of logd memory on an AVD is harmless), but left alone on a device, where it couldn't be
-# put back. Whenever main (which holds the ART dumps and the monodroid-gc lines) isn't enlarged, host.txt notes that
-# the run's logcat may be incomplete, and summary.md repeats it.
+# The main, system and crash buffers (the ones logcat.txt's entries come from; `logcat -d` may also read the kernel
+# buffer, which is left alone) are each checked, enlarged to 16M and restored on their own, since their sizes can
+# differ (scripts/lib/logcat-buffers.sh reads the sizes). A buffer already 16M or bigger is left as it is. A smaller one
+# is restored to its exact previous size, which `logcat -g` doesn't always show (it rounds down to whole MiB), so the
+# logd size properties are consulted too. A buffer whose exact size can't be known is still enlarged on an emulator,
+# and left enlarged afterwards (16 MB of logd memory on an AVD is harmless), but left alone on a device, where it
+# couldn't be put back. Whenever main (which holds the ART dumps and the monodroid-gc lines) ends up smaller than 16M,
+# host.txt notes that the run's logcat may be incomplete, and summary.md repeats it.
 log_buffers=(main system crash)
-previous_log_sizes=()
+log_restore=() # the size to restore each buffer to ("" if it can't be restored), for the buffers it enlarges
 log_enlarge=() # whether to enlarge each buffer: decided once here, used by the warning and the resize below
+log_big=()     # whether the buffer is already at least 16M
 log_resized=()
+log_props="$(adb -s "$serial" shell getprop 2>/dev/null | tr -d '\r' || true)"
 for buffer in "${log_buffers[@]}"; do
-  size="$(adb -s "$serial" logcat -g -b "$buffer" 2>/dev/null \
-    | sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG' || true)"
-  previous_log_sizes+=("$size")
-  log_resized+=(0)
-  if [ -n "$size" ] || [ "$on_emulator" = "1" ]; then enlarge=1; else enlarge=0; fi
+  printed="$(adb -s "$serial" logcat -g -b "$buffer" 2>/dev/null | log_printed_size || true)"
+  exact="$(log_exact_size "$printed" "$log_props" "$buffer" || true)"
+  printed_bytes="$(log_size_bytes "$printed" || true)"
+  big=0; enlarge=0
+  if [ -n "$printed_bytes" ] && [ "$printed_bytes" -ge "$LOG_TARGET_BYTES" ]; then big=1
+  elif [ -n "$exact" ] || [ "$on_emulator" = "1" ]; then enlarge=1; fi
+  log_big+=("$big")
   log_enlarge+=("$enlarge")
-  if [ -z "$size" ]; then
+  log_restore+=("${exact:+$(log_size_arg "$exact")}")
+  log_resized+=(0)
+  if [ "$big" = "0" ] && [ -z "$exact" ]; then
+    if [ -z "$printed" ]; then why="Could not read $serial's $buffer logcat buffer size"
+    else why="logcat shows $serial's $buffer buffer as $printed, rounded down, and its exact size is unknown"; fi
     if [ "$enlarge" = "1" ]; then
-      echo "Could not read $serial's $buffer logcat buffer size; if it is enlarged, it won't be restored afterwards." >&2
+      echo "$why; if it is enlarged, it won't be restored afterwards." >&2
     else
       if [ "$buffer" = "main" ]; then what="its entries, including the long ART dumps,"; else what="its entries"; fi
-      echo "Could not read $serial's $buffer logcat buffer size; it won't be enlarged, so $what may be cut off." >&2
+      echo "$why; it won't be enlarged, so $what may be cut off." >&2
     fi
   fi
 done
@@ -98,23 +111,16 @@ cleanup() {
     adb -s "$serial" reverse --remove "tcp:$port" >/dev/null 2>&1 || true
   fi
   for i in "${!log_buffers[@]}"; do
-    if [ "${log_resized[$i]}" = "1" ] && [ -n "${previous_log_sizes[$i]}" ]; then
-      adb -s "$serial" logcat -b "${log_buffers[$i]}" -G "${previous_log_sizes[$i]}" >/dev/null 2>&1 \
-        || echo "Could not restore $serial's ${log_buffers[$i]} logcat buffer to ${previous_log_sizes[$i]}; it is still 16M." >&2
+    if [ "${log_resized[$i]}" = "1" ] && [ -n "${log_restore[$i]}" ]; then
+      adb -s "$serial" logcat -b "${log_buffers[$i]}" -G "${log_restore[$i]}" >/dev/null 2>&1 \
+        || echo "Could not restore $serial's ${log_buffers[$i]} logcat buffer to ${log_restore[$i]}; it is still 16M." >&2
     fi
   done
 }
 trap cleanup EXIT
 
-case "$port" in
-  8080|9099|4400) echo "Port $port belongs to another Firebase emulator setup on this machine (the CI runner's); use 8181." >&2; exit 1 ;;
-esac
-hub="${FIREBASE_HUB_PORT:-4501}"
-reported="$(curl -sf "http://127.0.0.1:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
-if [ "$reported" != "$port" ]; then
-  echo "The Firebase emulator hub on $hub doesn't report a Firestore emulator on $port (it reports: ${reported:-nothing}). Start it with: firebase emulators:start --only firestore --project demo-peerless" >&2
-  exit 1
-fi
+# The run clears the emulator's database, so make sure it's ours (scripts/lib/benchmark-checks.sh, shared with iOS).
+check_firestore_emulator 127.0.0.1 "$port"
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
@@ -150,9 +156,9 @@ for i in "${!log_buffers[@]}"; do
   fi
 done
 # Only main is tracked: it holds the ART dumps and monodroid-gc lines, so their counts from logcat.txt may be too low.
-# log_buffers[0] is main; it is unresized both when it was skipped above and when its -G failed.
+# log_buffers[0] is main; it is under 16M both when it was skipped above and when its -G failed.
 main_not_enlarged=0
-if [ "${log_resized[0]}" != "1" ]; then main_not_enlarged=1; fi
+if [ "${log_resized[0]}" != "1" ] && [ "${log_big[0]}" != "1" ]; then main_not_enlarged=1; fi
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
 load_before="$(uptime)"
@@ -188,11 +194,7 @@ if [[ "$outcome" != "done" ]]; then
   [ -z "$failure" ] || echo "run failed: $failure" >&2
   exit 1
 fi
-grep -qx "outcome: completed" "$out/$mode-run.txt" \
-  || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
-grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
-# A run without its verify checks proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
-grep -q "^verify: identical" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
-  || { echo "run has no passing verify check (launched with --ez verify false? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }
+# Completed, NativeAOT, verify passed (unless ALLOW_NO_VERIFY=1): scripts/lib/benchmark-checks.sh, shared with iOS.
+check_run_file "$out/$mode-run.txt" "identical" "launched with --ez verify false?"
 # Only a finished, passing run is summarized; a summarizer error still fails the script.
 python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null
