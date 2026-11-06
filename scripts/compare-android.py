@@ -9,12 +9,17 @@ from collections import defaultdict
 from pathlib import Path
 
 out = Path(sys.argv[1])
-runs = [Path(arg) for arg in sys.argv[2:]]
 MODES = ["peered", "peerless-direct", "peerless-bytes"]
 
 
 def mode_of(run):
-    return next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
+    return next((p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv")), None)
+
+
+# Folders that aren't runs (the check folders a `results/android/*/` glob also matches) are skipped.
+runs = [Path(arg) for arg in sys.argv[2:] if mode_of(Path(arg))]
+if not runs:
+    sys.exit("No run folders (with a *-samples.csv) given.")
 
 
 samples = defaultdict(list)  # (mode, phase, size, kind) -> rows
@@ -36,7 +41,8 @@ for run in runs:
         if key is not None:
             order[(row["phase"], int(row["size"]))].append((key, int(row["gref"])))
     for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
-        if row["phase"] not in ("query", "document"):
+        # Partial snapshots are skipped: older runs wrote them under phase "skipped", newer ones as kind "partial".
+        if row["phase"] not in ("query", "document") or row["kind"] == "partial":
             continue
         if not row.get("gref_peak_over_settled") and row.get("gref_peak"):
             seq = int(row["seq"])
@@ -56,10 +62,13 @@ for run in runs:
             art[(mode, m.group(1), int(m.group(2)), m.group(3))].append(int(m.group(4)))
     host = (run / "host.txt").read_text() if (run / "host.txt").exists() else ""
     loads = re.findall(r"load averages?: ([\d.]+)", host)
-    verify = re.search(r"^verify: (.*)$", (run / f"{mode}-run.txt").read_text(), re.M)
+    # The last verify note wins: a check that noted its verdict and then threw is noted again as THREW. Pipes are
+    # escaped so the note stays in its Markdown table cell.
+    verifies = re.findall(r"^verify: (.*)$", (run / f"{mode}-run.txt").read_text(), re.M)
+    verify = verifies[-1].replace("|", "\\|") if verifies else None
     outcome = re.search(r"^outcome: (.*)$", (run / f"{mode}-run.txt").read_text(), re.M)
     notes.append(f"| {run.name} | {mode} | {outcome.group(1) if outcome else '?'} | "
-                 f"{' → '.join(loads) if loads else '?'} | {verify.group(1) if verify else '?'} |")
+                 f"{' → '.join(loads) if loads else '?'} | {verify if verify else '?'} |")
 
 
 def med(rows, key, scale=1.0):
@@ -93,7 +102,8 @@ def table(title, key, scale, digits, explain):
         ratio = ""
         if "peered" in values and "peerless-direct" in values:
             p, d = values["peered"], values["peerless-direct"]
-            ratio = f" {p / d:,.0f}× |" if p and d else " – |"
+            # Two significant figures below 10×, so a ratio near or under 1 (Peerless no faster, or slower) shows.
+            ratio = (f" {p / d:,.0f}× |" if p / d >= 10 else f" {p / d:.2g}× |") if p and d else " – |"
         lines.append(f"| {label} | {kind} | " + " | ".join(cell(values[m], digits) for m in present) + " |" + ratio)
     lines.append("")
 
@@ -102,7 +112,9 @@ table("Wall time per snapshot (ms)", "wall_us", 1000, 2, "Callback start to full
 table("Main-thread CPU per snapshot (ms)", "thread_cpu_us", 1000, 2,
       "Thread CPU time on the callback (main) thread over the same span; for Peerless this includes Java encoding.")
 table("Managed allocation per snapshot (KB)", "alloc_bytes", 1024, 0,
-      ".NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode.")
+      ".NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode."
+      + (" The peerless-bytes column also leaves out the managed copy of each frame's byte[], which the JNI stub "
+         "makes before the sampler's first probe (issue #27)." if "peerless-bytes" in present else ""))
 table("JNI global references at peak during a snapshot (absolute)", "gref_peak", 1, 0,
       "The highest .NET-side count seen during the callback (sampled per document in peered mode): what an app sees, "
       "since an app never forces the settles this benchmark does. The .NET counter leaves out ~435 java.lang.Class "
@@ -118,7 +130,10 @@ lines += ["## Settled JNI global references (after forced .NET + Java GC)", "",
           "ART's own global reference table at the settle points (median across runs).", "",
           "| docs | point | " + " | ".join(present) + " |", "|---:|---|" + "---:|" * len(present)]
 for phase, size in sorted({(k[1], k[2]) for k in art}, key=lambda c: (c[0] != "query", c[1])):
-    for point in ("before-listen", "after-initial", "after-update-20", "after-remove"):
+    # The mid-run row is the last update settle the case has (update 20 in the query phase, 48 in the document phase).
+    updates = sorted({k[3] for k in art if k[1:3] == (phase, size) and re.fullmatch(r"after-update-\d+", k[3])},
+                     key=lambda p: int(p.rsplit("-", 1)[1]))
+    for point in ("before-listen", "after-initial", *updates[-1:], "after-remove"):
         if not any(art.get((m, phase, size, point)) for m in present):
             continue
         values = [art.get((m, phase, size, point)) for m in present]

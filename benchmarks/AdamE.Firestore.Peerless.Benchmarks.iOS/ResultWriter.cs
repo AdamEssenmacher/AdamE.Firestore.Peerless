@@ -34,7 +34,7 @@ internal sealed class ResultWriter : IDisposable
     /// <summary>A progress line, timestamped, for the console log.</summary>
     public void Log(string message) => Line(console, $"{DateTime.UtcNow:HH:mm:ss.fff} {message}");
 
-    public void Sample(string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds) =>
+    public void Sample(string phase, int size, int sequence, string kind, Sample sample, double? writeToDoneMilliseconds) =>
         Line(samples, string.Join(',',
             phase,
             Invariant(size),
@@ -57,7 +57,7 @@ internal sealed class ResultWriter : IDisposable
             Invariant(sample.Gen1Collections),
             Invariant(sample.Gen2Collections),
             Invariant(sample.GcPauseMicroseconds),
-            writeToCallbackMilliseconds is { } latency ? Invariant(latency) : string.Empty));
+            writeToDoneMilliseconds is { } latency ? Invariant(latency) : string.Empty));
 
     public void Settled(string phase, int size, string point, SettledReading reading) =>
         Line(settled, string.Join(',',

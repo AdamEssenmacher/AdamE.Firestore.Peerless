@@ -47,7 +47,16 @@ Medians (the per-size split for every row is in [the run's summary](20261103-134
 benchmark runs at its settle points, so nothing ever brings its count back down to the settled level. *Peak over
 settled* subtracts the count at the last settle point, which removes only references that survive a full GC.
 References earlier callbacks left for the GC since that settle are still included, so the figure grows with the number
-of callbacks since the settle. The cadence: a settle before listening, after the initial snapshot, and after every
+of callbacks since the settle. So are the harness's own references: the count is process-wide, and in these runs each
+update also left about 6 GREFs from outside the listener (the seeder's write arguments, its `DocumentReference` and
+returned task, the task's completion listener, and the status line's `Handler` and `Runnable`). The single-document
+phase shows it: the count at callback entry climbs by 40 per update while each callback adds 34, so by the 12th update
+about 72 of its 481 peak over settled are harness references (about 15%; a smaller share at larger sizes). The code
+now disposes those peers as soon as they are used and reuses one `Handler` and `Runnable`; no committed run has
+measured that change yet. The committed callbacks also include one harness `SnapshotMetadata` peer and JNI call each
+(the from-cache flag was read inside the measured window), and their *after-remove* counts include the sampler,
+listener registration and query reference peers. The code now reads the metadata after the window and disposes it,
+and releases those peers before the after-remove settle; no committed run has measured either change yet. The cadence: a settle before listening, after the initial snapshot, and after every
 5th update (every 12th in the single-document phase; every update in warmup). Between two settles, the count at
 callback entry climbs (1000 docs: from 4,120 to 9,188 over five updates) and drops again at the next settle. That is
 why *update, after a settle* rows show a lower peak over settled than the other updates. An earlier version of this
@@ -77,7 +86,8 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
     and Firestore's cached documents keep those `String` instances alive. It is still unknown why nested strings are
     not retained the same way.
   - About 0.5–1 `java.lang.Long` per update in the small phases. These come from the seeder's `Long.valueOf(n)` for
-    small n, which Java caches forever, so the peer lives forever. That's a harness artefact, not the listener.
+    small n, which Java caches forever, so the peer lives forever. That's a harness artefact, not the listener. The
+    seeder now creates a new `Long` per update and disposes it (not yet re-run).
 - **Write→callback latency** (seeder write to listener callback): 10–18 ms for small snapshots and 90–120 ms at
   500–1000 docs.
 
@@ -129,7 +139,10 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
 7. **The peered map walk was later made fair.** These runs converted each nested Java map with `keySet()` plus a
    `get(new String(key))` per entry. That costs an extra Java string and hash lookup per entry, which inflates the
    baseline. The code now walks `entrySet()` once. All numbers in this file predate the change. PR #3 re-ran the peered
-   path with the new walk and found allocation and GREF peaks unchanged (see its FINDINGS).
+   path with the new walk and found allocation and GREF peaks unchanged (see its FINDINGS). That re-run still read each
+   document's 16 top-level fields through the binding's `JavaDictionary`, whose enumerator also walks `keySet()` and
+   calls `get()` per key; the top-level map now goes through the same single `entrySet()` walk, and no run here or in
+   PR #3 has measured that yet.
 8. **Seeding is not free either.** Building 400-document write batches through the peered binding drove the runtime
    to its emergency GC threshold (`monodroid-gc: 46080 outstanding GREFs. Performing a full GC!`, 3 times while seeding
    1000 docs). Writes are out of scope, but a peered write path also gets close to ART's 51,200 limit. The summaries'
@@ -155,9 +168,12 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
   on the emulator (and warns if that fails) so it keeps working on stricter images. It restores the previous value
   when it exits, and refuses a serial that isn't an emulator unless `ALLOW_DEVICE=1` is set, because it also clears
   logcat. On a device it forwards the Firestore port with `adb reverse` and points the app at 127.0.0.1 (an emulator
-  uses 10.0.2.2), and removes the forward on exit. It also enlarges the logcat buffer to 16 MB so the ART dumps
-  survive, refuses the CI runner's ports (8080, 9099, 4400), checks through the emulator hub (4501) that the port is
-  really Firestore's, and exits non-zero unless the run completed and its summary was written.
+  uses 10.0.2.2), and removes the forward on exit. It also enlarges the main, system and crash logcat buffers to 16 MB
+  each so the ART dumps survive, restoring each one's size on exit and warning if that fails. A buffer whose size it
+  can't read is enlarged but not restored on an emulator, and left as it is on a device. Whenever the main buffer
+  isn't enlarged (left alone, or a failed resize, on either), host.txt and summary.md note that the run's logcat may
+  be incomplete. It refuses the CI runner's ports (8080, 9099, 4400), checks through the emulator hub (4501) that
+  the port is really Firestore's, and exits non-zero unless the run completed and its summary was written.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
 - `FIRESTORE_PORT=8181 scripts/run-android-peered.sh [serial] [am-start extras]` (now `run-android-benchmark.sh`), then

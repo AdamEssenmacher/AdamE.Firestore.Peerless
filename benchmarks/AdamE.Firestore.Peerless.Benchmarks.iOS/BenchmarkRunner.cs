@@ -191,17 +191,14 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     private static (IDisposable Registration, PeeredSampler Sampler) Listen(Func<PeeredSampler, IListenerRegistration> listen)
     {
         var sampler = new PeeredSampler();
-        return (new Registration(listen(sampler), sampler), sampler);
+        return (new Registration(listen(sampler)), sampler);
     }
 
-    // Keeps the sampler (and its latest conversion) alive until removal, as an app's view model would.
-    private sealed class Registration(IListenerRegistration registration, PeeredSampler sampler) : IDisposable
+    // Removes the listener. The sampler's latest conversion is kept alive by the shared phase, through the after-remove
+    // settle, as an app's view model would keep it.
+    private sealed class Registration(IListenerRegistration registration) : IDisposable
     {
-        public void Dispose()
-        {
-            registration.Remove();
-            GC.KeepAlive(sampler.Latest);
-        }
+        public void Dispose() => registration.Remove();
     }
 
     /// <summary>
@@ -276,18 +273,19 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         await batch.CommitAsync().ConfigureAwait(false);
     }
 
-    public (IDisposable Registration, ChannelReader<Sample> Samples) ListenToCollection(string collection)
+    public (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) ListenToCollection(string collection)
     {
         (IDisposable registration, PeeredSampler sampler) =
             Listen(sampler => Listening.GetCollection(collection).AddSnapshotListener(sampler.OnQuery));
-        return (registration, sampler.Samples);
+        return (registration, sampler.Samples, () => sampler.Latest);
     }
 
-    public (IDisposable Registration, ChannelReader<Sample> Samples) ListenToDocument(string collection, string documentId)
+    public (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) ListenToDocument(
+        string collection, string documentId)
     {
         (IDisposable registration, PeeredSampler sampler) = Listen(sampler =>
             Listening.GetCollection(collection).GetDocument(documentId).AddSnapshotListener(sampler.OnDocument));
-        return (registration, sampler.Samples);
+        return (registration, sampler.Samples, () => sampler.Latest);
     }
 
     public Func<Task> PrepareUpdate(string collection, string documentId, long version)
@@ -330,8 +328,10 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         Log($"unsettled {phase} {size} {point}: peers={entries} alive={alive} [{largest}]");
     }
 
-    public void Record(string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds) =>
-        results?.Sample(phase, size, sequence, kind, sample, writeToCallbackMilliseconds);
+    // Its column keeps the name write_to_callback_ms that the committed iOS runs use; it ends when the snapshot is fully
+    // converted, as on Android (write_to_done_ms).
+    public void Record(string phase, int size, int sequence, string kind, Sample sample, double? writeToDoneMilliseconds) =>
+        results?.Sample(phase, size, sequence, kind, sample, writeToDoneMilliseconds);
 
     public void Report(string message)
     {

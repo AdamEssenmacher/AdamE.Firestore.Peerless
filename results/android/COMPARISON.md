@@ -31,7 +31,7 @@ Callback start to fully converted.
 | 1000 | initial | 10,299.68 | 9.84 | 8.31 | 1,047× |
 | 1000 | update | 1,215.21 | 9.71 | 11.23 | 125× |
 | 1000 | update, after a settle | 1,249.59 | 6.13 | 7.11 | 204× |
-| 1 (doc) | initial | 0.76 | 0.11 | 0.11 | 7× |
+| 1 (doc) | initial | 0.76 | 0.11 | 0.11 | 6.9× |
 | 1 (doc) | update | 4.79 | 0.09 | 0.11 | 54× |
 | 1 (doc) | update, after a settle | 9.52 | 0.09 | 0.12 | 104× |
 
@@ -41,7 +41,7 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
-| 10 | initial | 6.45 | 0.80 | 0.60 | 8× |
+| 10 | initial | 6.45 | 0.80 | 0.60 | 8.1× |
 | 10 | update | 11.66 | 0.33 | 0.39 | 35× |
 | 10 | update, after a settle | 11.45 | 0.32 | 0.33 | 36× |
 | 100 | initial | 62.84 | 5.09 | 3.38 | 12× |
@@ -53,13 +53,13 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 | 1000 | initial | 1,317.06 | 9.48 | 8.05 | 139× |
 | 1000 | update | 689.01 | 9.33 | 10.95 | 74× |
 | 1000 | update, after a settle | 676.75 | 6.03 | 7.00 | 112× |
-| 1 (doc) | initial | 0.76 | 0.11 | 0.11 | 7× |
+| 1 (doc) | initial | 0.76 | 0.11 | 0.11 | 7.1× |
 | 1 (doc) | update | 1.33 | 0.08 | 0.11 | 16× |
 | 1 (doc) | update, after a settle | 1.64 | 0.08 | 0.11 | 20× |
 
 ## Managed allocation per snapshot (KB)
 
-.NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode.
+.NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode. The peerless-bytes column also leaves out the managed copy of each frame's byte[], which the JNI stub makes before the sampler's first probe (issue #27).
 
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
@@ -85,9 +85,9 @@ The highest .NET-side count seen during the callback (sampled per document in pe
 
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
-| 10 | initial | 403 | 93 | 92 | 4× |
-| 10 | update | 454 | 120 | 118 | 4× |
-| 10 | update, after a settle | 384 | 104 | 104 | 4× |
+| 10 | initial | 403 | 93 | 92 | 4.3× |
+| 10 | update | 454 | 120 | 118 | 3.8× |
+| 10 | update, after a settle | 384 | 104 | 104 | 3.7× |
 | 100 | initial | 1,488 | 115 | 114 | 13× |
 | 100 | update | 1,963 | 134 | 132 | 15× |
 | 100 | update, after a settle | 1,528 | 121 | 120 | 13× |
@@ -97,9 +97,9 @@ The highest .NET-side count seen during the callback (sampled per document in pe
 | 1000 | initial | 5,708 | 123 | 122 | 46× |
 | 1000 | update | 9,149 | 124 | 123 | 74× |
 | 1000 | update, after a settle | 6,742 | 129 | 128 | 52× |
-| 1 (doc) | initial | 160 | 124 | 123 | 1× |
-| 1 (doc) | update | 341 | 164 | 163 | 2× |
-| 1 (doc) | update, after a settle | 173 | 134 | 133 | 1× |
+| 1 (doc) | initial | 160 | 124 | 123 | 1.3× |
+| 1 (doc) | update | 341 | 164 | 163 | 2.1× |
+| 1 (doc) | update, after a settle | 173 | 134 | 133 | 1.3× |
 
 ## JNI global references at peak during a snapshot, over the last settle point
 
@@ -119,9 +119,9 @@ The peak minus the count at the last settle point (forced .NET and Java GC). Tha
 | 1000 | initial | 5,588 | 4 | 3 | 1,397× |
 | 1000 | update | 5,022 | 0 | 0 | – |
 | 1000 | update, after a settle | 2,613 | 5 | 5 | 523× |
-| 1 (doc) | initial | 39 | 5 | 4 | 8× |
-| 1 (doc) | update | 202 | 36 | 36 | 6× |
-| 1 (doc) | update, after a settle | 35 | 6 | 6 | 6× |
+| 1 (doc) | initial | 39 | 5 | 4 | 7.8× |
+| 1 (doc) | update | 202 | 36 | 36 | 5.6× |
+| 1 (doc) | update, after a settle | 35 | 6 | 6 | 5.8× |
 
 ## GCs during a snapshot
 
@@ -169,6 +169,7 @@ ART's own global reference table at the settle points (median across runs).
 | 1000 | after-remove | 4,562 | 552 | 552 |
 | 1 (doc) | before-listen | 555 | 552 | 552 |
 | 1 (doc) | after-initial | 562 | 556 | 554 |
+| 1 (doc) | after-update-48 | 593 | 582 | 582 |
 | 1 (doc) | after-remove | 594 | 580 | 580 |
 
 ## Peerless: where the time goes

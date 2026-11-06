@@ -21,7 +21,7 @@ internal sealed class ResultWriter : IDisposable
         run = Open(Path.Combine(directory, $"{mode}-run.txt"));
         Line(samples,
             "phase,size,seq,kind,from_cache,documents,values,main_thread,wall_us,thread_cpu_us,alloc_bytes,"
-            + "gref_before,gref_after,gref_delta,gref_peak,gref_peak_delta,gref_last_settled,gref_peak_over_settled,wgref_before,wgref_after,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms,"
+            + "gref_before,gref_after,gref_delta,gref_peak,gref_peak_delta,gref_last_settled,gref_peak_over_settled,wgref_before,wgref_after,gen0,gen1,gen2,gc_pause_us,write_to_done_ms,"
             + "java_to_dotnet_us,java_encode_us,java_encode_cpu_us,dotnet_us,frame_bytes");
         Line(settled, "phase,size,point,gref,wgref,surfaced_peers");
     }
@@ -29,7 +29,7 @@ internal sealed class ResultWriter : IDisposable
     public void Note(string key, string value) => Line(run, $"{key}: {value}");
 
     public void Sample(
-        string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds, int lastSettled) =>
+        string phase, int size, int sequence, string kind, Sample sample, double? writeToDoneMilliseconds, int lastSettled) =>
         Line(samples, string.Join(',',
             phase,
             Invariant(size),
@@ -55,7 +55,7 @@ internal sealed class ResultWriter : IDisposable
             Invariant(sample.Gen1Collections),
             Invariant(sample.Gen2Collections),
             Invariant(sample.GcPauseMicroseconds),
-            writeToCallbackMilliseconds is { } latency ? Invariant(latency) : string.Empty,
+            writeToDoneMilliseconds is { } latency ? Invariant(latency) : string.Empty,
             sample.Java is { } java ? Invariant(java.ToDotnetMicroseconds) : string.Empty,
             sample.Java is { } encode ? Invariant(encode.EncodeMicroseconds) : string.Empty,
             sample.Java is { } encodeCpu ? Invariant(encodeCpu.EncodeCpuMicroseconds) : string.Empty,

@@ -53,9 +53,11 @@ lines = [f"# iOS {mode} summary", "", (run / f"{mode}-run.txt").read_text().stri
          "rest (as on Android: right after a settle the previous snapshot's peers are gone, so more are created).", "",
          "| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KiB | peers created | table peak | peak over settled | write→callback ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---|---:|"]
+# Partial snapshots: kind "partial" under the phase they came from (older runs wrote them all as phase "skipped").
+def is_partial(row): return row["phase"] == "skipped" or row["kind"] == "partial"
 groups = {}
 for row in rows:
-    if row["phase"] == "skipped": continue
+    if is_partial(row): continue
     kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
     groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
 for (phase, size, kind), group in groups.items():
@@ -68,7 +70,7 @@ for (phase, size, kind), group in groups.items():
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
 off_main = sum(1 for r in rows if r.get("main_thread") == "0")
-skipped = [r for r in rows if r["phase"] == "skipped"]
+skipped = [r for r in rows if is_partial(r)]
 lines += ["", f"Callbacks off the main thread: {off_main}. Partial snapshots skipped: {len(skipped)}.",
           "", "## Settled peers (after forced GC, finalizers and a main-queue turn, three times)", "",
           "| phase | docs | point | peer table entries | with a live peer | managed heap KiB | largest peer kinds |",

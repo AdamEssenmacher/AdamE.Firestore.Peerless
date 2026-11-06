@@ -7,41 +7,76 @@ public sealed class MainActivity : Activity
 {
     private static Task? run;
 
+    // The run outlives any one Activity (a rotation recreates it), so status goes to whichever view is current and the
+    // runner holds the application context, not an Activity.
+    private static TextView? statusView;
+    private static volatile string lastStatus = "Starting…";
+
+    private TextView? ownView;
+
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
-        var text = new TextView(this) { Text = "Starting…" };
+        var text = new TextView(this) { Text = lastStatus };
         text.SetPadding(48, 96, 48, 48);
         SetContentView(text);
+        statusView = ownView = text;
 
         if (run is not null)
             return;
 
-        BenchmarkOptions options;
-        try
-        {
-            options = BenchmarkOptions.From(Intent);
-        }
-        catch (Exception exception)
-        {
-            // Bad intent extras: record why, where the script looks, instead of leaving it to see a dead process.
-            BenchmarkRunner.RecordStartupFailure(this, Intent, exception);
-            text.Text = $"Bad intent extras: {exception.Message}";
-            run = Task.CompletedTask;
-            return;
-        }
-
-        void Status(string message) => RunOnUiThread(() => text.Text = message);
+        global::Android.Content.Intent? intent = Intent;
+        global::Android.Content.Context context = ApplicationContext ?? this;
         run = Task.Run(async () =>
         {
             try
             {
-                await new BenchmarkRunner(this, options, Status).RunAsync().ConfigureAwait(false);
+                BenchmarkOptions options;
+                try
+                {
+                    options = BenchmarkOptions.From(intent);
+                }
+                catch (Exception exception)
+                {
+                    // Bad intent extras: record why, where the script looks, instead of leaving it to see a dead process.
+                    BenchmarkRunner.RecordStartupFailure(context, intent, exception);
+                    Status($"Bad intent extras: {exception.Message}");
+                    return;
+                }
+
+                await new BenchmarkRunner(context, options, Status).RunAsync().ConfigureAwait(false);
             }
             catch (Exception exception)
             {
                 Log.Error(BenchmarkRunner.Tag, $"PEERLESS_DONE crashed: {exception}");
             }
         });
+    }
+
+    protected override void OnDestroy()
+    {
+        if (ReferenceEquals(statusView, ownView))
+            statusView = null;
+        base.OnDestroy();
+    }
+
+    // One Handler and one Runnable for the whole run: a new pair per status line would add GREFs that wait for the GC,
+    // and the GREF count the benchmark records is process-wide.
+    private static readonly global::Android.OS.Handler MainThread = new(global::Android.OS.Looper.MainLooper!);
+    private static readonly ShowStatus ShowLastStatus = new();
+
+    private static void Status(string message)
+    {
+        lastStatus = message;
+        _ = MainThread.Post(ShowLastStatus);
+    }
+
+    private sealed class ShowStatus : Java.Lang.Object, Java.Lang.IRunnable
+    {
+        public void Run()
+        {
+            if (statusView is { } view)
+                view.Text = lastStatus;
+        }
     }
 }

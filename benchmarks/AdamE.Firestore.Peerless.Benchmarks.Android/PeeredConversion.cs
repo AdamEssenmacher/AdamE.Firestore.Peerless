@@ -81,9 +81,7 @@ internal static class PeeredConversion
         Java.Util.IMap map => Map(map),
         System.Collections.IList list => FirestoreValue.FromArray(
             FirestoreArray.Owning([.. list.Cast<object?>().Select(From)])),
-        System.Collections.IDictionary map => FirestoreValue.FromMap(FirestoreMap.Owning(
-            [.. map.Keys.Cast<object>().Select(static key => key.ToString() ?? string.Empty)],
-            [.. map.Keys.Cast<object>().Select(key => From(map[key]))])),
+        System.Collections.IDictionary map => Map(map),
         Java.Lang.Object other => FirestoreValue.Unsupported(other.Class.Name),
         _ => FirestoreValue.Unsupported(value.GetType().FullName ?? value.GetType().Name),
     };
@@ -111,6 +109,21 @@ internal static class PeeredConversion
         }
 
         return FirestoreValue.FromMap(FirestoreMap.Owning(keys, values));
+    }
+
+    // One pass over the entries: each key and value read once, with no lookup per key.
+    private static FirestoreValue Map(System.Collections.IDictionary map)
+    {
+        var keys = new List<string>(map.Count);
+        var values = new List<FirestoreValue>(map.Count);
+        System.Collections.IDictionaryEnumerator entries = map.GetEnumerator();
+        while (entries.MoveNext())
+        {
+            keys.Add(entries.Key.ToString() ?? string.Empty);
+            values.Add(From(entries.Value));
+        }
+
+        return FirestoreValue.FromMap(FirestoreMap.Owning([.. keys], [.. values]));
     }
 
     /// <summary>Counts every value, so a run can show the conversion was complete.</summary>
