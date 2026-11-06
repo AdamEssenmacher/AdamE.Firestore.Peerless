@@ -170,6 +170,9 @@ internal sealed class PeerlessSampler : IFrameObserver
     {
         ProbeReading after = ProbeReading.Take();
         long done = PeerlessListener.NowNanoseconds();
+        // Read with done, before the harness counts documents and values below, so that counting isn't billed to
+        // Peerless (peered mode also takes its readings before counting).
+        long doneCpu = PeerlessListener.ThreadCpuNanoseconds();
         var native = new NativeSide(
             (arrival.ArrivedNanos - arrival.StartNanos) / 1000.0,
             arrival.EncodeNanos / 1000.0,
@@ -194,6 +197,6 @@ internal sealed class PeerlessSampler : IFrameObserver
             pending is null ? failure ?? "The frame did not decode." : null,
             native,
             wallMicroseconds: (done - arrival.StartNanos) / 1000.0,
-            threadCpuMicroseconds: (PeerlessListener.ThreadCpuNanoseconds() - arrival.StartCpuNanos) / 1000.0));
+            threadCpuMicroseconds: (doneCpu - arrival.StartCpuNanos) / 1000.0));
     }
 }
