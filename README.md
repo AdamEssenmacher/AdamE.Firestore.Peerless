@@ -12,7 +12,14 @@ Scope: listening without peers. Apps keep building queries with the existing bin
 and decoding. Full NativeAOT on both platforms is required. Everything is measured against the Firestore emulator,
 compared with the naive peered approach.
 
-Status: **step 1, the Android peered baseline**. Nothing here is a library yet.
+Status: the wire format and the .NET decoder exist (`src/AdamE.Firestore.Peerless`, spec in
+[docs/wire-format.md](docs/wire-format.md)). The native shims are next. The Android peered baseline from step 1 is
+below.
+
+```bash
+dotnet test --project tests/AdamE.Firestore.Peerless.Tests
+dotnet run -c Release --project benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder   # decode time and allocation
+```
 
 ## Step 1: Android peered baseline under NativeAOT
 

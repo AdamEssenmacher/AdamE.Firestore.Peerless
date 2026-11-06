@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Decode timings and allocation for a few frame shapes, run by hand (see README). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/AdamE.Firestore.Peerless/AdamE.Firestore.Peerless.csproj" />
+    <!-- Frames are built with the test-only encoder, written from the spec. -->
+    <Compile Include="../../tests/AdamE.Firestore.Peerless.Tests/TestFrameEncoder.cs" Link="TestFrameEncoder.cs" />
+  </ItemGroup>
+</Project>

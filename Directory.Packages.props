@@ -3,4 +3,9 @@
     <!-- The ordinary, peered binding that the benchmarks measure against. -->
     <PackageVersion Include="Xamarin.Firebase.Firestore" Version="126.0.2.4" />
   </ItemGroup>
+
+  <ItemGroup>
+    <PackageVersion Include="CsCheck" Version="5.0.1" />
+    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+  </ItemGroup>
 </Project>
