@@ -247,6 +247,11 @@ It was taken at a host load of 62 rather than 12–32, so its timings aren't com
 
 ## What makes these numbers unreliable
 
+- **Write→callback latency moved slightly with the shared benchmark code.** From step 4 on, the Android runner's
+  `PrepareUpdate` creates an update's `Long` and `String` arguments before the latency clock starts, where step 3's
+  runner created them after. Runs taken with step 4's runner therefore report marginally lower write→callback times
+  than the step 3 runs committed here; the per-callback measurements are unaffected.
+
 - **Same GC caveat as step 1.** The peered path runs far more GCs inside its callbacks than its allocation volume
   alone explains, for a reason not identified yet (step 1's FINDINGS withdraws the earlier "minimum gen0 budget"
   explanation). That inflates **peered wall time** most (10.3 s vs 1.3 s CPU at 1000 docs). Read the CPU, allocation

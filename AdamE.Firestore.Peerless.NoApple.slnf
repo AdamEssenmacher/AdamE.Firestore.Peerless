@@ -1,0 +1,12 @@
+{
+  "solution": {
+    "path": "AdamE.Firestore.Peerless.slnx",
+    "projects": [
+      "src/AdamE.Firestore.Peerless/AdamE.Firestore.Peerless.csproj",
+      "src/AdamE.Firestore.Peerless.Android/AdamE.Firestore.Peerless.Android.csproj",
+      "tests/AdamE.Firestore.Peerless.Tests/AdamE.Firestore.Peerless.Tests.csproj",
+      "benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder/AdamE.Firestore.Peerless.Benchmarks.Decoder.csproj",
+      "benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android/AdamE.Firestore.Peerless.Benchmarks.Android.csproj"
+    ]
+  }
+}

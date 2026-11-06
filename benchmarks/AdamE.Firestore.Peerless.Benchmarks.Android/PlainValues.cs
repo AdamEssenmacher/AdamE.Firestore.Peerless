@@ -2,19 +2,10 @@ using Firebase.Firestore;
 
 namespace AdamE.Firestore.Peerless.Benchmarks;
 
-/// <summary>A Firestore timestamp as plain .NET data.</summary>
-internal readonly record struct PlainTimestamp(long Seconds, int Nanoseconds);
-
-/// <summary>A Firestore document reference as plain .NET data: just its path.</summary>
-internal readonly record struct PlainReference(string Path);
-
-/// <summary>A document converted eagerly into plain .NET values.</summary>
-internal sealed record PlainDocument(string Path, IReadOnlyDictionary<string, object?> Fields);
-
 /// <summary>
 /// The naive, peered conversion an ordinary app does, unchanged from step 1 so the baseline stays comparable: walk
 /// every snapshot through the binding and copy each value into plain .NET data (string, long, double, bool,
-/// <see cref="PlainTimestamp"/>, <see cref="PlainReference"/>, lists and dictionaries). Every Java object touched on
+/// <see cref="PlainTimestamp"/>, <see cref="PlainReference"/>, lists and dictionaries; see <see cref="PlainModel"/>). Every Java object touched on
 /// the way gets a managed peer. Modelled on the shape of Scavos's FirestoreValues. (<see cref="PeeredConversion"/>
 /// builds the Peerless model instead; it is used to check both paths agree, not for timing.)
 /// </summary>
@@ -94,13 +85,4 @@ internal static class PlainValues
 
         return entries;
     }
-
-    /// <summary>Counts every value in a converted document, so the run can prove the conversion was complete.</summary>
-    public static int CountValues(object? value) => value switch
-    {
-        PlainDocument document => document.Fields.Values.Sum(CountValues),
-        IReadOnlyDictionary<string, object?> map => 1 + map.Values.Sum(CountValues),
-        List<object?> list => 1 + list.Sum(CountValues),
-        _ => 1,
-    };
 }

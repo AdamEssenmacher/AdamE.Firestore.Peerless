@@ -1,7 +1,8 @@
 <Project>
   <ItemGroup>
-    <!-- The ordinary, peered binding that the benchmarks measure against. -->
+    <!-- The ordinary, peered bindings that the benchmarks measure against. -->
     <PackageVersion Include="Xamarin.Firebase.Firestore" Version="126.0.2.4" />
+    <PackageVersion Include="AdamE.Firebase.iOS.CloudFirestore" Version="12.18.0" />
   </ItemGroup>
 
   <ItemGroup>

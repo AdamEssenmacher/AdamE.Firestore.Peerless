@@ -31,7 +31,19 @@ public sealed class MainActivity : Activity
         {
             try
             {
-                var options = BenchmarkOptions.From(intent);
+                BenchmarkOptions options;
+                try
+                {
+                    options = BenchmarkOptions.From(intent);
+                }
+                catch (Exception exception)
+                {
+                    // Bad intent extras: record why, where the script looks, instead of leaving it to see a dead process.
+                    BenchmarkRunner.RecordStartupFailure(context, intent, exception);
+                    Status($"Bad intent extras: {exception.Message}");
+                    return;
+                }
+
                 await new BenchmarkRunner(context, options, Status).RunAsync().ConfigureAwait(false);
             }
             catch (Exception exception)

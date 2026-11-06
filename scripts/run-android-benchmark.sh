@@ -14,6 +14,10 @@
 #   FIRESTORE_PORT  the Firestore emulator's host port (default 8181, as in firebase.json); the app reaches it at
 #                   10.0.2.2:<port> from an emulator, or at 127.0.0.1:<port> through `adb reverse` from a device
 #
+# Exits nonzero unless the run completed under NativeAOT with every self-check passing (the app records a failed
+# check as outcome: failed), and on a timeout, a dead process, a run whose verify check was skipped (unless
+# ALLOW_NO_VERIFY=1), or a summarizer error.
+#
 # The emulator AVD (one-time setup; any arm64 API 36 Google APIs image works):
 #   sdkmanager "system-images;android-36;google_apis;arm64-v8a"
 #   avdmanager create avd -n Peerless_Bench_API36 -k "system-images;android-36;google_apis;arm64-v8a" -d pixel_7
@@ -175,10 +179,20 @@ adb -s "$serial" logcat -d > "$out/logcat.txt"
   if [ "$main_not_enlarged" = "1" ]; then echo "logcat may be incomplete (the main buffer was not enlarged)"; fi
 } | tee -a "$out/host.txt"
 echo "results: $out"
-if [ "$outcome" != "done" ]; then
-  # Its files may be missing, so it isn't summarized: the summary would fail and hide this message.
-  echo "The run did not complete: $outcome" >&2
+
+# The run only counts if it finished, as NativeAOT, with its own checks (verify, dispose race) passed.
+if [[ "$outcome" != "done" ]]; then
+  echo "run did not finish: $outcome" >&2
+  # A failed run (a self-check, or a startup failure) names its reason in the run file.
+  failure="$(grep '^failure:' "$out/$mode-run.txt" 2>/dev/null | cut -c1-400 || true)"
+  [ -z "$failure" ] || echo "run failed: $failure" >&2
   exit 1
 fi
-# A summary that can't be built is a failure too, not something to hide.
+grep -qx "outcome: completed" "$out/$mode-run.txt" \
+  || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
+grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+# A run without its verify checks proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
+grep -q "^verify: identical" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
+  || { echo "run has no passing verify check (launched with --ez verify false? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }
+# Only a finished, passing run is summarized; a summarizer error still fails the script.
 python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null
