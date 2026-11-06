@@ -102,14 +102,15 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
         if (arrival is { } timing)
             observer?.Arrived(timing);
 
-        // Only decoding is guarded: a PeerlessFormatException thrown by the app's own callback is the app's exception,
-        // not a frame failure.
+        // Only decoding is guarded: an exception thrown by the app's own callback is the app's exception, not a frame
+        // failure. Any decode failure (a bad frame, or OutOfMemoryException on a huge one) fails the listener rather
+        // than escaping into the Java callback, where it would crash the process.
         FirestoreSnapshot snapshot;
         try
         {
             snapshot = Decode(frame, length);
         }
-        catch (PeerlessFormatException exception)
+        catch (Exception exception)
         {
             gate.Fail(exception);
             return;
@@ -133,11 +134,17 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
         return decode(new ReadOnlySpan<byte>((void*)address, length));
     }
 
+    // Inside the gate. A buffer .NET can't read fails the listener like any other bad frame, rather than throwing
+    // into the Java callback.
     private void ReplaceBuffer(Java.Nio.ByteBuffer newBuffer)
     {
         nint newAddress = JNIEnv.GetDirectBufferAddress(newBuffer.Handle);
         if (newAddress == 0)
-            throw new InvalidOperationException("The shim passed a buffer that is not direct.");
+        {
+            newBuffer.Dispose();
+            gate.Fail(new PeerlessFormatException("The shim passed a buffer that is not direct.", 0));
+            return;
+        }
 
         buffer?.Dispose();
         buffer = newBuffer;

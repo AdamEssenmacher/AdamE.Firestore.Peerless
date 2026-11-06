@@ -50,7 +50,7 @@ section = id:u8 length:u32 payload:u8[length]
 | 2 | document snapshot | metadata (required), documents (required, exactly one document) |
 | 3 | *reserved:* query changes | see [Future: changes-only frames](#future-changes-only-frames) |
 
-  A decoder rejects any kind it doesn't know.
+  A decoder rejects any kind it doesn't know, so, like a new value tag, a new kind needs a **major** version bump.
 
 Sections follow the header until the end of the frame. The frame's length is known from the buffer it arrives in; there
 is no trailing marker. Each section ID, known or not, appears at most once, and decoders reject a repeat. A decoder skips any section ID it doesn't know (that's
@@ -119,10 +119,10 @@ map-body = count:varint (key:string value)*count
   document's field values are at depth 1; the items of an array or map value at depth *d* are at depth *d* + 1. An
   array or map value **at depth 100 or more is rejected**, so at most 99 containers can nest inside a document's
   fields. (The document's own fields map isn't counted.)
-- A count (array items, map entries, documents, bytes) can't exceed the bytes left in the frame. An array item takes
+- A count (array items, map entries, documents, bytes) can't exceed the bytes left in its section. An array item takes
   at least one byte (its tag), a map entry at least two (a key length and a tag), and a document at least two (a path
   length and its flags). So in a frame that can decode, the minimum size of everything the open containers still
-  declare always fits in the bytes left. Decoders **reject a frame as soon as its declared counts stop fitting**,
+  declare always fits in the bytes left in the section. Decoders **reject a frame as soon as its declared counts stop fitting**,
   before allocating for them; a frame that nests counts claiming the same bytes over and over is caught at the second
   level. The .NET decoder then allocates each container at its declared size. Its memory per frame byte is at most
   about **48 bytes**, whether the frame decodes or is rejected:
@@ -133,7 +133,8 @@ map-body = count:varint (key:string value)*count
     for nested arrays, 20 for nested maps.
   - The documents array is allocated exactly as declared, at most 4 bytes per frame byte.
   - On top of that, a thread's first decode allocates about 5 KB of working memory (field-name cache and
-    duplicate-key tables), reused by its later decodes.
+    duplicate-key tables), reused by its later decodes. A map with thousands of keys grows the duplicate-key tables;
+    the thread keeps them up to 16K entries each (about 128 KB) and drops anything larger.
 
 ### What encoders write
 
@@ -146,7 +147,7 @@ map-body = count:varint (key:string value)*count
 
 ## Future: changes-only frames
 
-A later minor or major version will add a "changes only" variant, so a large query that changes by one document
+A later major version will add a "changes only" variant, so a large query that changes by one document
 doesn't resend every document. The plan, which fits this layout without breaking it:
 
 - Frame kind `3` (query changes) reuses section 1 (metadata) and section 2 (documents). Section 2 then carries only the
@@ -154,7 +155,8 @@ doesn't resend every document. The plan, which fits this layout without breaking
 - A new section 3 (changes) holds `count:varint (type:u8 oldIndex:varint newIndex:varint document:varint)*count`.
   `type` is added (0), modified (1) or removed (2). An index is stored `+1`, so `0` means −1 ("not in the old or new
   result"). `document` indexes into section 2, also `+1`, with `0` for none (removed documents).
-- Kind 1 and 2 frames are unchanged, so a 1.x decoder that doesn't know kind 3 rejects it explicitly instead of
-  misreading it.
+- Kind 1 and 2 frames keep their layout. Because a 1.x decoder rejects any kind it doesn't know, kind 3 ships with
+  that major bump, never in a 1.x minor version, so 1.x decoders reject the frame on its version instead of misreading
+  it.
 
 None of this is implemented in 1.0. Section ID 3 and frame kind 3 are reserved for it.

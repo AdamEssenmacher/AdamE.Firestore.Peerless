@@ -127,6 +127,16 @@ public readonly struct FirestoreValue : IEquatable<FirestoreValue>
 
     internal static FirestoreValue OwningBytes(byte[] value) => new(FirestoreValueKind.Bytes, reference: value);
 
+    // For the decoder, which has already checked these (and reports a failure with its offset), so the public
+    // factories' checks don't run a second time.
+    internal static FirestoreValue ValidatedTimestamp(long seconds, int nanoseconds) =>
+        new(FirestoreValueKind.Timestamp, seconds, nanoseconds);
+
+    internal static FirestoreValue ValidatedGeoPoint(double latitude, double longitude) => new(
+        FirestoreValueKind.GeoPoint, BitConverter.DoubleToInt64Bits(latitude), BitConverter.DoubleToInt64Bits(longitude));
+
+    internal static FirestoreValue ValidatedReference(string path) => new(FirestoreValueKind.Reference, reference: path);
+
     /// <summary>The boolean. Throws unless <see cref="Kind"/> is <see cref="FirestoreValueKind.Boolean"/>.</summary>
     public bool AsBoolean() => Expect(FirestoreValueKind.Boolean).bits != 0;
 

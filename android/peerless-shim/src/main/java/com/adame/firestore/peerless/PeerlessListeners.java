@@ -147,8 +147,9 @@ public final class PeerlessListeners {
         }
 
         // After SHRINK_AFTER_FRAMES frames in a row that each used under a quarter of a buffer above SHRINK_ABOVE,
-        // the writer's array is cut to fit the largest of them and the direct buffer is dropped (the next frame
-        // allocates one of a fitting size and hands it to .NET, which releases the old one).
+        // the writer's array is cut to fit the largest of them and the direct buffer is replaced at once by one of the
+        // same fitting size, handed to .NET, which releases its reference to the old one then (not at the next frame,
+        // which may never come). If that allocation fails the buffer is only dropped, and the next frame replaces it.
         private void shrinkIfIdle(int length) {
             int capacity = Math.max(writer.capacity(), direct == null ? 0 : direct.capacity());
             if (capacity <= SHRINK_ABOVE || length >= capacity / 4) {
@@ -159,9 +160,21 @@ public final class PeerlessListeners {
             largestRecentFrame = Math.max(largestRecentFrame, length);
             if (++smallFrames < SHRINK_AFTER_FRAMES)
                 return;
-            writer.shrinkTo(capacityFor(largestRecentFrame));
-            if (direct != null && direct.capacity() > SHRINK_ABOVE)
+            int fitting = capacityFor(largestRecentFrame);
+            writer.shrinkTo(fitting);
+            if (direct != null && direct.capacity() > SHRINK_ABOVE) {
                 direct = null;
+                ByteBuffer smaller;
+                try {
+                    smaller = ByteBuffer.allocateDirect(fitting).order(ByteOrder.LITTLE_ENDIAN);
+                } catch (RuntimeException | OutOfMemoryError failure) {
+                    smaller = null;
+                }
+                if (smaller != null) {
+                    direct = smaller;
+                    sink.onBuffer(smaller);
+                }
+            }
             smallFrames = 0;
             largestRecentFrame = 0;
         }

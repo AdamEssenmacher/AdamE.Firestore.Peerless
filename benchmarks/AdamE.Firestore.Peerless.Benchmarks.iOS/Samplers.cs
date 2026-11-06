@@ -29,6 +29,9 @@ internal sealed record Sample(
     NativeSide? Native,
     string? Error) : IBenchmarkSample
 {
+    /// <summary>The documents this snapshot converted to (not written to the results; the verify phase compares them).</summary>
+    public IReadOnlyList<PlainDocument>? Converted { get; init; }
+
     public static Sample Build(
         bool fromCache,
         int documents,
@@ -109,7 +112,8 @@ internal sealed class PeeredSampler
                     fromCache = query.Metadata.IsFromCache;
                     break;
                 case DocumentSnapshot document:
-                    documents = [PlainValues.Document(document)];
+                    // A missing document converts to none, so NextAsync doesn't take it for the document it waits for.
+                    documents = document.Exists ? [PlainValues.Document(document)] : [];
                     fromCache = document.Metadata.IsFromCache;
                     break;
             }
@@ -128,7 +132,7 @@ internal sealed class PeeredSampler
             before,
             after,
             peak,
-            failure));
+            failure) with { Converted = documents });
     }
 }
 
@@ -176,7 +180,13 @@ internal sealed class PeerlessSampler : IFrameObserver
         Latest = pending ?? Latest;
         _ = samples.Writer.TryWrite(Sample.Build(
             pending?.Metadata.IsFromCache ?? false,
-            pending is null ? 0 : SnapshotAssertions.DocumentCount(pending),
+            // As in peered mode, a missing document counts as no documents, so the phase skips it as partial.
+            pending switch
+            {
+                null => 0,
+                FirestoreDocumentSnapshot document => document.Document.Exists ? 1 : 0,
+                _ => SnapshotAssertions.DocumentCount(pending),
+            },
             pending is null ? 0 : PeeredConversion.CountValues(pending),
             before,
             after,

@@ -117,14 +117,18 @@ public sealed class FirestoreListenException : Exception
 /// <para>
 /// <b>Calling Listen off the main thread.</b> Firestore may then deliver the first callback before <c>Listen</c>
 /// returns, so a callback can't count on the returned handle being assigned yet. An error that arrives that early is
-/// held and posted to the main thread after <c>Listen</c> has returned.
+/// held until <c>Listen</c> has the native registration, then posted to the main thread. That can still run before the
+/// calling thread has stored the returned handle, so the same caveat applies to <c>onError</c>: don't reach the handle
+/// through a variable that <c>Listen</c>'s return value is assigned to (call <c>Listen</c> on the main thread, where no
+/// callback can run before it returns, if a callback needs it).
 /// </para>
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
 /// snapshot or .NET could not decode it. One encoding failure is data-dependent: two keys of one map that differ only
-/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails.
-/// Either way the listener has stopped and nothing more arrives. It is
+/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails. If
+/// decoding fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
+/// <c>onError</c> receives that exception. Either way the listener has stopped and nothing more arrives. It is
 /// required, so a failing listener can't go silent.
 /// </para>
 /// <para>
@@ -192,8 +196,8 @@ public static class PeerlessListener
     // stopped and its peer released, so nothing stays allocated or registered. Only Firestore's refusals,
     // IllegalStateException (a terminated instance, a limitToLast query without orderBy), become the
     // InvalidOperationException the iOS listener throws; anything else is rethrown as it is. Once it has succeeded,
-    // Java holds the receiver, so a later failure removes the registration and stops the receiver but never disposes
-    // its peer under Java.
+    // Java holds the receiver, so a later failure stops the receiver (which removes the registration once) but never
+    // disposes its peer under Java.
     private static Registration Register(FrameReceiver receiver, Func<IListenerRegistration> listen)
     {
         IListenerRegistration registration;
@@ -219,7 +223,8 @@ public static class PeerlessListener
         }
         catch
         {
-            registration.Remove();
+            // Attach records the remover before anything in it can throw, so Stop removes the registration exactly
+            // once, through the gate, even when Attach already removed it.
             receiver.Stop();
             throw;
         }

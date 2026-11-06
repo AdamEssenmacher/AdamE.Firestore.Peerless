@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
 using AdamE.Firestore.Peerless.iOS;
+using CoreFoundation;
 using Firebase.CloudFirestore;
 using FirebaseFirestore = Firebase.CloudFirestore.Firestore;
 using Firebase.Core;
@@ -45,8 +46,17 @@ internal sealed record BenchmarkOptions(string Host, int Port, ListenMode Mode, 
                 BenchmarkPlan.ParseSizes(Text("sizes")) ?? BenchmarkPlan.DefaultSizes,
                 Number("updates", BenchmarkPlan.DefaultUpdatesPerSize),
                 Number("singleUpdates", BenchmarkPlan.DefaultSingleDocumentUpdates)),
-            Text("verify") is not { } verify || !verify.Equals("NO", StringComparison.OrdinalIgnoreCase));
+            Flag(Text("verify"), "verify", fallback: true));
     }
+
+    // NSUserDefaults spellings (YES/NO) and the usual ones; anything else is refused rather than silently ignored.
+    private static bool Flag(string? text, string key, bool fallback) => text?.Trim().ToUpperInvariant() switch
+    {
+        null => fallback,
+        "YES" or "TRUE" or "1" => true,
+        "NO" or "FALSE" or "0" => false,
+        _ => throw new ArgumentException($"-{key} must be YES or NO (or true/false, 1/0), not '{text}'."),
+    };
 }
 
 /// <summary>
@@ -196,41 +206,40 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     private static (IDisposable Registration, PeeredSampler Sampler) Listen(Func<PeeredSampler, IListenerRegistration> listen)
     {
         var sampler = new PeeredSampler();
-        return (new Registration(listen(sampler), sampler), sampler);
+        return (new Registration(listen(sampler)), sampler);
     }
 
-    private (IDisposable Registration, ChannelReader<Sample> Samples) Listen(Query query)
+    private (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) Listen(Query query)
     {
         if (options.Mode == ListenMode.Peered)
         {
             (IDisposable registration, PeeredSampler sampler) = Listen(sampler => query.AddSnapshotListener(sampler.OnQuery));
-            return (registration, sampler.Samples);
+            return (registration, sampler.Samples, () => sampler.Latest);
         }
 
         var peerless = new PeerlessSampler();
-        return (PeerlessListener.Listen(query, peerless.OnSnapshot, peerless.OnError, peerless), peerless.Samples);
+        return (PeerlessListener.Listen(query, peerless.OnSnapshot, peerless.OnError, peerless), peerless.Samples,
+            () => peerless.Latest);
     }
 
-    private (IDisposable Registration, ChannelReader<Sample> Samples) Listen(DocumentReference document)
+    private (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) Listen(DocumentReference document)
     {
         if (options.Mode == ListenMode.Peered)
         {
             (IDisposable registration, PeeredSampler sampler) = Listen(sampler => document.AddSnapshotListener(sampler.OnDocument));
-            return (registration, sampler.Samples);
+            return (registration, sampler.Samples, () => sampler.Latest);
         }
 
         var peerless = new PeerlessSampler();
-        return (PeerlessListener.Listen(document, peerless.OnSnapshot, peerless.OnError, peerless), peerless.Samples);
+        return (PeerlessListener.Listen(document, peerless.OnSnapshot, peerless.OnError, peerless), peerless.Samples,
+            () => peerless.Latest);
     }
 
-    // Keeps the sampler (and its latest conversion) alive until removal, as an app's view model would.
-    private sealed class Registration(IListenerRegistration registration, PeeredSampler sampler) : IDisposable
+    // Removes the listener. The sampler's latest conversion is kept alive by the shared phase, through the after-remove
+    // settle, as an app's view model would keep it.
+    private sealed class Registration(IListenerRegistration registration) : IDisposable
     {
-        public void Dispose()
-        {
-            registration.Remove();
-            GC.KeepAlive(sampler.Latest);
-        }
+        public void Dispose() => registration.Remove();
     }
 
     /// <summary>
@@ -290,10 +299,18 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         try
         {
             using var timeout = new CancellationTokenSource(VerifyTimeout);
-            Sample sample = await sampler.Samples.ReadAsync(timeout.Token).ConfigureAwait(false);
-            if (sample.Error is not null)
-                throw new InvalidOperationException($"Verify listener failed: {sample.Error}");
-            var documents = sampler.Latest as List<PlainDocument> ?? [];
+            // As BenchmarkPhases.NextAsync does, skip a partial snapshot from cache; a server snapshot is compared
+            // whatever it holds. The documents compared are that sample's own conversion, not whatever came later.
+            Sample sample;
+            do
+            {
+                sample = await sampler.Samples.ReadAsync(timeout.Token).ConfigureAwait(false);
+                if (sample.Error is not null)
+                    throw new InvalidOperationException($"Verify listener failed: {sample.Error}");
+            }
+            while (sample.FromCache && sample.Documents != expected.Count);
+
+            IReadOnlyList<PlainDocument> documents = sample.Converted ?? [];
             string? difference = documents.Count != expected.Count
                 ? $"{documents.Count} documents, expected {expected.Count}"
                 : documents
@@ -449,23 +466,41 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         await batch.CommitAsync().ConfigureAwait(false);
     }
 
-    public (IDisposable Registration, ChannelReader<Sample> Samples) ListenToCollection(string collection)
+    public (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) ListenToCollection(string collection)
     {
         return Listen(Listening.GetCollection(collection));
     }
 
-    public (IDisposable Registration, ChannelReader<Sample> Samples) ListenToDocument(string collection, string documentId)
+    public (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) ListenToDocument(
+        string collection, string documentId)
     {
         return Listen(Listening.GetCollection(collection).GetDocument(documentId));
     }
 
     public Func<Task> PrepareUpdate(string collection, string documentId, long version)
     {
-        DocumentReference target = Seeding.GetCollection(collection).GetDocument(documentId);
+        CollectionReference parent = Seeding.GetCollection(collection);
+        DocumentReference target = parent.GetDocument(documentId);
         NSNumber value = NSNumber.FromInt64(version);
         NSString[] keys = [new NSString("version"), new NSString("updatedAt")];
-        return () => target.UpdateDataAsync(NSDictionary<NSObject, NSObject>.FromObjectsAndKeys(
-            [value, Timestamp.Create()], keys, keys.Length));
+        return () =>
+        {
+            Timestamp now = Timestamp.Create();
+            var fields = NSDictionary<NSObject, NSObject>.FromObjectsAndKeys([value, now], keys, keys.Length);
+            Task write = target.UpdateDataAsync(fields);
+            // The peer table is process-wide, so the seeder's peers are disposed as soon as the write is issued (the SDK
+            // holds its own retains): left for the GC, they would pile up between settles and be counted as listener
+            // cost. On the main queue, queued now: the listener's snapshot for this write is queued there only after
+            // a round trip to the emulator, and no conversion can be using a peer (a small NSNumber or NSString is a
+            // tagged pointer, so the listener's own values can share it) while it is disposed.
+            NSObject[] harness = [parent, target, value, keys[0], keys[1], now, fields];
+            DispatchQueue.MainQueue.DispatchAsync(() =>
+            {
+                foreach (NSObject peer in harness)
+                    peer.Dispose();
+            });
+            return write;
+        };
     }
 
     public async Task SettleAsync(string phase, int size, string point)
@@ -482,8 +517,10 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         Log($"unsettled {phase} {size} {point}: peers={entries} alive={alive} [{largest}]");
     }
 
-    public void Record(string phase, int size, int sequence, string kind, Sample sample, double? writeToCallbackMilliseconds) =>
-        results?.Sample(phase, size, sequence, kind, sample, writeToCallbackMilliseconds);
+    // Its column keeps the name write_to_callback_ms that the committed iOS runs use; it ends when the snapshot is fully
+    // converted, as on Android (write_to_done_ms).
+    public void Record(string phase, int size, int sequence, string kind, Sample sample, double? writeToDoneMilliseconds) =>
+        results?.Sample(phase, size, sequence, kind, sample, writeToDoneMilliseconds);
 
     public void Report(string message)
     {

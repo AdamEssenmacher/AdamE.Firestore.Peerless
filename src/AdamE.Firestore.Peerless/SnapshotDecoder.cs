@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace AdamE.Firestore.Peerless;
@@ -11,22 +11,27 @@ namespace AdamE.Firestore.Peerless;
 /// thread-safe, and the result does not reference the input buffer, so the caller may reuse or free it afterwards.
 /// </summary>
 /// <remarks>
-/// Every array item takes at least one byte and every map entry at least two, so the minimum size of everything the
-/// open containers still declare must fit in the bytes left to read. A frame whose declared counts don't is rejected the
+/// Every array item takes at least one byte, every map entry and every document at least two, so the minimum size of
+/// everything the open containers still declare must fit in the bytes left in the section being read. A frame whose declared counts don't is rejected the
 /// moment they stop fitting; otherwise each container is read straight into an array of its declared size. Memory
 /// therefore stays proportional to the frame's size, however hostile its counts: about 48 bytes per frame byte at most,
 /// whether the frame decodes or is rejected after a valid prefix (docs/wire-format.md).
 /// </remarks>
 public static class SnapshotDecoder
 {
-    // Kept for the tests' readability; the range lives on FirestoreTimestamp.
-    internal const long MinTimestampSeconds = FirestoreTimestamp.MinSeconds;
-    internal const long MaxTimestampSeconds = FirestoreTimestamp.MaxSeconds;
-
     private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     [ThreadStatic]
     private static Scratch? cachedScratch;
+
+    // FNV-1a from a seeded offset basis. Internal so the tests can check that their crafted keys really collide.
+    internal static uint KeyHash(ReadOnlySpan<byte> bytes, uint seed)
+    {
+        uint hash = 2166136261 ^ seed;
+        foreach (byte value in bytes)
+            hash = (hash ^ value) * 16777619;
+        return hash ^ (hash >> 15);
+    }
 
     /// <summary>Decodes a query or document snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or uses an unsupported version.</exception>
@@ -50,14 +55,20 @@ public static class SnapshotDecoder
     /// <summary>Decodes a query snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or is not a query snapshot.</exception>
     public static FirestoreQuerySnapshot DecodeQuery(ReadOnlySpan<byte> frame) =>
-        Decode(frame) as FirestoreQuerySnapshot
+        (HasOtherKind(frame, Wire.FrameKind.Query) ? null : Decode(frame) as FirestoreQuerySnapshot)
         ?? throw new PeerlessFormatException("The frame is not a query snapshot.", Wire.HeaderLength - 2);
 
     /// <summary>Decodes a document snapshot frame.</summary>
     /// <exception cref="PeerlessFormatException">The frame is malformed or is not a document snapshot.</exception>
     public static FirestoreDocumentSnapshot DecodeDocument(ReadOnlySpan<byte> frame) =>
-        Decode(frame) as FirestoreDocumentSnapshot
+        (HasOtherKind(frame, Wire.FrameKind.Document) ? null : Decode(frame) as FirestoreDocumentSnapshot)
         ?? throw new PeerlessFormatException("The frame is not a document snapshot.", Wire.HeaderLength - 2);
+
+    // Whether the header is valid but names the other supported kind, so the frame is refused without decoding it.
+    // Any other header goes through Decode, which reports what is wrong with it.
+    private static bool HasOtherKind(ReadOnlySpan<byte> frame, byte expected) =>
+        frame.Length >= Wire.HeaderLength && frame[..4].SequenceEqual(Wire.Magic) && frame[4] == Wire.MajorVersion
+        && frame[6] != expected && frame[6] is Wire.FrameKind.Query or Wire.FrameKind.Document;
 
     // Strict: invalid UTF-8 (including overlong forms such as modified UTF-8's C0 80, and encoded surrogates) throws
     // DecoderFallbackException, which the reader turns into a PeerlessFormatException.
@@ -68,9 +79,11 @@ public static class SnapshotDecoder
         private readonly ReadOnlySpan<byte> frame = frame;
         private readonly Scratch scratch = scratch;
         private int position;
+        private int limit = frame.Length;
+        private bool inSection; // Whether limit is a section's end rather than the frame's (Take's message depends on it).
 
         // The minimum unread bytes the items declared but not yet started still need, across all open containers: one
-        // per array item, two per map entry (a key length and a value tag).
+        // per array item, two per map entry (a key length and a value tag) or document (a path length and its flags).
         private long reserved;
 
         public FirestoreSnapshot ReadFrame()
@@ -90,6 +103,8 @@ public static class SnapshotDecoder
             Span<ulong> sectionsSeen = stackalloc ulong[4]; // one bit per section ID, known or not
             while (position < frame.Length)
             {
+                limit = frame.Length; // Section headers are bounded by the frame, section content by its section.
+                inSection = false;
                 int sectionStart = position;
                 byte id = ReadByte();
                 ref ulong word = ref sectionsSeen[id >> 6];
@@ -103,7 +118,9 @@ public static class SnapshotDecoder
                     throw Fail("A section runs past the end of the frame.", sectionStart);
 
                 int length = (int)declared;
-                int end = position + length;
+                int contentStart = position;
+                limit = contentStart + length;
+                inSection = true;
                 switch (id)
                 {
                     case Wire.Section.Metadata:
@@ -113,12 +130,14 @@ public static class SnapshotDecoder
                         documents = ReadDocuments(kind);
                         break;
                     default:
-                        position = end; // A section from a newer minor version.
+                        position = limit; // A section from a newer minor version.
                         break;
                 }
 
-                if (position != end)
-                    throw Fail($"Section {id} declared {length} bytes but its content used {position - (end - length)}.", sectionStart);
+                // Content can't run past the section (Take stops it), so this only catches content that ends early.
+                if (position != limit)
+                    throw Fail($"Section {id} declared {length} bytes but its content used only {position - contentStart}.", sectionStart);
+                Debug.Assert(reserved == 0, "A section reader left bytes reserved for the next section.");
             }
 
             if (metadata is not { } snapshotMetadata)
@@ -127,9 +146,7 @@ public static class SnapshotDecoder
                 throw Fail("The frame has no documents section.");
 
             if (kind == Wire.FrameKind.Query)
-                return new FirestoreQuerySnapshot(snapshotMetadata, Array.AsReadOnly(documents));
-            if (documents.Length != 1)
-                throw Fail($"A document snapshot frame must hold exactly one document, not {documents.Length}.");
+                return FirestoreQuerySnapshot.Owning(snapshotMetadata, documents);
             return new FirestoreDocumentSnapshot(snapshotMetadata, documents[0]);
         }
 
@@ -141,14 +158,20 @@ public static class SnapshotDecoder
                 (flags & Wire.MetadataFlags.HasPendingWrites) != 0);
         }
 
-        // Only one level of documents, so its count is allocated exactly: at most 4 bytes of array per frame byte.
+        // Only one level of documents, so its count is allocated exactly: at most 4 bytes of array per frame byte. The
+        // documents still to come stay reserved, so a fields map can't claim their bytes too.
         private FirestoreDocument[] ReadDocuments(byte kind)
         {
+            int start = position;
             int count = ReadCount(minimumBytesEach: 2);
+            if (kind == Wire.FrameKind.Document && count != 1)
+                throw Fail($"A document snapshot frame must hold exactly one document, not {count}.", start);
+            reserved += 2L * count; // Nothing else is reserved yet, and ReadCount already checked that these fit.
             var documents = new FirestoreDocument[count];
             for (int index = 0; index < count; index++)
             {
-                int start = position;
+                reserved -= 2;
+                start = position;
                 string path = ReadString();
                 if (!FirestoreDocument.IsValidPath(path))
                     throw Fail($"\"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", start);
@@ -187,14 +210,14 @@ public static class SnapshotDecoder
                 case Wire.Tag.String:
                     return FirestoreValue.FromString(ReadString());
                 case Wire.Tag.Bytes:
-                    return FirestoreValue.OwningBytes(Take(ReadCount(minimumBytesEach: 1)).ToArray());
+                    return FirestoreValue.OwningBytes(Take(ReadLength()).ToArray());
                 case Wire.Tag.Timestamp:
                 {
                     long seconds = BinaryPrimitives.ReadInt64LittleEndian(Take(8));
                     int nanoseconds = BinaryPrimitives.ReadInt32LittleEndian(Take(4));
                     if (!FirestoreTimestamp.IsValid(seconds, nanoseconds))
                         throw Fail($"Timestamp {seconds}s+{nanoseconds}ns is outside Firestore's range (years 0001 to 9999).", start);
-                    return FirestoreValue.FromTimestamp(new FirestoreTimestamp(seconds, nanoseconds));
+                    return FirestoreValue.ValidatedTimestamp(seconds, nanoseconds);
                 }
 
                 case Wire.Tag.GeoPoint:
@@ -202,8 +225,12 @@ public static class SnapshotDecoder
                     double latitude = BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
                     double longitude = BinaryPrimitives.ReadDoubleLittleEndian(Take(8));
                     if (!FirestoreGeoPoint.IsValid(latitude, longitude))
-                        throw Fail($"Geo point ({latitude}, {longitude}) is outside [-90, 90] x [-180, 180] or NaN.", start);
-                    return FirestoreValue.FromGeoPoint(new FirestoreGeoPoint(latitude, longitude));
+                    {
+                        throw Fail(string.Create(CultureInfo.InvariantCulture,
+                            $"Geo point ({latitude}, {longitude}) is outside [-90, 90] x [-180, 180] or NaN."), start);
+                    }
+
+                    return FirestoreValue.ValidatedGeoPoint(latitude, longitude);
                 }
 
                 case Wire.Tag.Reference:
@@ -211,7 +238,7 @@ public static class SnapshotDecoder
                     string path = ReadString();
                     if (!FirestoreDocument.IsValidPath(path))
                         throw Fail($"Reference \"{path}\" is not a document path: it is empty, has an empty segment or has an odd number of segments.", start);
-                    return FirestoreValue.FromReference(path);
+                    return FirestoreValue.ValidatedReference(path);
                 }
                 case Wire.Tag.Array:
                 {
@@ -266,18 +293,33 @@ public static class SnapshotDecoder
             return FirestoreMap.Owning(names, values);
         }
 
-        // An array item takes at least one byte (its tag) and a map entry at least two (a key length and a tag), so in a
-        // frame that can decode, the minimum size of everything still declared always fits in the bytes left. A frame
+        // An array item takes at least one byte (its tag), a map entry at least two (a key length and a tag) and a document
+        // at least two (a path length and its flags), so in a frame that can decode, the minimum size of everything still
+        // declared always fits in the bytes left in the section. A frame
         // whose declared counts don't is rejected here, before anything is allocated for them.
         private void Reserve(long bytes, int start)
         {
-            if (reserved + bytes > frame.Length - position)
+            CheckFits(bytes, start);
+            reserved += bytes;
+        }
+
+        private readonly void CheckFits(long bytes, int start)
+        {
+            if (reserved + bytes > limit - position)
             {
                 throw Fail(string.Create(CultureInfo.InvariantCulture,
-                    $"Declared counts need at least {reserved + bytes:N0} more bytes, but only {frame.Length - position:N0} are left in the frame."), start);
+                    $"Declared counts need at least {reserved + bytes:N0} more bytes, but only {limit - position:N0} are left in the section."), start);
             }
+        }
 
-            reserved += bytes;
+        // A string's, key's or bytes value's length, which must fit beside what the open containers still reserve, so
+        // a value can't claim (and be allocated for) bytes that the items declared after it need.
+        private int ReadLength()
+        {
+            int start = position;
+            int length = ReadCount(minimumBytesEach: 1);
+            CheckFits(length, start);
+            return length;
         }
 
         private readonly void CheckDepth(int depth, int start)
@@ -290,7 +332,7 @@ public static class SnapshotDecoder
         private string ReadKey()
         {
             int start = position;
-            ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
+            ReadOnlySpan<byte> bytes = Take(ReadLength());
             try
             {
                 return scratch.Key(bytes);
@@ -304,7 +346,7 @@ public static class SnapshotDecoder
         private string ReadString()
         {
             int start = position;
-            ReadOnlySpan<byte> bytes = Take(ReadCount(minimumBytesEach: 1));
+            ReadOnlySpan<byte> bytes = Take(ReadLength());
             try
             {
                 return Utf8(bytes);
@@ -315,7 +357,7 @@ public static class SnapshotDecoder
             }
         }
 
-        // A count can never exceed the bytes left, which stops a corrupt count from forcing a huge allocation.
+        // A count can never exceed the bytes left in the section, which stops a corrupt count from forcing a huge allocation.
         private int ReadCount(int minimumBytesEach)
         {
             int start = position;
@@ -337,8 +379,8 @@ public static class SnapshotDecoder
                 }
             }
 
-            if (value > int.MaxValue || value > (uint)(frame.Length - position) / (uint)minimumBytesEach)
-                throw Fail($"Length {value} runs past the end of the frame.", start);
+            if (value > int.MaxValue || value > (uint)(limit - position) / (uint)minimumBytesEach)
+                throw Fail($"Length {value} runs past the end of the section.", start);
             return (int)value;
         }
 
@@ -348,8 +390,13 @@ public static class SnapshotDecoder
 
         private ReadOnlySpan<byte> Take(int count)
         {
-            if (count > frame.Length - position)
-                throw Fail("The frame ends in the middle of a value.");
+            if (count > limit - position)
+            {
+                throw Fail(!inSection
+                    ? "The frame ends in the middle of a value."
+                    : string.Create(CultureInfo.InvariantCulture, $"A value runs past the end of its section, which ends at byte {limit}."));
+            }
+
             ReadOnlySpan<byte> taken = frame.Slice(position, count);
             position += count;
             return taken;
@@ -363,7 +410,8 @@ public static class SnapshotDecoder
     /// <summary>
     /// Per-thread working memory for one decode: the field-name cache, the key hashes and the duplicate-key table.
     /// Kept between decodes while it stays small, so after a thread's first decode the only allocation here is a copy
-    /// of each new field name's bytes, once per frame.
+    /// of each new field name's bytes, once per frame. Normally about 5 KB; a thread that decoded a map with thousands
+    /// of keys keeps tables of up to <see cref="MaxRetainedTable"/> entries each (about 128 KB), and a larger one is dropped.
     /// </summary>
     private sealed class Scratch
     {
@@ -373,9 +421,10 @@ public static class SnapshotDecoder
         private const int KeyCacheLimit = KeyCacheSize / 2;
         private const int MaxProbes = 8;
 
-        // Random per process, so the cache's slots can't be predicted by whoever writes the data.
+        // Random per process, so ordinary keys don't land in the same cache slots and hash buckets in every process. It is
+        // not a defense: FNV-1a with a seeded basis still has seed-independent collisions (see CollidingKeys in the
+        // tests). Crafted keys are bounded by MaxProbes here and by the probe limit and sort fallback in HasDuplicateKey.
         private static readonly uint Seed = (uint)Random.Shared.Next() | 1;
-
 
         private readonly byte[]?[] cachedBytes = new byte[KeyCacheSize][];
         private readonly string?[] cachedKeys = new string[KeyCacheSize];
@@ -384,16 +433,15 @@ public static class SnapshotDecoder
         private uint[] hashes = new uint[InitialStack];
         private int[] seen = [];
 
-
         public int HashTop { get; private set; }
 
         public void PopHashes(int bottom) => HashTop = bottom;
 
-
-
         // Uses the hashes the key cache computed while reading the keys (pushed from hashBottom, one per key): small maps
-        // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch.
-        public bool HasDuplicateKey(ReadOnlySpan<string> names, int hashBottom, out string? duplicate)
+        // compare pairwise, larger ones go through an open-addressing table of key indexes kept with the scratch. A key
+        // that probes past 4 * log2(table size) slots (keys crafted to collide; random hashes stay well under it) switches
+        // the whole map to an O(n log n) sort of the key indexes, so the check never goes quadratic.
+        public bool HasDuplicateKey(string[] names, int hashBottom, out string? duplicate)
         {
             ReadOnlySpan<uint> keyHashes = hashes.AsSpan(hashBottom, names.Length);
             duplicate = null;
@@ -414,15 +462,19 @@ public static class SnapshotDecoder
                 return false;
             }
 
-            int size = (int)BitOperations.RoundUpToPowerOf2((uint)names.Length * 2);
+            // Capped at 2^30 so the size stays a positive int: a section holds fewer than 2^30 entries at two bytes each,
+            // so the table never fills and still has room for the sort's index list.
+            int size = (int)Math.Min(BitOperations.RoundUpToPowerOf2((uint)names.Length * 2), 1u << 30);
             if (seen.Length < size)
                 seen = new int[size];
             int mask = size - 1;
+            int maxProbes = 4 * BitOperations.Log2((uint)size);
             try
             {
                 for (int index = 0; index < names.Length; index++)
                 {
                     int slot = (int)keyHashes[index] & mask;
+                    int probes = 0;
                     while (seen[slot] is var occupied and > 0)
                     {
                         int other = occupied - 1;
@@ -431,6 +483,9 @@ public static class SnapshotDecoder
                             duplicate = names[index];
                             return true;
                         }
+
+                        if (++probes == maxProbes)
+                            return HasDuplicateKeyBySorting(names, hashBottom, out duplicate);
 
                         slot = (slot + 1) & mask;
                     }
@@ -446,14 +501,45 @@ public static class SnapshotDecoder
             }
         }
 
+        // Reuse the table as a sortable list of indexes. Collisions cannot force quadratic probing, and sorting
+        // the indexes preserves the decoded map's key order and its correspondence with the values. Equal keys have
+        // equal hashes, so ordering by hash first still puts duplicates next to each other while most comparisons
+        // stay integer ones.
+        private bool HasDuplicateKeyBySorting(string[] names, int hashBottom, out string? duplicate)
+        {
+            Span<int> indexes = seen.AsSpan(0, names.Length);
+            for (int index = 0; index < indexes.Length; index++)
+                indexes[index] = index;
+
+            indexes.Sort(new KeyIndexComparer(names, hashes, hashBottom));
+            for (int index = 1; index < indexes.Length; index++)
+            {
+                string key = names[indexes[index]];
+                if (string.Equals(key, names[indexes[index - 1]], StringComparison.Ordinal))
+                {
+                    duplicate = key;
+                    return true;
+                }
+            }
+
+            duplicate = null;
+            return false;
+        }
+
+        private readonly struct KeyIndexComparer(string[] names, uint[] hashes, int hashBottom) : IComparer<int>
+        {
+            public int Compare(int left, int right)
+            {
+                int byHash = hashes[hashBottom + left].CompareTo(hashes[hashBottom + right]);
+                return byHash != 0 ? byHash : string.CompareOrdinal(names[left], names[right]);
+            }
+        }
+
         // Field names, decoded once per frame. The probe length is capped, so even keys crafted to collide cost a
         // bounded number of comparisons each; past the cap a key is simply decoded without caching.
         public string Key(ReadOnlySpan<byte> bytes)
         {
-            uint hash = 2166136261 ^ Seed;
-            foreach (byte value in bytes)
-                hash = (hash ^ value) * 16777619;
-            hash ^= hash >> 15;
+            uint hash = KeyHash(bytes, Seed);
 
             if (HashTop == hashes.Length)
                 Array.Resize(ref hashes, hashes.Length * 2);

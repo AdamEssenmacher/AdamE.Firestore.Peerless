@@ -39,7 +39,8 @@ for run in runs:
         if row["phase"] in ("query", "document"):
             settled[(mode, row["phase"], int(row["size"]), row["point"])].append(int(row["peers"]))
     for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
-        if row["phase"] not in ("query", "document"):
+        # Partial snapshots are skipped: older runs wrote them under phase "skipped", newer ones as kind "partial".
+        if row["phase"] not in ("query", "document") or row["kind"] == "partial":
             continue
         seq, marks = int(row["seq"]), run_settles[(row["phase"], int(row["size"]))]
         earlier = [p for k, p in marks if k < seq or (seq == 0 and k == -1)]

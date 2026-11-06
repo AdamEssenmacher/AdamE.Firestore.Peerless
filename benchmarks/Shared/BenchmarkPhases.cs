@@ -23,6 +23,15 @@ internal sealed class BenchmarkCheckException(string message) : Exception(messag
 /// <summary>How much a run does. The defaults are what every committed run uses.</summary>
 internal sealed record BenchmarkPlan(int[] Sizes, int UpdatesPerSize, int SingleDocumentUpdates)
 {
+    // A run without updates would still complete, with no update rows to compare, so a count must be positive.
+    public int UpdatesPerSize { get; } = UpdatesPerSize > 0
+        ? UpdatesPerSize
+        : throw new ArgumentException($"Updates per size must be positive: {UpdatesPerSize}.");
+
+    public int SingleDocumentUpdates { get; } = SingleDocumentUpdates > 0
+        ? SingleDocumentUpdates
+        : throw new ArgumentException($"Single-document updates must be positive: {SingleDocumentUpdates}.");
+
     public const string ProjectId = "demo-peerless";
     public const int WarmupSize = 10;
     public const int WarmupUpdates = 3;
@@ -34,10 +43,24 @@ internal sealed record BenchmarkPlan(int[] Sizes, int UpdatesPerSize, int Single
 
     public static string DocumentId(int index) => $"doc-{index:D5}";
 
-    public static int[]? ParseSizes(string? text) =>
-        string.IsNullOrWhiteSpace(text)
-            ? null
-            : text.Split(',').Select(static part => int.Parse(part, CultureInfo.InvariantCulture)).ToArray();
+    /// <summary>
+    /// Parses <c>10,100</c> (spaces around a size are allowed). Each size must be a positive whole number (updates pick
+    /// a document modulo it) and appear once (each size has its own collection and settle points).
+    /// </summary>
+    public static int[]? ParseSizes(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        int[] sizes = text.Split(',', StringSplitOptions.TrimEntries).Select(part =>
+                int.TryParse(part, NumberStyles.None, CultureInfo.InvariantCulture, out int size) && size > 0
+                    ? size
+                    : throw new ArgumentException(
+                        $"Sizes must be positive whole numbers separated by commas; got '{text}'."))
+            .ToArray();
+        if (sizes.Distinct().Count() != sizes.Length)
+            throw new ArgumentException($"Sizes must not repeat: '{text}'.");
+        return sizes;
+    }
 }
 
 /// <summary>One platform's binding, as the phases drive it.</summary>
@@ -47,11 +70,15 @@ internal interface IBenchmarkPlatform<TSample>
     /// <summary>Writes <see cref="SeedSpec.Document"/> for indexes [start, start + count) in one batch, through the seeder.</summary>
     Task SeedBatchAsync(string collection, int start, int count);
 
-    /// <summary>Starts listening to a whole collection through the measured instance.</summary>
-    (IDisposable Registration, ChannelReader<TSample> Samples) ListenToCollection(string collection);
+    /// <summary>
+    /// Starts listening to a whole collection through the measured instance. <c>Latest</c> returns the listener's most
+    /// recent conversion, which the phase keeps alive through the after-remove settle, as an app's view model would.
+    /// </summary>
+    (IDisposable Registration, ChannelReader<TSample> Samples, Func<object?> Latest) ListenToCollection(string collection);
 
-    /// <summary>Starts listening to one document through the measured instance.</summary>
-    (IDisposable Registration, ChannelReader<TSample> Samples) ListenToDocument(string collection, string documentId);
+    /// <summary>Starts listening to one document through the measured instance; <c>Latest</c> as for a collection.</summary>
+    (IDisposable Registration, ChannelReader<TSample> Samples, Func<object?> Latest) ListenToDocument(
+        string collection, string documentId);
 
     /// <summary>
     /// Prepares setting <c>version</c> and <c>updatedAt</c> (now) on one document, through the seeder: builds the
@@ -66,7 +93,11 @@ internal interface IBenchmarkPlatform<TSample>
     /// <summary>Right after an initial snapshot, before settling: a chance to record unsettled state.</summary>
     void Unsettled(string phase, int size, string point);
 
-    void Record(string phase, int size, int sequence, string kind, TSample sample, double? writeToCallbackMilliseconds);
+    /// <summary>
+    /// Records one sample. <paramref name="writeToDoneMilliseconds"/> (updates only) runs from the write to the snapshot
+    /// fully converted, in every mode, so modes and platforms measure to the same place.
+    /// </summary>
+    void Record(string phase, int size, int sequence, string kind, TSample sample, double? writeToDoneMilliseconds);
 
     void Report(string message);
 }
@@ -83,10 +114,11 @@ internal static class BenchmarkPhases
     public static async Task RunAsync<TSample>(IBenchmarkPlatform<TSample> platform, BenchmarkPlan plan)
         where TSample : IBenchmarkSample
     {
-        await QueryPhaseAsync(platform, "warmup", BenchmarkPlan.WarmupSize, BenchmarkPlan.WarmupUpdates).ConfigureAwait(false);
+        await PhaseAsync(platform, "warmup", BenchmarkPlan.WarmupSize, BenchmarkPlan.WarmupUpdates, singleDocument: false)
+            .ConfigureAwait(false);
         foreach (int size in plan.Sizes)
-            await QueryPhaseAsync(platform, "query", size, plan.UpdatesPerSize).ConfigureAwait(false);
-        await DocumentPhaseAsync(platform, plan.SingleDocumentUpdates).ConfigureAwait(false);
+            await PhaseAsync(platform, "query", size, plan.UpdatesPerSize, singleDocument: false).ConfigureAwait(false);
+        await PhaseAsync(platform, "document", 1, plan.SingleDocumentUpdates, singleDocument: true).ConfigureAwait(false);
     }
 
     public static async Task SeedAsync<TSample>(IBenchmarkPlatform<TSample> platform, string collection, int size)
@@ -96,7 +128,10 @@ internal static class BenchmarkPhases
             await platform.SeedBatchAsync(collection, start, Math.Min(BenchmarkPlan.SeedBatchSize, size - start)).ConfigureAwait(false);
     }
 
-    private static async Task QueryPhaseAsync<TSample>(IBenchmarkPlatform<TSample> platform, string phase, int size, int updates)
+    // One phase: seed, listen (to the whole collection, or to its first document), take the initial snapshot and the
+    // updates, then remove the listener. Query and single-document phases share it so they record the same points.
+    private static async Task PhaseAsync<TSample>(
+        IBenchmarkPlatform<TSample> platform, string phase, int size, int updates, bool singleDocument)
         where TSample : IBenchmarkSample
     {
         string collection = $"{phase}-{size}";
@@ -104,48 +139,33 @@ internal static class BenchmarkPhases
         await SeedAsync(platform, collection, size).ConfigureAwait(false);
         await platform.SettleAsync(phase, size, "before-listen").ConfigureAwait(false);
 
+        object? latest = await ListenAsync(platform, phase, collection, size, updates, singleDocument).ConfigureAwait(false);
+
+        // The registration is disposed by now, so this settle counts only what the listener left behind. It runs before
+        // the KeepAlive, so the last conversion stays alive through it, as an app's view model would keep it.
+        await platform.SettleAsync(phase, size, "after-remove").ConfigureAwait(false);
+        GC.KeepAlive(latest);
+    }
+
+    private static async Task<object?> ListenAsync<TSample>(
+        IBenchmarkPlatform<TSample> platform, string phase, string collection, int size, int updates, bool singleDocument)
+        where TSample : IBenchmarkSample
+    {
         platform.Report($"{phase} {size}: listening");
-        (IDisposable registration, ChannelReader<TSample> samples) = platform.ListenToCollection(collection);
-        try
+        (IDisposable registration, ChannelReader<TSample> samples, Func<object?> latest) = singleDocument
+            ? platform.ListenToDocument(collection, BenchmarkPlan.DocumentId(0))
+            : platform.ListenToCollection(collection);
+        using (registration)
         {
-            TSample initial = await NextAsync(platform, samples, size).ConfigureAwait(false);
-            platform.Record(phase, size, 0, "initial", initial, writeToCallbackMilliseconds: null);
+            TSample initial = await NextAsync(platform, phase, size, samples, size).ConfigureAwait(false);
+            platform.Record(phase, size, 0, "initial", initial, writeToDoneMilliseconds: null);
             platform.Unsettled(phase, size, "after-initial-unsettled");
             await platform.SettleAsync(phase, size, "after-initial").ConfigureAwait(false);
 
             await UpdatesAsync(platform, phase, size, updates, samples, collection, size).ConfigureAwait(false);
         }
-        finally
-        {
-            registration.Dispose();
-        }
 
-        await platform.SettleAsync(phase, size, "after-remove").ConfigureAwait(false);
-    }
-
-    private static async Task DocumentPhaseAsync<TSample>(IBenchmarkPlatform<TSample> platform, int updates)
-        where TSample : IBenchmarkSample
-    {
-        const string phase = "document";
-        const string collection = "document-1";
-        await SeedAsync(platform, collection, 1).ConfigureAwait(false);
-        await platform.SettleAsync(phase, 1, "before-listen").ConfigureAwait(false);
-
-        (IDisposable registration, ChannelReader<TSample> samples) =
-            platform.ListenToDocument(collection, BenchmarkPlan.DocumentId(0));
-        try
-        {
-            TSample initial = await NextAsync(platform, samples, 1).ConfigureAwait(false);
-            platform.Record(phase, 1, 0, "initial", initial, writeToCallbackMilliseconds: null);
-            await platform.SettleAsync(phase, 1, "after-initial").ConfigureAwait(false);
-            await UpdatesAsync(platform, phase, 1, updates, samples, collection, 1).ConfigureAwait(false);
-        }
-        finally
-        {
-            registration.Dispose();
-        }
-
-        await platform.SettleAsync(phase, 1, "after-remove").ConfigureAwait(false);
+        return latest();
     }
 
     // Each update changes one document through the seeder, so the listener sees exactly one server-driven snapshot.
@@ -166,7 +186,9 @@ internal static class BenchmarkPhases
             Func<Task> write = platform.PrepareUpdate(collection, BenchmarkPlan.DocumentId((update * 7) % size), update + 1);
             long written = Stopwatch.GetTimestamp();
             await write().ConfigureAwait(false);
-            TSample sample = await NextAsync(platform, samples, expected).ConfigureAwait(false);
+            TSample sample = await NextAsync(platform, phase, size, samples, expected).ConfigureAwait(false);
+            // Ends when the snapshot is fully converted: Peerless has no earlier .NET point (its callback entry comes
+            // after encoding), so every mode measures to the same place.
             double latency = Stopwatch.GetElapsedTime(written, sample.DoneTimestamp).TotalMilliseconds;
             platform.Record(phase, size, update, "update", sample, latency);
             if (update % settleEvery == 0)
@@ -174,9 +196,10 @@ internal static class BenchmarkPhases
         }
     }
 
-    // Skips snapshots that are not yet the whole collection (for example a partial one from cache), but records them.
+    // Skips snapshots that are not yet the whole collection (for example a partial one from cache, or a missing
+    // document), but records them as "partial" under the phase and size they came from.
     private static async Task<TSample> NextAsync<TSample>(
-        IBenchmarkPlatform<TSample> platform, ChannelReader<TSample> samples, int expectedDocuments)
+        IBenchmarkPlatform<TSample> platform, string phase, int size, ChannelReader<TSample> samples, int expectedDocuments)
         where TSample : IBenchmarkSample
     {
         using var timeout = new CancellationTokenSource(SnapshotTimeout);
@@ -187,7 +210,7 @@ internal static class BenchmarkPhases
                 throw new InvalidOperationException($"Listener failed: {sample.Error}");
             if (sample.Documents == expectedDocuments)
                 return sample;
-            platform.Record("skipped", expectedDocuments, -1, "partial", sample, writeToCallbackMilliseconds: null);
+            platform.Record(phase, size, -1, "partial", sample, writeToDoneMilliseconds: null);
         }
     }
 }

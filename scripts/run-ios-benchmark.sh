@@ -8,6 +8,7 @@
 # Usage: scripts/run-ios-benchmark.sh <simulator-udid> [peered|peerless] [extra launch arguments, e.g. -sizes 10,100]
 #   FIRESTORE_PORT  the Firestore emulator's port (default 8181, as in firebase.json); the simulator shares the host's
 #                   network, so the app reaches it at 127.0.0.1:<port>
+#   The runner supplies -host, -port, -runFiles and -mode. Use FIRESTORE_PORT to select a different local emulator port.
 #   FIREBASE_HUB_PORT  the emulator hub's port (default 4501), used to check FIRESTORE_PORT is really Firestore's
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 #
@@ -26,6 +27,17 @@ case "$mode" in
   *) echo "$usage" >&2; echo "Unknown mode '$mode': the second argument is the mode (peered or peerless)." >&2; exit 2 ;;
 esac
 shift 2 || shift $# || true
+# Keep launch arguments from sending the app to a different database than the one this runner clears, or its files
+# somewhere other than the ones this runner watches (the app names its files after -mode).
+for arg in "$@"; do
+  case "$arg" in
+    -host|-host=*|-port|-port=*|-runFiles|-runFiles=*|-mode|-mode=*)
+      echo "The iOS benchmark runner controls -host, -port, -runFiles and -mode. Give the mode as the second argument, and set FIRESTORE_PORT to select the local emulator port." >&2
+      exit 2
+      ;;
+  esac
+done
+host="127.0.0.1"
 port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS"
@@ -38,7 +50,7 @@ case "$port" in
   8080|9099|4400) echo "Port $port belongs to another Firebase emulator setup on this machine (the CI runner's); use 8181." >&2; exit 1 ;;
 esac
 hub="${FIREBASE_HUB_PORT:-4501}"
-reported="$(curl -sf "http://127.0.0.1:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
+reported="$(curl -sf "http://$host:$hub/emulators" | python3 -c 'import json,sys; print(json.load(sys.stdin)["firestore"]["port"])' 2>/dev/null || true)"
 if [ "$reported" != "$port" ]; then
   echo "The Firebase emulator hub on $hub doesn't report a Firestore emulator on $port (it reports: ${reported:-nothing}). Start it with: firebase emulators:start --only firestore --project demo-peerless" >&2
   exit 1
@@ -54,14 +66,14 @@ xcrun simctl install "$udid" "$app"
 container="$(xcrun simctl get_app_container "$udid" "$bundle" data)"
 rm -rf "$container/Library/Caches/peerless"
 # Start each run from an empty emulator database.
-curl -sf -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
+curl -sf -X DELETE "http://$host:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null
 
 mkdir -p "$out"
 files="$container/Library/Caches/peerless"
 load_before="$(uptime)"
 # -runFiles names the files this script watches, so even a failure to parse the other arguments (-mode included)
 # lands there.
-xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -mode "$mode" -port "$port" "$@"
+xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -mode "$mode" -host "$host" -port "$port" "$@"
 
 # A simulator app is an ordinary host process, so pgrep finds it (by this simulator's path) without simctl.
 echo "Waiting for the run to finish…"
@@ -88,6 +100,9 @@ echo "results: $out"
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
 grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
+# The run must have used the emulator this script checked and cleared, however its launch arguments were spelled.
+grep -qx "emulator: $host:$port" "$out/$mode-run.txt" \
+  || { echo "run used a different emulator than $host:$port: $(grep '^emulator:' "$out/$mode-run.txt")" >&2; exit 1; }
 # A run without its verify check proves nothing about its values: refused unless ALLOW_NO_VERIFY=1.
 grep -q "^verify: read back as written" "$out/$mode-run.txt" || [[ "${ALLOW_NO_VERIFY:-0}" == "1" ]] \
   || { echo "run has no passing verify check (launched with -verify NO? set ALLOW_NO_VERIFY=1 to accept)" >&2; exit 1; }

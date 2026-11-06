@@ -198,6 +198,14 @@ different directions:
    definition), where these runs built them after it. Latency in these runs therefore includes building the
    reference. Android's latency numbers before and after that change aren't comparable either, though the difference
    should be well under a millisecond.
+9. **The committed runs count the harness's own peers.** The peer table is process-wide, and in these runs each
+   update also left about 6 entries from outside the listener until the next settle: the seeder's
+   `CollectionReference`, `DocumentReference`, `NSNumber`, two `NSString` keys, `Timestamp` and `NSDictionary`, and
+   the status line's `BeginInvokeOnMainThread` dispatcher. The single-document phase shows it: the count at callback
+   entry climbs by 37 per update while each callback leaves 31, so by the 12th update about 75 of its 486 peak over
+   settled are harness entries (about 15%; a smaller share at larger sizes, well under 1% at 1000 docs). The code now
+   disposes the seeder's peers on the main queue as soon as the write is issued, and posts status as a GCD block,
+   which makes no peer. No committed run has measured that change yet.
 
 ## How it was run
 

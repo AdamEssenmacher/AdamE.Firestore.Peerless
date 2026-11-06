@@ -167,8 +167,9 @@ internal sealed unsafe class FrameReceiver : IDisposable
             arrived = true;
         }
 
-        // Only decoding is guarded: a PeerlessFormatException thrown by the app's own callback is the app's exception,
-        // not a frame failure.
+        // Only decoding is guarded: an exception thrown by the app's own callback is the app's exception, not a frame
+        // failure. Any decode failure (a bad frame, or OutOfMemoryException on a huge one) fails the listener rather
+        // than escaping into the native callback, where it would end the process.
         FirestoreSnapshot snapshot;
         try
         {
@@ -176,7 +177,7 @@ internal sealed unsafe class FrameReceiver : IDisposable
                 throw new PeerlessFormatException("The shim delivered a frame over 2 GB.", 0);
             snapshot = decode(new ReadOnlySpan<byte>((void*)data, (int)length));
         }
-        catch (PeerlessFormatException exception)
+        catch (Exception exception)
         {
             gate.Fail(exception);
             return;
