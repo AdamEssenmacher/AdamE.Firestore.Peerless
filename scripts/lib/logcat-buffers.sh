@@ -22,7 +22,7 @@ log_size_bytes() {
 }
 
 # The size `logcat -g -b <buffer>` prints, as "<number><unit>" ("256K", "16M", or a plain byte count), read from its
-# output on stdin: "ring buffer is 256 KiB (...)" on newer Android, "ring buffer is 256Kb (...)" on Android 11 and
+# output on stdin: "ring buffer is 256 KiB (...)" on newer Android, "ring buffer is 256Kb (...)" on Android 9 and
 # earlier. Prints nothing if there is no such line.
 log_printed_size() {
   sed -nE 's/.*ring buffer is ([0-9]+) ?([KkMmGg]?)i?[bB].*/\1\2/p' | head -1 | tr 'kmg' 'KMG'
@@ -32,7 +32,8 @@ log_printed_size() {
 # when it can't be known. logcat prints the size divided down to the largest unit it reaches (KiB, MiB, GiB) and drops
 # the remainder, so "1 MiB" means anything from 1 MiB up to 2 MiB less a byte. The exact size is:
 #   - the effective size property (the first of persist.logd.size.<buffer>, ro.logd.size.<buffer>, persist.logd.size,
-#     ro.logd.size that is set, the order logd reads them in), when it falls in that range;
+#     ro.logd.size that is valid, as logd picks it: it parses and lies between 64K and 256M), when it falls in that
+#     range;
 #   - otherwise the printed size itself when it is in bytes or KiB (a size under 1 MiB is printed in KiB, so only a
 #     remainder below 1 KiB could be lost, and logd sizes are whole KiB in practice);
 #   - otherwise unknown: a size of 1 MiB or more that no property confirms may not be a whole number of MiB.
@@ -44,11 +45,14 @@ log_exact_size() {
   for name in "persist.logd.size.$buffer" "ro.logd.size.$buffer" persist.logd.size ro.logd.size; do
     value="$(printf '%s\n' "$props" | awk -v key="[$name]:" '$1 == key { v = $2; gsub(/^\[|\]$/, "", v); print v; exit }')"
     [ -n "$value" ] || continue
-    if bytes="$(log_size_bytes "$value")" && [ "$bytes" -ge "$low" ] && [ "$bytes" -lt $((low + unit)) ]; then
+    # logd skips a property that doesn't parse or is out of its range, and uses the next.
+    bytes="$(log_size_bytes "$value")" || continue
+    [ "$bytes" -ge $((64 * 1024)) ] && [ "$bytes" -le $((256 * 1024 * 1024)) ] || continue
+    if [ "$bytes" -ge "$low" ] && [ "$bytes" -lt $((low + unit)) ]; then
       echo "$bytes"
       return 0
     fi
-    break # logd uses the first property that is set; a later one doesn't describe this buffer
+    break # logd uses the first valid property; a later one doesn't describe this buffer
   done
   if [ "$unit" -le 1024 ]; then echo "$low"; return 0; fi
   return 1

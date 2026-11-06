@@ -40,7 +40,7 @@ expect "bytes junk" "fail" "$(log_size_bytes 12X || echo fail)"
 expect "bytes empty" "fail" "$(log_size_bytes "" || echo fail)"
 
 expect "printed, Android 12+" 256K "$(echo 'main: ring buffer is 256 KiB (210 KiB consumed, 210 KiB readable), max entry is 5120 B, max payload is 4068 B' | log_printed_size)"
-expect "printed, Android 11" 16M "$(echo 'main: ring buffer is 16Mb (229Kb consumed), max entry is 5120b, max payload is 4076b' | log_printed_size)"
+expect "printed, Android 9" 16M "$(echo 'main: ring buffer is 16Mb (229Kb consumed), max entry is 5120b, max payload is 4076b' | log_printed_size)"
 expect "printed, bytes" 900 "$(echo 'crash: ring buffer is 900 B (0 B consumed, 0 B readable), max entry is 5120 B' | log_printed_size)"
 expect "printed, none" "" "$(echo 'logcat: unknown buffer' | log_printed_size)"
 
@@ -52,11 +52,15 @@ expect "exact: bytes as printed" 900 "$(log_exact_size 900 "" main)"
 expect "exact: MiB without a property is unknown" "unknown" "$(log_exact_size 1M "" main || echo unknown)"
 expect "exact: MiB confirmed by the buffer's property" 1572864 "$(log_exact_size 1M "$props" main)"
 expect "exact: MiB confirmed by the global property" 4194304 "$(log_exact_size 4M "$props" system)"
+invalid=$'[persist.logd.size.main]: [32K]\n[ro.logd.size]: [1536K]'
+expect "exact: an out-of-range property is skipped, as logd does" 1572864 "$(log_exact_size 1M "$invalid" main)"
+unparsable=$'[persist.logd.size.main]: [lots]\n[ro.logd.size.main]: [1536K]'
+expect "exact: an unparsable property is skipped" 1572864 "$(log_exact_size 1M "$unparsable" main)"
 expect "exact: property out of range is not used" "unknown" "$(log_exact_size 2M "$props" main || echo unknown)"
 expect "exact: KiB with an out-of-range property is as printed" 262144 "$(log_exact_size 256K "$props" main)"
 expect "exact: unreadable" "unknown" "$(log_exact_size "" "$props" main || echo unknown)"
-# The first property set wins, as in logd: persist.logd.size.main (1536K) hides ro.logd.size (4M) for main.
-expect "exact: only the first set property counts" "unknown" "$(log_exact_size 4M "$props" main || echo unknown)"
+# The first valid property wins, as in logd: persist.logd.size.main (1536K) hides ro.logd.size (4M) for main.
+expect "exact: only the first valid property counts" "unknown" "$(log_exact_size 4M "$props" main || echo unknown)"
 
 expect "arg 256K" 256K "$(log_size_arg 262144)"
 expect "arg 16M" 16M "$(log_size_arg 16777216)"
@@ -192,7 +196,7 @@ lacks "emulator: system not resized" "-b system -G" "$calls"
 contains "emulator: crash warning" "crash buffer as 1M, rounded down, and its exact size is unknown; if it is enlarged, it won't be restored afterwards." "$err"
 lacks "emulator: logcat complete" "logcat may be incomplete" "$host"
 
-# The same on Android 11's "256Kb" format, with main already 16M (nothing to do, and not reported incomplete).
+# The same on Android 9's "256Kb" format, with main already 16M (nothing to do, and not reported incomplete).
 scenario legacy emulator-5650 16777216 262144 65536 "" FAKE_LEGACY=1
 expect "legacy: main untouched" 16777216 "$(size main)"
 expect "legacy: system restored" 262144 "$(size system)"
