@@ -7,13 +7,23 @@ public sealed class ListenerGateTests
 {
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
 
-    [Fact]
-    public void A_failure_before_attach_is_held_then_delivered_once_after_attach()
+    /// <summary>Which <see cref="ListenerGate"/> Run overload a test drives; both keep the same contract.</summary>
+    public enum RunOverload
     {
-        var harness = new Harness();
+        Action,
+        State,
+    }
+
+    public static TheoryData<RunOverload> Overloads => [RunOverload.Action, RunOverload.State];
+
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void A_failure_before_attach_is_held_then_delivered_once_after_attach(RunOverload overload)
+    {
+        var harness = new Harness(overload);
         var error = new InvalidOperationException("early");
 
-        Assert.True(harness.Gate.Run(() => harness.Gate.Fail(error)));
+        Assert.True(harness.Run(() => harness.Gate.Fail(error)));
 
         Assert.Empty(harness.Errors);
         Assert.Empty(harness.Posted);
@@ -28,11 +38,12 @@ public sealed class ListenerGateTests
         Assert.Equal(1, harness.Released);
     }
 
-    [Fact]
-    public void Stopping_after_attach_cancels_an_early_failure_not_yet_delivered()
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Stopping_after_attach_cancels_an_early_failure_not_yet_delivered(RunOverload overload)
     {
-        var harness = new Harness();
-        harness.Gate.Run(() => harness.Gate.Fail(new InvalidOperationException("early")));
+        var harness = new Harness(overload);
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("early")));
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
 
         harness.Gate.Stop();
@@ -42,14 +53,15 @@ public sealed class ListenerGateTests
         Assert.Equal(1, harness.Removed);
     }
 
-    [Fact]
-    public void Stopping_inside_a_snapshot_callback_returns_at_once_and_releases_after_the_callback()
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Stopping_inside_a_snapshot_callback_returns_at_once_and_releases_after_the_callback(RunOverload overload)
     {
-        var harness = new Harness();
+        var harness = new Harness(overload);
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
         int releasedDuringCallback = -1;
 
-        Assert.True(harness.Gate.Run(() =>
+        Assert.True(harness.Run(() =>
         {
             harness.Gate.Stop();
             releasedDuringCallback = harness.Released;
@@ -58,34 +70,36 @@ public sealed class ListenerGateTests
         Assert.Equal(0, releasedDuringCallback);
         Assert.Equal(1, harness.Released);
         Assert.Equal(1, harness.Removed);
-        Assert.False(harness.Gate.Run(() => Assert.Fail("A callback ran after Stop.")));
+        Assert.False(harness.Run(() => Assert.Fail("A callback ran after Stop.")));
     }
 
-    [Fact]
-    public void Stopping_inside_the_error_callback_does_not_deadlock_or_report_twice()
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Stopping_inside_the_error_callback_does_not_deadlock_or_report_twice(RunOverload overload)
     {
-        var harness = new Harness(onError: (gate, _) => gate.Stop());
+        var harness = new Harness(overload, onError: (gate, _) => gate.Stop());
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
 
-        harness.Gate.Run(() => harness.Gate.Fail(new InvalidOperationException("boom")));
-        harness.Gate.Run(() => harness.Gate.Fail(new InvalidOperationException("again")));
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("boom")));
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("again")));
 
         Assert.Single(harness.Errors);
         Assert.Equal(1, harness.Removed);
         Assert.Equal(1, harness.Released);
     }
 
-    [Fact]
-    public async Task Stopping_from_another_thread_waits_for_the_callback_in_flight()
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public async Task Stopping_from_another_thread_waits_for_the_callback_in_flight(RunOverload overload)
     {
         CancellationToken cancel = TestContext.Current.CancellationToken;
-        var harness = new Harness();
+        var harness = new Harness(overload);
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
         using var started = new ManualResetEventSlim();
         using var proceed = new ManualResetEventSlim();
         int releasedWhileRunning = -1;
 
-        Task callback = Task.Run(() => harness.Gate.Run(() =>
+        Task callback = Task.Run(() => harness.Run(() =>
         {
             started.Set();
             proceed.Wait(Wait, cancel);
@@ -102,32 +116,34 @@ public sealed class ListenerGateTests
         await callback.WaitAsync(Wait, cancel);
         Assert.Equal(0, releasedWhileRunning);
         Assert.Equal(1, harness.Released);
-        Assert.False(harness.Gate.Run(() => Assert.Fail("A callback ran after Stop.")));
+        Assert.False(harness.Run(() => Assert.Fail("A callback ran after Stop.")));
     }
 
-    [Fact]
-    public void A_frame_racing_removal_is_dropped()
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void A_frame_racing_removal_is_dropped(RunOverload overload)
     {
-        var harness = new Harness();
+        var harness = new Harness(overload);
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
         harness.Gate.Stop();
 
-        bool ran = harness.Gate.Run(() => Assert.Fail("A frame was delivered after Stop."));
+        bool ran = harness.Run(() => Assert.Fail("A frame was delivered after Stop."));
 
         Assert.False(ran);
         Assert.True(harness.Gate.IsClosed);
     }
 
-    [Fact]
-    public void Resources_are_released_exactly_once_whatever_happens()
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Resources_are_released_exactly_once_whatever_happens(RunOverload overload)
     {
-        var harness = new Harness();
+        var harness = new Harness(overload);
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
 
-        harness.Gate.Run(() => harness.Gate.Fail(new InvalidOperationException("one")));
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("one")));
         harness.Gate.Stop();
         harness.Gate.Stop();
-        harness.Gate.Run(() => harness.Gate.Fail(new InvalidOperationException("two")));
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("two")));
 
         Assert.Equal(1, harness.Released);
         Assert.Equal(1, harness.Removed);
@@ -137,7 +153,7 @@ public sealed class ListenerGateTests
     [Fact]
     public void Stop_before_attach_removes_the_registration_when_it_arrives()
     {
-        var harness = new Harness();
+        var harness = new Harness(RunOverload.Action);
         harness.Gate.Stop();
 
         harness.Gate.Attach(harness.Remove, harness.Posted.Add);
@@ -149,15 +165,76 @@ public sealed class ListenerGateTests
     [Fact]
     public void Fail_outside_a_callback_is_a_programming_error()
     {
-        var harness = new Harness();
+        var harness = new Harness(RunOverload.Action);
 
         Assert.Throws<InvalidOperationException>(() => harness.Gate.Fail(new InvalidOperationException()));
     }
 
+    [Fact]
+    public void The_state_overload_passes_its_state_to_the_callback()
+    {
+        var harness = new Harness(RunOverload.State);
+        var seen = new List<(int, string)>();
+
+        Assert.True(harness.Gate.Run((seen, number: 7, text: "seven"), static state => state.seen.Add((state.number, state.text))));
+
+        Assert.Equal((7, "seven"), Assert.Single(seen));
+    }
+
+    // The frame path: a static lambda and a value-type state, as the platforms' FrameReceiver use it. After warm-up a
+    // call allocates nothing; the capturing Action form, for comparison, allocates a closure and a delegate per call.
+    [Fact]
+    public void The_state_overload_with_a_static_lambda_allocates_nothing_per_call()
+    {
+        var harness = new Harness(RunOverload.State);
+        harness.Gate.Attach(harness.Remove, harness.Posted.Add);
+        var sink = new Counter();
+        const int Calls = 10_000;
+
+        long stateBytes = Measure(() =>
+        {
+            for (int i = 0; i < Calls; i++)
+                harness.Gate.Run((sink, i), static state => state.sink.Add(state.i));
+        });
+        long actionBytes = Measure(() =>
+        {
+            for (int i = 0; i < Calls; i++)
+            {
+                int captured = i;
+                harness.Gate.Run(() => sink.Add(captured));
+            }
+        });
+
+        TestContext.Current.TestOutputHelper?.WriteLine(
+            $"Bytes per call: state overload {(double)stateBytes / Calls}, capturing Action {(double)actionBytes / Calls}.");
+        Assert.Equal(0, stateBytes);
+        Assert.True(actionBytes >= Calls * 32, $"Expected the capturing lambda to allocate; it allocated {actionBytes} bytes.");
+        Assert.Equal(4L * Calls * ((long)Calls - 1) / 2, sink.Total); // every call ran, both ways, warm-up included
+    }
+
+    // Runs once to warm up (JIT, lock inflation, the static lambda's cached delegate), then measures a second run.
+    private static long Measure(Action run)
+    {
+        run();
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        run();
+        return GC.GetAllocatedBytesForCurrentThread() - before;
+    }
+
+    private sealed class Counter
+    {
+        public long Total { get; private set; }
+
+        public void Add(int value) => Total += value;
+    }
+
     private sealed class Harness
     {
-        public Harness(Action<ListenerGate, Exception>? onError = null)
+        private readonly RunOverload overload;
+
+        public Harness(RunOverload overload, Action<ListenerGate, Exception>? onError = null)
         {
+            this.overload = overload;
             ListenerGate? gate = null;
             gate = new ListenerGate(
                 error =>
@@ -181,6 +258,11 @@ public sealed class ListenerGateTests
         public int Removed { get; private set; }
 
         public void Remove() => Removed++;
+
+        // The state overload gets the callback as its state, through a static lambda, as the frame receivers use it.
+        public bool Run(Action callback) => overload == RunOverload.State
+            ? Gate.Run(callback, static callback => callback())
+            : Gate.Run(callback);
 
         public void RunPosted()
         {

@@ -4,8 +4,9 @@ namespace AdamE.Firestore.Peerless;
 /// The concurrency contract every platform's listener shares, kept free of platform code so it can be tested
 /// directly. One gate per listener:
 /// <list type="bullet">
-/// <item>Each callback runs through <see cref="Run(Action)"/>, under the gate's lock, and is skipped once the listener is
-/// closed. So <see cref="Stop"/> from another thread waits for a callback in flight, and none starts after it
+/// <item>Each callback runs through <see cref="Run(Action)"/> (or <see cref="Run{TState}(TState, Action{TState})"/>,
+/// which frame paths use with a static lambda so a frame allocates nothing), under the gate's lock, and is skipped once
+/// the listener is closed. So <see cref="Stop"/> from another thread waits for a callback in flight, and none starts after it
 /// returns.</item>
 /// <item><see cref="Stop"/> from inside a callback (same thread) re-enters the lock and returns at once; that callback
 /// is the last.</item>
@@ -75,20 +76,28 @@ internal sealed class ListenerGate
             RemoveOnce();
         if (deliver is not null)
             postToCallbackThread(() => RunCore(
-                () =>
+                (gate: this, deliver),
+                static state =>
                 {
-                    if (!stopped) // checked when it runs: Stop() after Attach still cancels it
-                        onError(deliver);
+                    if (!state.gate.stopped) // checked when it runs: Stop() after Attach still cancels it
+                        state.gate.onError(state.deliver);
                 },
                 evenIfClosed: true));
     }
 
     /// <summary>Runs one callback unless the listener is closed. Returns whether it ran.</summary>
-    public bool Run(Action callback) => RunCore(callback, evenIfClosed: false);
+    public bool Run(Action callback) => RunCore(callback, static callback => callback(), evenIfClosed: false);
 
     /// <summary>
-    /// Inside <see cref="Run(Action)"/> only: closes the listener because of <paramref name="error"/>, removes the
-    /// registration and reports the error (now, or after <see cref="Attach"/> if that hasn't happened yet).
+    /// As <see cref="Run(Action)"/>, with the callback's state passed in rather than captured. With a static lambda
+    /// (and a value-type or already-allocated <typeparamref name="TState"/>) a call allocates nothing, which is why the
+    /// per-frame paths use it.
+    /// </summary>
+    public bool Run<TState>(TState state, Action<TState> callback) => RunCore(state, callback, evenIfClosed: false);
+
+    /// <summary>
+    /// Inside <see cref="Run(Action)"/> or <see cref="Run{TState}(TState, Action{TState})"/> only: closes the listener
+    /// because of <paramref name="error"/>, removes the registration and reports the error (now, or after <see cref="Attach"/> if that hasn't happened yet).
     /// </summary>
     public void Fail(Exception error)
     {
@@ -129,7 +138,7 @@ internal sealed class ListenerGate
             RemoveOnce();
     }
 
-    private bool RunCore(Action callback, bool evenIfClosed)
+    private bool RunCore<TState>(TState state, Action<TState> callback, bool evenIfClosed)
     {
         lock (sync)
         {
@@ -140,7 +149,7 @@ internal sealed class ListenerGate
             inCallback = true;
             try
             {
-                callback();
+                callback(state);
             }
             finally
             {

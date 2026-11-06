@@ -213,9 +213,15 @@ internal sealed unsafe class FrameReceiver : IDisposable
     {
         // The shim supplies timing whenever this listener requests it (observer set), and NULL otherwise. It points at
         // the shim's stack and is read-only, so it is copied here, before anything can defer or write through it.
+        // The state goes through the gate by value and the lambda is static, so a frame allocates no closure or
+        // delegate.
         FrameTiming? frameTiming = timing is null ? null : *timing;
-        _ = gate.Run(() => Deliver(data, length, frameTiming));
+        _ = gate.Run(
+            new PendingFrame(this, data, length, frameTiming),
+            static frame => frame.Receiver.Deliver(frame.Data, frame.Length, frame.Timing));
     }
+
+    private readonly record struct PendingFrame(FrameReceiver Receiver, nint Data, nuint Length, FrameTiming? Timing);
 
     private void Deliver(nint data, nuint length, FrameTiming? frameTiming)
     {
