@@ -41,7 +41,10 @@ public interface FrameSink {
      * The listener failed; Firestore stops it. {@code code} is {@code FirebaseFirestoreException.Code.value()}, the
      * gRPC status number (not the enum's ordinal), or {@link PeerlessListeners#ERROR_ENCODING_FAILED}.
      * {@code cause} is the exception behind it: Firestore's {@code FirebaseFirestoreException}, or what the encoder
-     * threw. It is {@code null} only when Firestore sent neither a snapshot nor an error.
+     * threw. It is {@code null} only when Firestore sent neither a snapshot nor an error. {@code causeType} is its
+     * class name and {@code codeName} Firestore's {@code Code.name()} (null for an encoding failure); both are read here
+     * so .NET needn't call back into Java, or depend on how the cause's type is mapped, to describe the error.
      */
-    void onError(int code, @NonNull String message, @Nullable Throwable cause);
+    void onError(int code, @NonNull String message, @Nullable Throwable cause, @Nullable String causeType,
+                 @Nullable String codeName);
 }

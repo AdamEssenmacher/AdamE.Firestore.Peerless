@@ -6,21 +6,48 @@ namespace AdamE.Firestore.Peerless.Tests;
 public sealed class ErrorTests
 {
     [Fact]
-    public void ListenExceptionKeepsCodeMessageAndInnerException()
+    public void ListenExceptionKeepsCodeMessageInnerExceptionAndNativeFields()
     {
         var native = new InvalidOperationException("native");
-        var exception = new FirestoreListenException(FirestoreErrorCode.PermissionDenied, "denied", native);
+        var exception = new FirestoreListenException(
+            FirestoreErrorCode.PermissionDenied,
+            "denied",
+            native,
+            "NSError",
+            nativeErrorDomain: "FIRFirestoreErrorDomain",
+            nativeErrorCode: "PermissionDenied",
+            nativeErrorMessage: "Missing or insufficient permissions.");
 
         Assert.Equal(FirestoreErrorCode.PermissionDenied, exception.Code);
         Assert.Equal("denied", exception.Message);
         Assert.Same(native, exception.InnerException);
+        Assert.Equal("NSError", exception.NativeExceptionTypeName);
+        Assert.Equal("FIRFirestoreErrorDomain", exception.NativeErrorDomain);
+        Assert.Equal("PermissionDenied", exception.NativeErrorCode);
+        Assert.Equal("Missing or insufficient permissions.", exception.NativeErrorMessage);
     }
 
     [Fact]
-    public void ListenExceptionWithoutANativeErrorHasNoInnerException()
+    public void NativeMessageDefaultsToTheMessage()
     {
-        Assert.Null(new FirestoreListenException(FirestoreErrorCode.Unknown, "neither", innerException: null).InnerException);
-        Assert.Null(new FirestoreListenException(FirestoreErrorCode.Unknown, "neither").InnerException);
+        var exception = new FirestoreListenException(
+            FirestoreErrorCode.Unavailable, "offline", new InvalidOperationException(), "java.lang.Exception");
+
+        Assert.Equal("offline", exception.NativeErrorMessage);
+        Assert.Null(exception.NativeErrorDomain);
+        Assert.Null(exception.NativeErrorCode);
+    }
+
+    [Fact]
+    public void ListenExceptionWithoutANativeErrorHasNoNativeFields()
+    {
+        var exception = new FirestoreListenException(FirestoreErrorCode.Unknown, "neither");
+
+        Assert.Null(exception.InnerException);
+        Assert.Null(exception.NativeExceptionTypeName);
+        Assert.Null(exception.NativeErrorDomain);
+        Assert.Null(exception.NativeErrorCode);
+        Assert.Equal("neither", exception.NativeErrorMessage);
     }
 
     [Fact]
