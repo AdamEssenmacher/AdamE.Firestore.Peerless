@@ -34,8 +34,17 @@ internal sealed record BenchmarkOptions(string Host, int Port, BenchmarkPlan Pla
                 BenchmarkPlan.ParseSizes(Text("sizes")) ?? BenchmarkPlan.DefaultSizes,
                 Number("updates", BenchmarkPlan.DefaultUpdatesPerSize),
                 Number("singleUpdates", BenchmarkPlan.DefaultSingleDocumentUpdates)),
-            Text("verify") is not { } verify || !verify.Equals("NO", StringComparison.OrdinalIgnoreCase));
+            Flag(Text("verify"), "verify", fallback: true));
     }
+
+    // NSUserDefaults spellings (YES/NO) and the usual ones; anything else is refused rather than silently ignored.
+    private static bool Flag(string? text, string key, bool fallback) => text?.Trim().ToUpperInvariant() switch
+    {
+        null => fallback,
+        "YES" or "TRUE" or "1" => true,
+        "NO" or "FALSE" or "0" => false,
+        _ => throw new ArgumentException($"-{key} must be YES or NO (or true/false, 1/0), not '{text}'."),
+    };
 }
 
 /// <summary>
@@ -222,10 +231,18 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         try
         {
             using var timeout = new CancellationTokenSource(VerifyTimeout);
-            Sample sample = await sampler.Samples.ReadAsync(timeout.Token).ConfigureAwait(false);
-            if (sample.Error is not null)
-                throw new InvalidOperationException($"Verify listener failed: {sample.Error}");
-            var documents = sampler.Latest as List<PlainDocument> ?? [];
+            // As BenchmarkPhases.NextAsync does, skip a partial snapshot from cache; a server snapshot is compared
+            // whatever it holds. The documents compared are that sample's own conversion, not whatever came later.
+            Sample sample;
+            do
+            {
+                sample = await sampler.Samples.ReadAsync(timeout.Token).ConfigureAwait(false);
+                if (sample.Error is not null)
+                    throw new InvalidOperationException($"Verify listener failed: {sample.Error}");
+            }
+            while (sample.FromCache && sample.Documents != expected.Count);
+
+            IReadOnlyList<PlainDocument> documents = sample.Converted ?? [];
             string? difference = documents.Count != expected.Count
                 ? $"{documents.Count} documents, expected {expected.Count}"
                 : documents

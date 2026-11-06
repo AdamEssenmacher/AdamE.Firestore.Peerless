@@ -26,6 +26,9 @@ internal sealed record Sample(
     double GcPauseMicroseconds,
     string? Error) : IBenchmarkSample
 {
+    /// <summary>The documents this snapshot converted to (not written to the results; the verify phase compares them).</summary>
+    public IReadOnlyList<PlainDocument>? Converted { get; init; }
+
     public static Sample Build(
         bool fromCache, int documents, int values, ProbeReading before, ProbeReading after, int peak, string? error) =>
         new(
@@ -100,6 +103,6 @@ internal sealed class PeeredSampler
             before,
             after,
             peak,
-            failure));
+            failure) with { Converted = documents });
     }
 }

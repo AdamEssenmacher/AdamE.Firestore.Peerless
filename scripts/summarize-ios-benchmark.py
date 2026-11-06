@@ -28,7 +28,7 @@ for row in settled:
         settles.setdefault((row["phase"], int(row["size"])), []).append((key, int(row["peers"])))
 def last_settled(row):
     seq = int(row["seq"])
-    earlier = [p for k, p in settles.get((row["phase"], int(row["size"])), []) if k < seq or (seq == 0 and k == -1)]
+    earlier = [p for k, p in settles.get((row["phase"], int(row["size"])), []) if k < seq]
     return float(earlier[-1]) if earlier else None
 def over_settled(row):
     base = last_settled(row)

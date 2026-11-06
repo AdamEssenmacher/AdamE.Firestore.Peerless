@@ -34,10 +34,21 @@ internal sealed record BenchmarkPlan(int[] Sizes, int UpdatesPerSize, int Single
 
     public static string DocumentId(int index) => $"doc-{index:D5}";
 
-    public static int[]? ParseSizes(string? text) =>
-        string.IsNullOrWhiteSpace(text)
-            ? null
-            : text.Split(',').Select(static part => int.Parse(part, CultureInfo.InvariantCulture)).ToArray();
+    /// <summary>
+    /// Parses <c>10,100</c>. Each size must be positive (updates pick a document modulo it) and appear once (each size
+    /// has its own collection and settle points).
+    /// </summary>
+    public static int[]? ParseSizes(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return null;
+        int[] sizes = text.Split(',').Select(static part => int.Parse(part, CultureInfo.InvariantCulture)).ToArray();
+        if (sizes.Any(static size => size <= 0))
+            throw new ArgumentException($"Sizes must be positive: '{text}'.");
+        if (sizes.Distinct().Count() != sizes.Length)
+            throw new ArgumentException($"Sizes must not repeat: '{text}'.");
+        return sizes;
+    }
 }
 
 /// <summary>One platform's binding, as the phases drive it.</summary>
