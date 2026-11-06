@@ -121,6 +121,10 @@ public sealed class PeerlessFormatException : FormatException
     public PeerlessFormatException(string message, int offset)
         : base($"{message} (at byte {offset})") => Offset = offset;
 
+    /// <summary>Creates the exception, with the failure behind it as <see cref="Exception.InnerException"/>.</summary>
+    public PeerlessFormatException(string message, int offset, Exception? innerException)
+        : base($"{message} (at byte {offset})", innerException) => Offset = offset;
+
     /// <summary>The byte offset in the frame where decoding failed.</summary>
     public int Offset { get; }
 }

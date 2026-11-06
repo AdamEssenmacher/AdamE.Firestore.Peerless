@@ -52,6 +52,8 @@ typedef struct Probe {
     atomic_int afterRemoval;
     atomic_bool removalReturned;
     int lastCode;
+    void *lastNative;    // the error callback's `native`, compared by identity only (borrowed, never dereferenced later)
+    int lastNativeKind;  // 0 none, 1 NSError, 2 NSException, 3 something else
     adame_peerless_frame_timing firstFrameTiming;
     atomic_int timedFrames; // frames that arrived with non-NULL timing
 } Probe;
@@ -94,9 +96,15 @@ static void OnFrameRemovingWithRelease(void *context, const uint8_t *data, size_
     atomic_store(&probe->releasesSeenInside, atomic_load(&probe->releases));
 }
 
-static void OnError(void *context, int32_t code, const char *message) {
+static void OnError(void *context, int32_t code, const char *message, void *native) {
     Probe *probe = context;
     probe->lastCode = code;
+    probe->lastNative = native;
+    id object = (__bridge id)native;
+    probe->lastNativeKind = object == nil ? 0
+        : [object isKindOfClass:[NSError class]] ? 1
+        : [object isKindOfClass:[NSException class]] ? 2
+        : 3;
     atomic_fetch_add(&probe->errors, 1);
     if (probe->behaviour == BehaviourRemoveInside) {
         adame_peerless_listener_remove(probe->listener, OnRelease); // as the .NET side does after an error
@@ -184,8 +192,10 @@ static void ErrorStopsAndReleasesAfterTheCallback(void) {
     callback(@"snapshot", nil, Encode); // after the first error, nothing more
     callback(nil, error, Encode);
     BOOL ok = probe.errors == 1 && probe.lastCode == FIRFirestoreErrorCodePermissionDenied && probe.frames == 0
-        && probe.releasesSeenInside == 0 && probe.releases == 1 && registration.removes == 1;
-    ListenerTestsRecord(ok, @"error: stops first, one error, release deferred to the callback's end", Counts(&probe, registration));
+        && probe.releasesSeenInside == 0 && probe.releases == 1 && registration.removes == 1
+        && probe.lastNative == (__bridge void *)error;
+    ListenerTestsRecord(ok, @"error: stops first, one error (with Firestore's NSError), release deferred to the callback's end",
+                        Counts(&probe, registration));
 }
 
 static void EncodeFailureIsCodeMinusOne(void) {
@@ -193,15 +203,17 @@ static void EncodeFailureIsCodeMinusOne(void) {
     AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
     AdamEPeerlessTestingCallback callback = nil;
     void *listener = Listen(&probe, OnFrame, registration, &callback);
+    NSException *thrown = [NSException exceptionWithName:NSInvalidArgumentException reason:@"refused" userInfo:nil];
     callback(@"snapshot", nil, ^(AdamEPeerlessFrameWriter *writer) {
-        [NSException raise:NSInvalidArgumentException format:@"refused"];
+        @throw thrown;
     });
     callback(@"snapshot", nil, Encode);
     BOOL stopped = probe.errors == 1 && probe.lastCode == ADAME_PEERLESS_ENCODE_FAILED && probe.frames == 0
-        && registration.removes == 1 && probe.releases == 0;
+        && probe.lastNative == (__bridge void *)thrown && registration.removes == 1 && probe.releases == 0;
     adame_peerless_listener_remove(listener, OnRelease);
     BOOL ok = stopped && probe.releases == 1 && registration.removes == 1;
-    ListenerTestsRecord(ok, @"encode failure: code -1, stopped, released once on removal", Counts(&probe, registration));
+    ListenerTestsRecord(ok, @"encode failure: code -1 with the raised NSException, stopped, released once on removal",
+                        Counts(&probe, registration));
 }
 
 static void DisposeFromInsideACallback(void) {
@@ -260,11 +272,13 @@ static void ErrorWithoutRemovalReleasesOnceLater(void) {
     AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
     AdamEPeerlessTestingCallback callback = nil;
     void *listener = Listen(&probe, OnFrame, registration, &callback);
-    callback(nil, [NSError errorWithDomain:NSURLErrorDomain code:-1 userInfo:nil], Encode); // not Firestore's domain
-    BOOL beforeRemoval = probe.releases == 0 && probe.errors == 1 && probe.lastCode == FIRFirestoreErrorCodeUnknown;
+    NSError *foreign = [NSError errorWithDomain:NSURLErrorDomain code:-1 userInfo:nil]; // not Firestore's domain
+    callback(nil, foreign, Encode);
+    BOOL beforeRemoval = probe.releases == 0 && probe.errors == 1 && probe.lastCode == FIRFirestoreErrorCodeUnknown
+        && probe.lastNative == (__bridge void *)foreign;
     adame_peerless_listener_remove(listener, OnRelease);
     BOOL ok = beforeRemoval && probe.releases == 1 && registration.removes == 1;
-    ListenerTestsRecord(ok, @"foreign error: code unknown (2), released exactly once on removal", Counts(&probe, registration));
+    ListenerTestsRecord(ok, @"foreign error: code unknown (2) with the original NSError, released exactly once on removal", Counts(&probe, registration));
 }
 
 // Firestore holds its own listener mutex while it calls the callback block, and -remove takes that mutex. If removal
@@ -332,15 +346,28 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
 
     Probe probe = {.behaviour = BehaviourCount};
     char error[512] = "";
-    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, error, sizeof error);
+    void *raised = (void *)1; // must be overwritten either way
+    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, error, sizeof error,
+                                                 &raised);
+    id exception = raised == NULL || raised == (void *)1 ? nil : CFBridgingRelease(raised); // the caller owns it
+    char documentError[512] = "";
+    void *documentRaised = (void *)1;
+    void *documentListener = adame_peerless_listen_document(
+        (__bridge void *)[firestore documentWithPath:@"items/one"], &probe, OnFrame, OnError, 0, documentError,
+        sizeof documentError, &documentRaised);
+    id documentException = documentRaised == NULL || documentRaised == (void *)1 ? nil : CFBridgingRelease(documentRaised);
     char notAQuery[512] = "";
+    void *notRaised = (void *)1;
     void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0,
-                                                  notAQuery, sizeof notAQuery);
-    BOOL ok = didTerminate && listener == NULL && strlen(error) > 0 && wrongType == NULL && strlen(notAQuery) > 0
-        && probe.frames == 0 && probe.errors == 0;
-    ListenerTestsRecord(ok, [NSString stringWithFormat:@"a listen Firestore refuses returns NULL with its reason (\"%s\")", error],
+                                                  notAQuery, sizeof notAQuery, &notRaised);
+    BOOL ok = didTerminate && listener == NULL && strlen(error) > 0 && [exception isKindOfClass:[NSException class]]
+        && documentListener == NULL && strlen(documentError) > 0 && [documentException isKindOfClass:[NSException class]]
+        && wrongType == NULL && strlen(notAQuery) > 0 && notRaised == NULL && probe.frames == 0 && probe.errors == 0;
+    ListenerTestsRecord(ok, [NSString stringWithFormat:@"a query or document listen Firestore refuses returns NULL with its reason (\"%s\") and its NSException", error],
                         [NSString stringWithFormat:@"terminated=%d listener=%p error=\"%s\" wrongType=%p", didTerminate,
                                                    listener, error, wrongType]);
+    if (documentListener != NULL)
+        adame_peerless_listener_remove(documentListener, NULL);
     if (listener != NULL)
         adame_peerless_listener_remove(listener, NULL);
 }

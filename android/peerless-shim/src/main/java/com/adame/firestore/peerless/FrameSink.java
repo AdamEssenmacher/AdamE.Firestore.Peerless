@@ -40,6 +40,8 @@ public interface FrameSink {
     /**
      * The listener failed; Firestore stops it. {@code code} is {@code FirebaseFirestoreException.Code.value()}, the
      * gRPC status number (not the enum's ordinal), or {@link PeerlessListeners#ERROR_ENCODING_FAILED}.
+     * {@code cause} is the exception behind it: Firestore's {@code FirebaseFirestoreException}, or what the encoder
+     * threw. It is {@code null} only when Firestore sent neither a snapshot nor an error.
      */
-    void onError(int code, @NonNull String message);
+    void onError(int code, @NonNull String message, @Nullable Throwable cause);
 }

@@ -45,8 +45,10 @@ typedef void (*adame_peerless_frame_callback)(void *context, const uint8_t *data
 
 /// The listener failed and has stopped. `code` is Firestore's FIRFirestoreErrorCode (gRPC numbering) when the error is
 /// in FIRFirestoreErrorDomain, 2 (unknown) for any other NSError, and -1 when the shim itself could not encode a
-/// snapshot. `message` is UTF-8, valid only during the call.
-typedef void (*adame_peerless_error_callback)(void *context, int32_t code, const char *message);
+/// snapshot. `message` is UTF-8, valid only during the call. `native` is the Objective-C object behind the failure,
+/// borrowed for the call (retain it to keep it): Firestore's NSError, the NSException the encoder raised, or NULL when
+/// there is none (Firestore sent neither a snapshot nor an error, or a frame went over 2 GB).
+typedef void (*adame_peerless_error_callback)(void *context, int32_t code, const char *message, void *native);
 
 /// Releases the context once nothing can use it again (see the contract above).
 typedef void (*adame_peerless_release_callback)(void *context);
@@ -60,15 +62,18 @@ typedef void (*adame_peerless_release_callback)(void *context);
 /// listener measures each frame (a few clock reads, plus two per document) and passes the adame_peerless_frame_timing
 /// as on_frame's `timing` argument; production listeners pass 0, take no clock reads, and receive `timing` == NULL.
 /// If Firestore refuses the query (it raises for, e.g., limit(toLast:) without an orderBy, or a terminated instance),
-/// returns NULL and writes the reason, UTF-8 and NUL-terminated, into `error` (up to `error_capacity` bytes). Nothing
-/// is left registered and the context is not referenced.
+/// returns NULL and writes the reason, UTF-8 and NUL-terminated, into `error` (up to `error_capacity` bytes). If
+/// Firestore raised, `*exception` receives that NSException, retained: the caller owns it and must release it. Otherwise
+/// `*exception` is set to NULL. `exception` itself may be NULL. Nothing is left registered and the context is not
+/// referenced.
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback on_frame,
-                                  adame_peerless_error_callback on_error, int timed, char *error, size_t error_capacity);
+                                  adame_peerless_error_callback on_error, int timed, char *error, size_t error_capacity,
+                                  void **exception);
 
 /// Listens to a FIRDocumentReference. Same contract as adame_peerless_listen_query.
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback on_frame,
                                      adame_peerless_error_callback on_error, int timed, char *error,
-                                     size_t error_capacity);
+                                     size_t error_capacity, void **exception);
 
 /// Stops the listener (see the contract above) and invalidates the listener pointer. Safe from any thread, and more
 /// than once per listener is a caller error.
