@@ -2,7 +2,10 @@ using System.Runtime.InteropServices;
 
 namespace AdamE.Firestore.Peerless.iOS;
 
-/// <summary>The measurement the shim records for the frame being delivered (ios/PeerlessShim/include/PeerlessShim.h).</summary>
+/// <summary>
+/// The measurement the shim delivers with a timed frame (ios/PeerlessShim/include/PeerlessShim.h). The callback receives
+/// it as a <c>const</c> pointer into the shim's stack, valid only during the call: copy it, never write through it.
+/// </summary>
 [StructLayout(LayoutKind.Sequential)]
 internal struct FrameTiming
 {
@@ -28,7 +31,7 @@ internal static unsafe class Native
     public static extern nint ListenQuery(
         nint query,
         nint context,
-        delegate* unmanaged<nint, byte*, nuint, void> onFrame,
+        delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError,
         int timed,
         byte* error,
@@ -38,7 +41,7 @@ internal static unsafe class Native
     public static extern nint ListenDocument(
         nint document,
         nint context,
-        delegate* unmanaged<nint, byte*, nuint, void> onFrame,
+        delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
         delegate* unmanaged<nint, int, byte*, void> onError,
         int timed,
         byte* error,
@@ -46,9 +49,6 @@ internal static unsafe class Native
 
     [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);
-
-    [DllImport(Library, EntryPoint = "adame_peerless_listener_timing")]
-    public static extern void Timing(nint listener, FrameTiming* timing);
 
     [DllImport(Library, EntryPoint = "adame_peerless_compiled_firebase_version")]
     public static extern byte* CompiledFirebaseVersion();

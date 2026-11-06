@@ -104,9 +104,11 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   frameworks as step 4.
 - **The C API** (`ios/PeerlessShim/include/PeerlessShim.h`; every symbol is prefixed `adame_peerless_` and every
   Objective-C class `AdamEPeerless`, so neither collides with an app's own):
-  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error)` and `adame_peerless_listen_document(...)`.
-    The frame callback is `(void* context, const uint8_t* data, size_t length)`. The error callback carries the code
-    and a UTF-8 message, with code −1 when the shim could not encode a snapshot.
+  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error, timed, error, error_capacity)` and
+    `adame_peerless_listen_document(...)`. The frame callback receives the context, bytes, length and a timing
+    pointer, which is non-NULL only when `timed` is nonzero. Timing travels with the frame so it is available even if
+    the callback runs before the listener handle is returned. The error callback
+    carries the code and a UTF-8 message, with code −1 when the shim could not encode a snapshot.
   - `adame_peerless_listener_remove(listener, release)` stops the listener, safe from any thread, with the same
     contract as Android's .NET listener:
     - After it returns, no callback starts.
@@ -114,8 +116,7 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
     - Called from inside a callback, it returns at once, and that callback is the last.
     - `release(context)` runs exactly once, when no callback can still use the context: inside the call, or right
       after the running callback, when the call came from inside it.
-  - `adame_peerless_listener_timing` is for measurement. `adame_peerless_compiled_firebase_version` reports the
-    Firebase version the shim was compiled against.
+  - `adame_peerless_compiled_firebase_version` reports the Firebase version the shim was compiled against.
 - **How removal is made safe: a per-listener lock, not a serial-queue check.** Each callback (encode plus the call
   into .NET) runs holding the listener's `pthread_mutex`. `remove` takes the lock, which is what makes it wait. A
   thread marker tells removal from inside a callback (which must not wait for itself) apart from removal elsewhere.

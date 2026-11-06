@@ -5,7 +5,7 @@ using CoreFoundation;
 namespace AdamE.Firestore.Peerless.iOS;
 
 /// <summary>What the shim reported about one frame, for measurement. All on the shim's clocks.</summary>
-/// <param name="StartNanos">When the Objective-C callback began (<see cref="PeerlessListener.NowNanoseconds"/>).</param>
+/// <param name="StartNanos">When the Objective-C callback took the listener's lock, so any wait for it isn't counted (<see cref="PeerlessListener.NowNanoseconds"/>).</param>
 /// <param name="StartCpuNanos">The callback thread's CPU time then.</param>
 /// <param name="EncodeNanos">Wall time the Objective-C side spent encoding.</param>
 /// <param name="EncodeCpuNanos">Thread CPU time the Objective-C side spent encoding.</param>
@@ -59,7 +59,6 @@ internal sealed unsafe class FrameReceiver : IDisposable
     private readonly FrameDecoder decode;
     private readonly Action<FirestoreSnapshot> onSnapshot;
     private readonly IFrameObserver? observer;
-    private nint listener; // for the timing hook only
 
     private FrameReceiver(
         FrameDecoder decode,
@@ -105,7 +104,6 @@ internal sealed unsafe class FrameReceiver : IDisposable
                 $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}");
         }
 
-        Volatile.Write(ref receiver.listener, created);
         // A first callback on another queue may already have failed: Attach then removes it and posts the error.
         receiver.gate.Attach(() => Native.Remove(created, &OnRelease), EarlyErrorPost(callbackQueue));
         return receiver;
@@ -115,10 +113,10 @@ internal sealed unsafe class FrameReceiver : IDisposable
     public void Dispose() => gate.Stop();
 
     [UnmanagedCallersOnly]
-    private static void OnFrame(nint context, byte* data, nuint length)
+    private static void OnFrame(nint context, byte* data, nuint length, FrameTiming* timing)
     {
         if (GCHandle.FromIntPtr(context).Target is FrameReceiver receiver)
-            receiver.Deliver((nint)data, length);
+            receiver.Deliver((nint)data, length, timing);
     }
 
     [UnmanagedCallersOnly]
@@ -143,12 +141,21 @@ internal sealed unsafe class FrameReceiver : IDisposable
             handle.Free();
     }
 
-    private void Deliver(nint data, nuint length) => gate.Run(() =>
+    private void Deliver(nint data, nuint length, FrameTiming* timing)
     {
-        if (observer is not null)
+        // The shim supplies timing whenever this listener requests it (observer set), and NULL otherwise. It points at
+        // the shim's stack and is read-only, so it is copied here, before anything can defer or write through it.
+        FrameTiming? frameTiming = timing is null ? null : *timing;
+        _ = gate.Run(() => Deliver(data, length, frameTiming));
+    }
+
+    private void Deliver(nint data, nuint length, FrameTiming? frameTiming)
+    {
+        // Completed is reported only for a frame whose Arrived was, so the observer never pairs one frame's arrival
+        // with another's completion.
+        bool arrived = false;
+        if (observer is not null && frameTiming is { } timing)
         {
-            FrameTiming timing = default;
-            Native.Timing(Volatile.Read(ref listener), &timing);
             observer.Arrived(new FrameArrival(
                 (long)timing.StartNanos,
                 (long)timing.StartCpuNanos,
@@ -157,6 +164,7 @@ internal sealed unsafe class FrameReceiver : IDisposable
                 (long)timing.DataNanos,
                 length > int.MaxValue ? -1 : (int)length,
                 PeerlessListener.NowNanoseconds()));
+            arrived = true;
         }
 
         // Only decoding is guarded: a PeerlessFormatException thrown by the app's own callback is the app's exception,
@@ -175,8 +183,9 @@ internal sealed unsafe class FrameReceiver : IDisposable
         }
 
         onSnapshot(snapshot);
-        observer?.Completed();
-    });
+        if (arrived)
+            observer!.Completed();
+    }
 
     // Its own method, not a lambda inside Start: there it would share a closure with the remove lambda, which the gate
     // keeps, and keep target alive through callbackQueue.

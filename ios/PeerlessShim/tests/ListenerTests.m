@@ -52,15 +52,21 @@ typedef struct Probe {
     atomic_int afterRemoval;
     atomic_bool removalReturned;
     int lastCode;
+    adame_peerless_frame_timing firstFrameTiming;
+    atomic_int timedFrames; // frames that arrived with non-NULL timing
 } Probe;
 
-static void OnFrame(void *context, const uint8_t *data, size_t length) {
+static void OnFrame(void *context, const uint8_t *data, size_t length,
+                    const adame_peerless_frame_timing *timing) {
     Probe *probe = context;
     if (atomic_load(&probe->removalReturned))
         atomic_fetch_add(&probe->afterRemoval, 1);
     if (atomic_fetch_add(&probe->inside, 1) > 0)
         atomic_fetch_add(&probe->overlaps, 1);
-    atomic_fetch_add(&probe->frames, 1);
+    if (atomic_fetch_add(&probe->frames, 1) == 0 && timing != NULL)
+        probe->firstFrameTiming = *timing;
+    if (timing != NULL)
+        atomic_fetch_add(&probe->timedFrames, 1);
     switch (probe->behaviour) {
         case BehaviourSlow:
             usleep(100 * 1000);
@@ -79,7 +85,8 @@ static void OnRelease(void *context) {
     atomic_fetch_add(&((Probe *)context)->releases, 1);
 }
 
-static void OnFrameRemovingWithRelease(void *context, const uint8_t *data, size_t length) {
+static void OnFrameRemovingWithRelease(void *context, const uint8_t *data, size_t length,
+                                       const adame_peerless_frame_timing *timing) {
     Probe *probe = context;
     atomic_fetch_add(&probe->frames, 1);
     adame_peerless_listener_remove(probe->listener, OnRelease);
@@ -111,8 +118,49 @@ static NSString *Counts(Probe *probe, AdamEPeerlessFakeRegistration *registratio
 
 static void *Listen(Probe *probe, adame_peerless_frame_callback onFrame, AdamEPeerlessFakeRegistration *registration,
                     AdamEPeerlessTestingCallback *callback) {
-    probe->listener = adame_peerless_testing_listen(probe, onFrame, OnError, registration, callback);
+    probe->listener = adame_peerless_testing_listen(probe, onFrame, OnError, registration, NO, callback);
     return probe->listener;
+}
+
+static void FirstFrameTimingDoesNotRequireTheListenerHandle(void) {
+    Probe probe = {.behaviour = BehaviourCount};
+    AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
+    AdamEPeerlessTestingCallback callback = nil;
+    void *listener = adame_peerless_testing_listen(&probe, OnFrame, OnError, registration, YES, &callback);
+
+    // Model a callback that runs before the caller stores its listener handle.
+    uint64_t before = adame_peerless_now_nanos();
+    callback(@"snapshot", nil, Encode);
+    uint64_t after = adame_peerless_now_nanos();
+    adame_peerless_frame_timing timing = probe.firstFrameTiming;
+    uint64_t cpuAfter = adame_peerless_thread_cpu_nanos();
+    BOOL timed = probe.listener == NULL && probe.frames == 1 && atomic_load(&probe.timedFrames) == 1
+        && timing.start_nanos >= before && timing.start_nanos <= after
+        && timing.encode_nanos <= after - timing.start_nanos
+        && timing.start_cpu_nanos > 0 && timing.start_cpu_nanos <= cpuAfter
+        && timing.encode_cpu_nanos <= cpuAfter - timing.start_cpu_nanos
+        // Encode reads no document, so no time inside -[FIRDocumentSnapshot data] can have been counted.
+        && timing.data_nanos == 0;
+    adame_peerless_listener_remove(listener, OnRelease);
+    BOOL ok = timed && probe.releases == 1 && registration.removes == 1;
+    ListenerTestsRecord(ok, @"first frame carries its timing before the caller stores the listener handle",
+                        Counts(&probe, registration));
+}
+
+static void AnUntimedListenerGetsNoTiming(void) {
+    Probe probe = {.behaviour = BehaviourCount};
+    AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
+    AdamEPeerlessTestingCallback callback = nil;
+    void *listener = Listen(&probe, OnFrame, registration, &callback);
+
+    callback(@"snapshot", nil, Encode);
+    callback(@"snapshot", nil, Encode);
+    BOOL untimed = probe.frames == 2 && atomic_load(&probe.timedFrames) == 0;
+    adame_peerless_listener_remove(listener, OnRelease);
+    BOOL ok = untimed && probe.releases == 1 && registration.removes == 1;
+    ListenerTestsRecord(ok, @"an untimed listener's frames carry NULL timing",
+                        [NSString stringWithFormat:@"%@ timedFrames=%d", Counts(&probe, registration),
+                                                   atomic_load(&probe.timedFrames)]);
 }
 
 static void DisposeBeforeFirstCallback(void) {
@@ -298,6 +346,8 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
 }
 
 void RunListenerTests(void) {
+    FirstFrameTimingDoesNotRequireTheListenerHandle();
+    AnUntimedListenerGetsNoTiming();
     DisposeBeforeFirstCallback();
     ErrorStopsAndReleasesAfterTheCallback();
     EncodeFailureIsCodeMinusOne();
