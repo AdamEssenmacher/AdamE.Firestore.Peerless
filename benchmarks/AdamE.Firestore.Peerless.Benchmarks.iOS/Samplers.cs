@@ -109,12 +109,9 @@ internal sealed class PeeredSampler
             {
                 case QuerySnapshot query:
                     documents = PlainValues.Query(query, ref peak);
-                    fromCache = query.Metadata.IsFromCache;
                     break;
                 case DocumentSnapshot document:
-                    // A missing document converts to none, so NextAsync doesn't take it for the document it waits for.
-                    documents = document.Exists ? [PlainValues.Document(document)] : [];
-                    fromCache = document.Metadata.IsFromCache;
+                    documents = [PlainValues.Document(document)];
                     break;
             }
         }
@@ -124,6 +121,26 @@ internal sealed class PeeredSampler
         }
 
         ProbeReading after = ProbeReading.Take();
+
+        // Bookkeeping outside the measured window, as on Android: the metadata and Exists reads are the harness's own
+        // native calls, so neither counts as conversion cost.
+        try
+        {
+            fromCache = snapshot switch
+            {
+                QuerySnapshot query => query.Metadata.IsFromCache,
+                DocumentSnapshot document => document.Metadata.IsFromCache,
+                _ => false,
+            };
+            // A missing document converts to none, so NextAsync doesn't take it for the document it waits for.
+            if (snapshot is DocumentSnapshot single && documents is not null && !single.Exists)
+                documents = [];
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception.ToString();
+        }
+
         Latest = documents ?? Latest;
         _ = samples.Writer.TryWrite(Sample.Build(
             fromCache,
