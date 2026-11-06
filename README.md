@@ -69,13 +69,16 @@ platform code. Unlike Auth's codes, Firestore's are numbered the same on both pl
 `FirestoreErrorCode`) is exact and needs no classifier:
 
 ```csharp
-error => message = error switch
+static string Describe(Exception error) => error switch
 {
     FirestoreListenException { Code: FirestoreErrorCode.PermissionDenied } => "You don't have access to these rooms.",
     FirestoreListenException { Code: FirestoreErrorCode.Unavailable } => "Offline; retry later.",
     FirestoreListenException listen => $"{listen.NativeErrorCode}: {listen.NativeErrorMessage}",
     _ => error.Message,
-}
+};
+
+// ...
+    error => Console.WriteLine(Describe(error)));
 ```
 
 When Firestore refuses to listen at all, `Listen` throws `InvalidOperationException`, with the native exception as its

@@ -206,7 +206,8 @@ public final class PeerlessListeners {
             }
         }
 
-        // As Plugin.Firebase names native Auth exceptions: the canonical name, or the binary name for a class without one.
+        // The canonical name, as Plugin.Firebase reports native Auth exceptions. A class without one (anonymous or local) gets
+        // its binary name here, where Plugin.Firebase falls back to the .NET type name.
         private static String typeName(Throwable throwable) {
             String canonical = throwable.getClass().getCanonicalName();
             return canonical != null ? canonical : throwable.getClass().getName();

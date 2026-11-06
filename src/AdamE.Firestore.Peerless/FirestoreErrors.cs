@@ -78,7 +78,9 @@ public enum FirestoreErrorCode
 /// when there is none.</description></item>
 /// </list>
 /// All of them are <see langword="null"/> (except <see cref="NativeErrorMessage"/>) when there was no native error:
-/// Firestore sent neither a snapshot nor an error, or (on iOS) the error object could not be given a .NET peer.
+/// Firestore sent neither a snapshot nor an error, or (on iOS) the error object could not be given a .NET peer. So a
+/// <see langword="null"/> <see cref="NativeErrorDomain"/> doesn't by itself mean Android, as it does for
+/// Plugin.Firebase's Auth exception: check <see cref="NativeExceptionTypeName"/> (or <c>OperatingSystem.IsIOS()</c>).
 /// </remarks>
 public sealed class FirestoreListenException : Exception
 {

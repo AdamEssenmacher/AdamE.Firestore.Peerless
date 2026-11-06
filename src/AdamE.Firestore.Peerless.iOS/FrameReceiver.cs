@@ -150,9 +150,6 @@ internal sealed unsafe class FrameReceiver : IDisposable
                 case NSError error:
                     nsError = error;
                     inner = new NSErrorException(error);
-                    domain = error.Domain;
-                    nativeCode = NativeCode(error);
-                    nativeMessage = error.LocalizedDescription;
                     break;
                 case NSException exception:
                     inner = new ObjCException(exception);
@@ -161,7 +158,22 @@ internal sealed unsafe class FrameReceiver : IDisposable
         }
         catch (Exception)
         {
-            (inner, nsError, domain, nativeCode, nativeMessage) = (null, null, null, null, null);
+            (inner, nsError) = (null, null);
+        }
+
+        // Separately, so a failed read here keeps the inner exception.
+        if (nsError is not null)
+        {
+            try
+            {
+                domain = nsError.Domain;
+                nativeCode = NativeCode(nsError);
+                nativeMessage = nsError.LocalizedDescription;
+            }
+            catch (Exception)
+            {
+                (domain, nativeCode, nativeMessage) = (null, null, null);
+            }
         }
 
         _ = receiver.gate.Run(() => receiver.gate.Fail(code == Native.EncodeFailed
