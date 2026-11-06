@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Builds the iOS benchmark under NativeAOT, runs it on an iOS Simulator against the Firestore emulator, and copies the
-# files it writes into results/ios/<timestamp>-peered/ (the app's console output stays local, uncommitted).
+# files it writes into results/ios/<timestamp>-<mode>/ (the app's console output stays local, uncommitted).
 #
 # Start the Firestore emulator first, from the repo root (alternate ports; see firebase.json):
 #   firebase emulators:start --only firestore --project demo-peerless
 #
-# Usage: scripts/run-ios-benchmark.sh <simulator-udid> [extra launch arguments, e.g. -sizes 10,100 -updates 5]
+# Usage: scripts/run-ios-benchmark.sh <simulator-udid> [peered|peerless] [extra launch arguments, e.g. -sizes 10,100]
 #   FIRESTORE_PORT  the Firestore emulator's port (default 8181, as in firebase.json); the simulator shares the host's
 #                   network, so the app reaches it at 127.0.0.1:<port>
-#   The runner supplies -host, -port and -runFiles. Use FIRESTORE_PORT to select a different local emulator port.
+#   The runner supplies -host, -port, -runFiles and -mode. Use FIRESTORE_PORT to select a different local emulator port.
 #   FIREBASE_HUB_PORT  the emulator hub's port (default 4501), used to check FIRESTORE_PORT is really Firestore's
 # Use a simulator of your own: the script boots it, installs over the app and terminates it.
 #
@@ -17,15 +17,22 @@
 # skipped (unless ALLOW_NO_VERIFY=1), or a summarizer error.
 set -euo pipefail
 
-udid="${1:?usage: run-ios-benchmark.sh <simulator-udid> [launch args]}"
-shift
-mode="peered"
+usage="usage: run-ios-benchmark.sh <simulator-udid> [peered|peerless] [launch args, e.g. -sizes 10,100]"
+udid="${1:?$usage}"
+mode="${2:-peered}"
+# Checked before anything else (build, database clear, launch): a launch argument given in the mode's place, as in
+# `run-ios-benchmark.sh <udid> -sizes 10,100`, would otherwise become the mode and the run would wait out its timeout.
+case "$mode" in
+  peered|peerless) ;;
+  *) echo "$usage" >&2; echo "Unknown mode '$mode': the second argument is the mode (peered or peerless)." >&2; exit 2 ;;
+esac
+shift 2 || shift $# || true
 # Keep launch arguments from sending the app to a different database than the one this runner clears, or its files
-# somewhere other than the ones this runner watches.
+# somewhere other than the ones this runner watches (the app names its files after -mode).
 for arg in "$@"; do
   case "$arg" in
-    -host|-host=*|-port|-port=*|-runFiles|-runFiles=*)
-      echo "The iOS benchmark runner controls -host, -port and -runFiles. Set FIRESTORE_PORT to select the local emulator port." >&2
+    -host|-host=*|-port|-port=*|-runFiles|-runFiles=*|-mode|-mode=*)
+      echo "The iOS benchmark runner controls -host, -port, -runFiles and -mode. Give the mode as the second argument, and set FIRESTORE_PORT to select the local emulator port." >&2
       exit 2
       ;;
   esac
@@ -64,8 +71,9 @@ curl -sf -X DELETE "http://$host:$port/emulator/v1/projects/demo-peerless/databa
 mkdir -p "$out"
 files="$container/Library/Caches/peerless"
 load_before="$(uptime)"
-# -runFiles names the files this script watches, so even a failure to parse the other arguments lands there.
-xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -host "$host" -port "$port" "$@"
+# -runFiles names the files this script watches, so even a failure to parse the other arguments (-mode included)
+# lands there.
+xcrun simctl launch --terminate-running-process "$udid" "$bundle" -runFiles "$mode" -mode "$mode" -host "$host" -port "$port" "$@"
 
 # A simulator app is an ordinary host process, so pgrep finds it (by this simulator's path) without simctl.
 echo "Waiting for the run to finish…"

@@ -1,0 +1,5 @@
+outcome: done
+simulator: Peerless-Bench iPhone 18 Pro (066947ED-E04A-4F5C-86FB-2CFB3E840A0D) (Booted) 
+build args: none
+host load before: 13:12  up 11:43, 1 user, load averages: 56.17 69.26 52.71
+host load after: 13:13  up 11:43, 1 user, load averages: 47.21 65.44 51.97

@@ -18,5 +18,6 @@
     <!-- The benchmark's equality check builds this value model from the peered binding (PeeredConversion), through the
          owning constructors, to compare it with what Peerless decodes. -->
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Android" />
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.iOS" />
   </ItemGroup>
 </Project>

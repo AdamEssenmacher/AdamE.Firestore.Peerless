@@ -12,8 +12,8 @@ Scope: listening without peers. Apps keep building queries with the existing bin
 and decoding. Full NativeAOT on both platforms is required. Everything is measured against the Firestore emulator,
 compared with the naive peered approach.
 
-Status: the wire format, the .NET decoder and the Android shim exist and are benchmarked against the peered approach.
-On iOS, the peered baseline is measured; the Objective-C shim is next. Nothing is published as a NuGet yet.
+Status: the wire format, the .NET decoder and both shims exist, and both are benchmarked against the peered approach
+under NativeAOT. Nothing is published as a NuGet yet.
 
 | path | what |
 |---|---|
@@ -21,6 +21,8 @@ On iOS, the peered baseline is measured; the Objective-C shim is next. Nothing i
 | `src/AdamE.Firestore.Peerless` | Plain .NET: the value model and `SnapshotDecoder` |
 | `src/AdamE.Firestore.Peerless.Android` | `PeerlessListener.Listen(query, onSnapshot)` on Android, binding the shim |
 | `android/peerless-shim` | The Java shim (AAR), with Kotlin tests against the golden frames |
+| `src/AdamE.Firestore.Peerless.iOS` | `PeerlessListener.Listen(query, onSnapshot)` on iOS, over the shim's C API |
+| `ios/PeerlessShim` | The Objective-C shim (static xcframework, linked against the binding's own Firestore), with tests against the golden frames |
 | `fixtures/wire` | Golden frames every encoder must reproduce byte for byte |
 | `benchmarks/Shared` | The platform-neutral half of both benchmark apps: seeded documents, phases, settle points |
 | `benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android` | NativeAOT benchmark app: peered vs Peerless |
@@ -33,6 +35,7 @@ workload (for example Linux CI): `dotnet build AdamE.Firestore.Peerless.NoApple.
 dotnet test --project tests/AdamE.Firestore.Peerless.Tests        # decoder, properties, golden frames
 dotnet run -c Release --project benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder   # decode time and allocation
 (cd android && ./gradlew :peerless-shim:testDebugUnitTest)         # Java encoder against the same golden frames
+scripts/test-ios-shim.sh <simulator-udid>                          # Objective-C encoder against the same golden frames
 ```
 
 Using it on Android (queries are built with the ordinary binding):
@@ -82,23 +85,52 @@ Findings: [step 1, peered baseline](results/android-peered/FINDINGS.md) and
 The project ID is `demo-peerless`, so the app can never reach a real Firebase project. The emulator ports are
 deliberately not the defaults.
 
+## Using it on iOS
+
+Queries are built with the ordinary binding:
+
+```csharp
+IDisposable listening = PeerlessListener.Listen(
+    firestore.GetCollection("rooms").WhereEqualsTo("open", NSNumber.FromBoolean(true)),
+    snapshot =>
+    {
+        foreach (FirestoreDocument document in snapshot.Documents)
+            Console.WriteLine($"{document.Id}: {document.Fields["name"].AsString()}");
+    },
+    error => Console.WriteLine(error.Message));
+```
+
+The shim is a static xcframework with no copy of Firestore in it: its Firestore symbols resolve, at the app's link,
+against the `FirebaseFirestoreInternal` and `FirebaseCore` frameworks that `AdamE.Firebase.iOS.CloudFirestore` already
+embeds. `src/AdamE.Firestore.Peerless.iOS` builds it with `ios/build-shim.sh` (Xcode needed) and packages it into the
+assembly's `.resources.zip`, as a binding NuGet does. It is compiled against Firebase iOS 12.18.0, and `Listen` refuses
+a different Firebase major version at run time. The device (`ios-arm64`) slice is built but has only been linked, not
+run: every run so far was on the simulator. The listener's contract (threads, removal, errors, lifetime) matches
+Android's and is in `PeerlessListener`'s docs.
+
 ## Benchmarks (iOS)
 
-The iOS app seeds the same documents and runs the same phases and settle points (`benchmarks/Shared`), listening
-through `AdamE.Firebase.iOS.CloudFirestore` and converting each snapshot into the same plain .NET values as Android's
-peered mode. For each callback it records wall time, main-queue CPU time, managed allocations, GC count and pause time,
-and `NSObject` peers: every peer created, and the peer table. It also records the settled peer table after forced
-GCs. Each run first checks that a collection covering every value kind reads back exactly as it was written.
+The iOS app seeds the same documents and runs the same phases and settle points (`benchmarks/Shared`). It listens
+either through `AdamE.Firebase.iOS.CloudFirestore` (converting each snapshot into the same plain .NET values as
+Android's peered mode) or through Peerless. For each callback it records wall time, main-queue CPU time, managed
+allocations, GC count and pause time, and `NSObject` peers: every peer created, and the peer table. Peerless mode
+also splits the time between the Objective-C side (encoding) and the .NET side (decoding). It also records the settled
+peer table after forced GCs. Each run first checks that a collection covering every value kind reads back exactly as
+written, that Peerless decodes it identically to the peered binding, and that removal holds its contract while frames
+are arriving (disposed from a thread-pool thread, mid-callback, and from inside a callback). A failed check fails the
+run, and the script exits nonzero.
 
 Requirements: .NET SDK 10.0.403 with the `ios` workload (27.1), Xcode 27.1, the Firebase CLI, and an arm64 iOS
 Simulator of your own (the script installs over and terminates the app on it).
 
 ```bash
 firebase emulators:start --only firestore --project demo-peerless     # Firestore on 8181 (see firebase.json)
-scripts/run-ios-benchmark.sh <simulator-udid>                          # extra launch args: -sizes 10,100 -updates 5
+scripts/run-ios-benchmark.sh <simulator-udid> peered                   # or peerless; extra args: -sizes 10,100
+scripts/compare-ios.py results/ios/COMPARISON.md results/ios/*-peered-r* results/ios/*-peerless-r*
 ```
 
-Findings: [step 4, iOS peered baseline](results/ios/FINDINGS.md).
+Findings: [step 4, iOS peered baseline](results/ios/FINDINGS.md) and
+[step 5, iOS peered vs Peerless](results/ios/COMPARISON-FINDINGS.md).
 
 ## License
 

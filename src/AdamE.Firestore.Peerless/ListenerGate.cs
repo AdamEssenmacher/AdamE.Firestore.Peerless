@@ -11,9 +11,10 @@ namespace AdamE.Firestore.Peerless;
 /// is the last.</item>
 /// <item>The first failure closes the listener, removes the native registration and reports the error, once. A failure
 /// before <see cref="Attach"/> (the native listener fired before <c>Listen</c> returned) is held and delivered after
-/// attaching, through the platform's callback scheduler, so the registration can be removed first. When <c>Listen</c>
-/// was called off the callback thread, that delivery can still run before the caller has stored the returned
-/// handle.</item>
+/// attaching, through the platform's callback scheduler, so the registration can be removed first. The scheduler
+/// decides when the app's handle can be counted on: when <c>Listen</c> was called off the callback thread, that
+/// delivery can still run before the caller has stored the returned handle (see each platform's
+/// <c>PeerlessListener</c> remarks).</item>
 /// <item>The release action (for example, freeing a native buffer) runs exactly once, after closing, and never while
 /// a callback is running.</item>
 /// </list>
@@ -22,7 +23,6 @@ internal sealed class ListenerGate
 {
     private readonly object sync = new();
     private readonly Action<Exception> onError;
-    private readonly Action<Action> postToCallbackThread;
     private readonly Action release;
 
     private Action? removeRegistration;
@@ -35,12 +35,10 @@ internal sealed class ListenerGate
     private int removed;
 
     /// <param name="onError">The app's error callback.</param>
-    /// <param name="postToCallbackThread">Runs an action later on the thread callbacks normally arrive on.</param>
     /// <param name="release">Frees the listener's resources; called exactly once.</param>
-    public ListenerGate(Action<Exception> onError, Action<Action> postToCallbackThread, Action release)
+    public ListenerGate(Action<Exception> onError, Action release)
     {
         this.onError = onError;
-        this.postToCallbackThread = postToCallbackThread;
         this.release = release;
     }
 
@@ -55,7 +53,12 @@ internal sealed class ListenerGate
     }
 
     /// <summary>Records how to remove the native registration, once <c>Listen</c> has it.</summary>
-    public void Attach(Action remove)
+    /// <param name="remove">Removes the native registration; called at most once.</param>
+    /// <param name="postToCallbackThread">
+    /// Runs an action later on the thread callbacks normally arrive on. Used only during this call, to deliver an error
+    /// held from before attaching.
+    /// </param>
+    public void Attach(Action remove, Action<Action> postToCallbackThread)
     {
         Exception? deliver;
         bool removeNow;

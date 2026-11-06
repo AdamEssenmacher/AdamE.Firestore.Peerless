@@ -25,7 +25,8 @@ internal sealed class ResultWriter : IDisposable
         console = Open(Path.Combine(directory, $"{mode}-console.txt"));
         Line(samples,
             "phase,size,seq,kind,from_cache,documents,values,main_thread,wall_us,thread_cpu_us,alloc_bytes,"
-            + "peers_before,peers_after,peers_delta,peers_peak,peers_peak_delta,peers_created,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms");
+            + "peers_before,peers_after,peers_delta,peers_peak,peers_peak_delta,peers_created,gen0,gen1,gen2,gc_pause_us,write_to_callback_ms,"
+            + "native_to_dotnet_us,native_encode_us,native_encode_cpu_us,native_data_us,dotnet_us,frame_bytes");
         Line(settled, "phase,size,point,peers,peers_alive,heap_bytes,largest_kinds");
     }
 
@@ -57,7 +58,13 @@ internal sealed class ResultWriter : IDisposable
             Invariant(sample.Gen1Collections),
             Invariant(sample.Gen2Collections),
             Invariant(sample.GcPauseMicroseconds),
-            writeToDoneMilliseconds is { } latency ? Invariant(latency) : string.Empty));
+            writeToDoneMilliseconds is { } latency ? Invariant(latency) : string.Empty,
+            sample.Native is { } toDotnet ? Invariant(toDotnet.ToDotnetMicroseconds) : string.Empty,
+            sample.Native is { } encode ? Invariant(encode.EncodeMicroseconds) : string.Empty,
+            sample.Native is { } encodeCpu ? Invariant(encodeCpu.EncodeCpuMicroseconds) : string.Empty,
+            sample.Native is { } data ? Invariant(data.DataMicroseconds) : string.Empty,
+            sample.Native is { } dotnet ? Invariant(dotnet.DotnetMicroseconds) : string.Empty,
+            sample.Native is { } frame ? Invariant(frame.FrameBytes) : string.Empty));
 
     public void Settled(string phase, int size, string point, SettledReading reading) =>
         Line(settled, string.Join(',',

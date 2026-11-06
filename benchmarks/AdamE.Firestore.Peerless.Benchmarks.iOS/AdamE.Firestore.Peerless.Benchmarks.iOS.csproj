@@ -10,7 +10,7 @@
     <ApplicationDisplayVersion>0.1</ApplicationDisplayVersion>
     <RuntimeIdentifier>iossimulator-arm64</RuntimeIdentifier>
 
-    <!-- The point of step 4: the ordinary peered binding under full NativeAOT. -->
+    <!-- Both paths, peered and Peerless, under full NativeAOT. -->
     <PublishAot>true</PublishAot>
     <!-- The iOS SDK applies PublishAot only while publishing (_UseNativeAot needs _IsPublishing), and `dotnet publish`
          refuses simulator RIDs. Claiming to publish makes `dotnet build` produce the NativeAOT app for the simulator.
@@ -27,5 +27,6 @@
 
   <ItemGroup>
     <PackageReference Include="AdamE.Firebase.iOS.CloudFirestore" />
+    <ProjectReference Include="../../src/AdamE.Firestore.Peerless.iOS/AdamE.Firestore.Peerless.iOS.csproj" />
   </ItemGroup>
 </Project>

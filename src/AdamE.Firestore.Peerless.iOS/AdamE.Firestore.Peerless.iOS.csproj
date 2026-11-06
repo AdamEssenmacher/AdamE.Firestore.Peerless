@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-ios</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <RootNamespace>AdamE.Firestore.Peerless.iOS</RootNamespace>
+    <IsAotCompatible>true</IsAotCompatible>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- A binding project only so the SDK packages the shim's NativeReference (a .resources.zip next to the assembly,
+         in the NuGet later). There is no ApiDefinition: .NET calls the shim's C API, not Objective-C types. -->
+    <IsBindingProject>true</IsBindingProject>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Description>Listens to Firestore on iOS through a small Objective-C shim that encodes each snapshot once, so no Firestore value crosses into .NET as a peer object.</Description>
+
+    <PeerlessShimDirectory>$(MSBuildThisFileDirectory)../../ios/</PeerlessShimDirectory>
+    <PeerlessShimXcframework>$(PeerlessShimDirectory)build/PeerlessShim.xcframework</PeerlessShimXcframework>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="ApiDefinition.cs" />
+    <ObjcBindingApiDefinition Include="ApiDefinition.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AdamE.Firebase.iOS.CloudFirestore" />
+    <ProjectReference Include="../AdamE.Firestore.Peerless/AdamE.Firestore.Peerless.csproj" />
+  </ItemGroup>
+
+  <!-- The shim is a static library with no copy of Firestore in it: the app's link resolves its Firestore symbols
+       against the frameworks AdamE.Firebase.iOS.CloudFirestore already embeds. Force-loaded so the linker keeps the
+       C entry points .NET calls through __Internal. -->
+  <ItemGroup>
+    <NativeReference Include="$(PeerlessShimXcframework)">
+      <Kind>Static</Kind>
+      <ForceLoad>true</ForceLoad>
+      <SmartLink>false</SmartLink>
+      <Frameworks>Foundation FirebaseFirestoreInternal FirebaseCore</Frameworks>
+    </NativeReference>
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.iOS" />
+  </ItemGroup>
+
+  <!-- Builds the shim when its sources are newer than the xcframework. A packaged build will ship the xcframework. -->
+  <ItemGroup>
+    <!-- Directory.Packages.props: build-shim.sh reads the binding version from it, so a version bump rebuilds. -->
+    <PeerlessShimSource Include="$(PeerlessShimDirectory)PeerlessShim/src/**/*;$(PeerlessShimDirectory)PeerlessShim/include/**/*;$(PeerlessShimDirectory)build-shim.sh;$(MSBuildThisFileDirectory)../../Directory.Packages.props" />
+  </ItemGroup>
+  <Target Name="BuildPeerlessShim" BeforeTargets="PrepareForBuild;ResolveAssemblyReferences;_CreateBindingResourcePackage"
+          Inputs="@(PeerlessShimSource)" Outputs="$(PeerlessShimXcframework)/Info.plist">
+    <Exec Command="./build-shim.sh" WorkingDirectory="$(PeerlessShimDirectory)" />
+  </Target>
+</Project>

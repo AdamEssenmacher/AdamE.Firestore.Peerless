@@ -69,6 +69,16 @@ for (phase, size, kind), group in groups.items():
         rng([f(r, "peers_peak") for r in group]), rng_opt([over_settled(r) for r in group]),
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
+if any(r.get("native_encode_us") for r in rows):
+    lines += ["", "## Where the time goes (Peerless: Objective-C side vs .NET side)", "",
+              "Medians. *ObjC→.NET* runs from the Objective-C callback's entry to entry into .NET: encoding and the",
+              "call. *.NET* runs from there to the snapshot fully decoded.", "",
+              "| phase | docs | kind | frame KB | ObjC encode ms | ObjC encode CPU ms | of which snapshot.data ms | ObjC→.NET ms | .NET decode ms | end-to-end ms |",
+              "|---|---:|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for (phase, size, kind), group in groups.items():
+        m = lambda key, scale=1000.0: med([f(r, key) for r in group]) / scale
+        lines.append(f"| {phase} | {size} | {kind} | {m('frame_bytes', 1024):.1f} | {m('native_encode_us'):.2f} | "
+                     f"{m('native_encode_cpu_us'):.2f} | {m('native_data_us'):.2f} | {m('native_to_dotnet_us'):.2f} | {m('dotnet_us'):.2f} | {m('wall_us'):.2f} |")
 off_main = sum(1 for r in rows if r.get("main_thread") == "0")
 skipped = [r for r in rows if is_partial(r)]
 lines += ["", f"Callbacks off the main thread: {off_main}. Partial snapshots skipped: {len(skipped)}.",
