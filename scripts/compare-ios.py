@@ -54,8 +54,12 @@ for run in runs:
     def note(key):
         found = re.search(rf"^{key}: (.*)$", text, re.M)
         return found.group(1) if found else "?"
+    # The removal check is written as 'disposeRace' by current builds and was 'verifyRemoval' in earlier ones.
+    removal = note('disposeRace')
+    if removal == "?":
+        removal = note('verifyRemoval')
     notes.append(f"| {run.name} | {mode} | {note('outcome')} | {' → '.join(loads) if loads else '?'} | "
-                 f"{note('verify')} | {note('verifyPeerless')} | {note('verifyRemoval')} |")
+                 f"{note('verify')} | {note('verifyPeerless')} | {removal} |")
 
 
 def med(rows, key, scale=1.0):
@@ -83,6 +87,11 @@ lines = ["# iOS: peered vs Peerless (generated)", "",
          "|---|---|---|---|---|---|---|", *notes, ""]
 
 
+def times(ratio):
+    # Whole numbers only from 10× up, so a narrow win or a loss (under 1×) isn't rounded to 1× or 0×.
+    return f"{ratio:,.0f}×" if ratio >= 10 else f"{ratio:.1f}×" if ratio >= 1 else f"{ratio:.2f}×"
+
+
 def table(title, key, scale, digits, explain):
     lines.extend([f"## {title}", "", explain, "",
                   "| docs | kind | " + " | ".join(present) + (" | peered ÷ peerless |" if both else " |"),
@@ -93,7 +102,7 @@ def table(title, key, scale, digits, explain):
         ratio = ""
         if both:
             p, d = values["peered"], values["peerless"]
-            ratio = f" {p / d:,.0f}× |" if p and d else " – |"
+            ratio = f" {times(p / d)} |" if p and d else " – |"
         lines.append(f"| {label} | {kind} | " + " | ".join(cell(values[m], digits) for m in present) + " |" + ratio)
     lines.append("")
 

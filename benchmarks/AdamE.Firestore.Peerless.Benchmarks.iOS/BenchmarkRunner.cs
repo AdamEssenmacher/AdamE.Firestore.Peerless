@@ -262,13 +262,16 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         var peerless = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
         (IDisposable registration, PeeredSampler sampler) = Listen(sampler =>
             query.AddSnapshotListener(sampler.OnQuery));
+        // The two listeners compared below register separately, so their first snapshots needn't be the same one: one
+        // may come from the cache before the target is current, the other after. Each keeps its first snapshot from the
+        // server instead, which is the same data with the same metadata.
         IListenerRegistration modelRegistration = query.AddSnapshotListener((snapshot, error) =>
         {
             try
             {
                 if (snapshot is null)
                     model.TrySetException(new InvalidOperationException(error?.LocalizedDescription ?? "No snapshot."));
-                else
+                else if (!snapshot.Metadata.IsFromCache)
                     model.TrySetResult(PeeredConversion.Query(snapshot));
             }
             catch (Exception exception)
@@ -277,7 +280,13 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
             }
         });
         using IDisposable peerlessRegistration = PeerlessListener.Listen(
-            query, snapshot => peerless.TrySetResult(snapshot), error => peerless.TrySetException(error));
+            query,
+            snapshot =>
+            {
+                if (!snapshot.Metadata.IsFromCache)
+                    peerless.TrySetResult(snapshot);
+            },
+            error => peerless.TrySetException(error));
         try
         {
             using var timeout = new CancellationTokenSource(VerifyTimeout);
@@ -364,7 +373,12 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                         flowing.TrySetResult();
                     Volatile.Write(ref inside, 0);
                 },
-                error => flowing.TrySetException(error));
+                error =>
+                {
+                    // Whichever one this round waits on, an error surfaces as itself rather than as a timeout.
+                    flowing.TrySetException(error);
+                    started.TrySetException(error);
+                });
 
             using var stop = new CancellationTokenSource();
             Task writes = Task.Run(async () =>
@@ -373,20 +387,27 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                     await PrepareUpdate(collection, BenchmarkPlan.DocumentId(write % 50), write)().ConfigureAwait(false);
             });
 
-            await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(VerifyTimeout).ConfigureAwait(false);
-            await Task.Run(() =>
+            try
             {
-                if (Volatile.Read(ref inside) == 1)
-                    Interlocked.Increment(ref disposedMidCallback);
-                registration.Dispose();
-                if (Volatile.Read(ref inside) == 1)
-                    Interlocked.Increment(ref violations); // still running after Dispose returned
-                Volatile.Write(ref returned, 1);
-            }).ConfigureAwait(false);
+                await (forceMidCallback ? started.Task : flowing.Task).WaitAsync(VerifyTimeout).ConfigureAwait(false);
+                await Task.Run(() =>
+                {
+                    if (Volatile.Read(ref inside) == 1)
+                        Interlocked.Increment(ref disposedMidCallback);
+                    registration.Dispose();
+                    if (Volatile.Read(ref inside) == 1)
+                        Interlocked.Increment(ref violations); // still running after Dispose returned
+                    Volatile.Write(ref returned, 1);
+                }).ConfigureAwait(false);
 
-            await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
-            await stop.CancelAsync().ConfigureAwait(false);
-            await writes.ConfigureAwait(false);
+                await Task.Delay(300).ConfigureAwait(false); // writes continue: frames for the removed listener must not arrive
+            }
+            finally
+            {
+                registration.Dispose(); // already disposed unless the round failed first, when this cleans it up
+                await stop.CancelAsync().ConfigureAwait(false);
+                await writes.ConfigureAwait(false);
+            }
         }
 
         // Disposal from inside a callback, on the callback thread (the main queue).

@@ -29,9 +29,9 @@ Callback start to fully converted.
 | 1000 | initial | 293.90 | 10.51 | 28× |
 | 1000 | update | 321.97 | 11.57 | 28× |
 | 1000 | update, after a settle | 311.02 | 10.13 | 31× |
-| 1 (doc) | initial | 0.51 | 0.06 | 8× |
-| 1 (doc) | update | 0.33 | 0.05 | 6× |
-| 1 (doc) | update, after a settle | 0.46 | 0.05 | 9× |
+| 1 (doc) | initial | 0.51 | 0.06 | 7.9× |
+| 1 (doc) | update | 0.33 | 0.05 | 6.2× |
+| 1 (doc) | update, after a settle | 0.46 | 0.05 | 9.0× |
 
 ## Main-queue CPU per snapshot (ms)
 
@@ -51,9 +51,9 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 | 1000 | initial | 293.34 | 10.69 | 27× |
 | 1000 | update | 296.05 | 11.70 | 25× |
 | 1000 | update, after a settle | 294.52 | 10.32 | 29× |
-| 1 (doc) | initial | 0.51 | 0.07 | 8× |
-| 1 (doc) | update | 0.33 | 0.05 | 6× |
-| 1 (doc) | update, after a settle | 0.46 | 0.05 | 9× |
+| 1 (doc) | initial | 0.51 | 0.07 | 7.8× |
+| 1 (doc) | update | 0.33 | 0.05 | 6.1× |
+| 1 (doc) | update, after a settle | 0.46 | 0.05 | 9.0× |
 
 ## Managed allocation per snapshot (KiB)
 
@@ -117,9 +117,9 @@ The table's highest entry count during the callback (sampled per document in pee
 | 1000 | initial | 37,920 | 9 | 4,213× |
 | 1000 | update | 39,701 | 20 | 1,985× |
 | 1000 | update, after a settle | 37,931 | 15 | 2,529× |
-| 1 (doc) | initial | 83 | 9 | 9× |
-| 1 (doc) | update | 308 | 45 | 7× |
-| 1 (doc) | update, after a settle | 86 | 15 | 6× |
+| 1 (doc) | initial | 83 | 9 | 9.2× |
+| 1 (doc) | update | 308 | 45 | 6.8× |
+| 1 (doc) | update, after a settle | 86 | 15 | 5.7× |
 
 ## NSObject peer table at peak, over the last settle
 
@@ -140,8 +140,8 @@ The absolute peak minus the table's count at the last settle point (always the a
 | 1000 | update | 39,694 | 13 | 3,053× |
 | 1000 | update, after a settle | 37,924 | 8 | 4,740× |
 | 1 (doc) | initial | 76 | 2 | 38× |
-| 1 (doc) | update | 301 | 38 | 8× |
-| 1 (doc) | update, after a settle | 79 | 8 | 10× |
+| 1 (doc) | update | 301 | 38 | 7.9× |
+| 1 (doc) | update, after a settle | 79 | 8 | 9.9× |
 
 ## GCs during a snapshot
 

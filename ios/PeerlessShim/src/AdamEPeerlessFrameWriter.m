@@ -306,8 +306,13 @@ static void PLSMapBody(AdamEPeerlessFrameWriter *self, NSDictionary *map, int de
     const void *stackValues[32];
     const void **keys = count <= 32 ? stackKeys : malloc(sizeof(void *) * (size_t)count);
     const void **values = count <= 32 ? stackValues : malloc(sizeof(void *) * (size_t)count);
-    if (keys == NULL || values == NULL)
+    if (keys == NULL || values == NULL) {
+        if (keys != stackKeys)
+            free(keys); // whichever allocation succeeded (free(NULL) does nothing)
+        if (values != stackValues)
+            free(values);
         [NSException raise:NSMallocException format:@"Peerless could not read a map of %ld entries.", (long)count];
+    }
     @try {
         CFDictionaryGetKeysAndValues((__bridge CFDictionaryRef)map, keys, values);
         BOOL lossy = NO;
