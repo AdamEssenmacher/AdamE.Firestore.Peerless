@@ -104,11 +104,11 @@ internal sealed class PeeredSampler : Java.Lang.Object, IEventListener, ISampler
             using Firebase.Firestore.SnapshotMetadata? metadata =
                 (value as QuerySnapshot)?.Metadata ?? (value as DocumentSnapshot)?.Metadata;
             fromCache = metadata?.IsFromCache ?? false;
-            // A missing document (for example an initial snapshot from an empty cache) is not the document the phase
-            // waits for, so it counts as no documents and is skipped as partial.
-            count = value is DocumentSnapshot single && documents is not null
-                ? (single.Exists() ? 1 : 0)
-                : documents?.Count ?? 0;
+            // A missing document (for example an initial snapshot from an empty cache) converts to none, as on iOS, so
+            // NextAsync doesn't take it for the document it waits for and skips it as partial.
+            if (value is DocumentSnapshot single && documents is not null && !single.Exists())
+                documents = [];
+            count = documents?.Count ?? 0;
         }
         catch (Exception exception)
         {
