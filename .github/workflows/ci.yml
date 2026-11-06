@@ -1,0 +1,98 @@
+# Builds everything and runs every test that needs no Firestore emulator: the core library's tests, the Java shim's
+# unit tests, and the Objective-C shim's tests on an iOS Simulator. The benchmarks are built, not run (they need the
+# emulator).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  # The workload set the code is built with locally: iOS 27.1.10018 (Xcode 27.1) and Android 36.1.118. Bump it with
+  # the Xcode version below.
+  WORKLOAD_VERSION: "10.0.402.1"
+
+jobs:
+  core:
+    name: Core library and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Test
+        run: dotnet test tests/AdamE.Firestore.Peerless.Tests -c Release
+      - name: Build the decoder benchmark
+        run: dotnet build benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder -c Release
+
+  android:
+    name: Android shim, library and benchmark
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            android/*.gradle.kts
+            android/peerless-shim/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Install the Android workload
+        run: dotnet workload install android --version "$WORKLOAD_VERSION"
+      - name: Java shim unit tests
+        working-directory: android
+        run: ./gradlew :peerless-shim:testReleaseUnitTest --console=plain
+      - name: Build (no Apple projects)
+        run: dotnet build AdamE.Firestore.Peerless.NoApple.slnf -c Release
+
+  ios:
+    name: iOS shim, library and benchmark
+    # GitHub's macOS image with Xcode 27 (a preview label; see actions/runner-images#14404).
+    runs-on: xcode-27
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 27.1
+        run: sudo xcode-select -s /Applications/Xcode_27.1.app && xcodebuild -version
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Install the iOS workload
+        run: dotnet workload install ios --version "$WORKLOAD_VERSION"
+      - name: Build the iOS library
+        run: dotnet build src/AdamE.Firestore.Peerless.iOS -c Release
+      - name: Build the iOS benchmark (for the simulator)
+        run: dotnet build benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS -c Release
+      - name: Boot a simulator
+        id: simulator
+        run: |
+          # The newest available iOS runtime, and an iPhone that runtime supports (not every device type does).
+          read -r runtime device < <(xcrun simctl list runtimes --json | python3 -c '
+          import json, sys
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"] if r["isAvailable"] and r["platform"] == "iOS"]
+          newest = max(runtimes, key=lambda r: [int(p) for p in r["version"].split(".")])
+          iphones = [d for d in newest["supportedDeviceTypes"] if d["productFamily"] == "iPhone"]
+          print(newest["identifier"], iphones[-1]["identifier"])')
+          echo "runtime=$runtime device=$device"
+          udid="$(xcrun simctl create peerless-ci "$device" "$runtime")"
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      - name: Objective-C shim tests
+        run: scripts/test-ios-shim.sh "${{ steps.simulator.outputs.udid }}"
