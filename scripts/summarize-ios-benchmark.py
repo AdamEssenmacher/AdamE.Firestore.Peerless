@@ -1,44 +1,24 @@
 #!/usr/bin/env python3
 """Summarizes one iOS benchmark run directory into summary.md (medians and ranges per phase, size and kind)."""
-import csv, statistics, sys
+import csv, sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.append(str(Path(__file__).resolve().parent))  # python3 -I leaves scripts/ off sys.path
+from settle_points import f, group_samples, is_partial, last_settled, med, rng, settle_points
 
 run = Path(sys.argv[1])
 mode = next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
 rows = list(csv.DictReader(open(run / f"{mode}-samples.csv")))
 settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
 
-def f(row, key): return float(row.get(key) or 0.0)
-def med(values): return statistics.median(values) if values else 0.0
-def rng(values, scale=1.0):
-    values = [v / scale for v in values]
-    return f"{med(values):.1f} [{min(values):.1f}–{max(values):.1f}]"
-
 # The settle point before each sample, as on Android: before-listen for an initial snapshot, otherwise the latest of
-# after-initial / after-update-N before it. Its peer-table count is the baseline "over settled" subtracts.
-def settle_key(point):
-    if point == "before-listen": return -1
-    if point == "after-initial": return 0
-    if point.startswith("after-update-"): return int(point.rsplit("-", 1)[1])
-    return None
-settles = {}
-for row in settled:
-    key = settle_key(row["point"])
-    if key is not None:
-        settles.setdefault((row["phase"], int(row["size"])), []).append((key, int(row["peers"])))
-def last_settled(row):
-    seq = int(row["seq"])
-    earlier = [p for k, p in settles.get((row["phase"], int(row["size"])), []) if k < seq]
-    return float(earlier[-1]) if earlier else None
+# after-initial / after-update-N before it. Its peer-table count is the baseline "over settled" subtracts. The logic is
+# Android's (scripts/settle_points.py).
+settles = settle_points(settled, "peers")
 def over_settled(row):
-    base = last_settled(row)
+    base = last_settled(settles, row)
     return None if base is None else f(row, "peers_peak") - base
-def after_settle(row):
-    seq = int(row["seq"])
-    return seq >= 1 and any(k == seq - 1 for k, _ in settles.get((row["phase"], int(row["size"])), []))
-def rng_opt(values, scale=1.0):
-    values = [v for v in values if v is not None]
-    return rng(values, scale) if values else "n/a"
 
 host = (run / "host.txt").read_text().strip().replace("\n", "  \n") if (run / "host.txt").exists() else ""
 lines = [f"# iOS {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().replace("\n", "  \n"), "", host, "",
@@ -53,20 +33,15 @@ lines = [f"# iOS {mode} summary", "", (run / f"{mode}-run.txt").read_text().stri
          "rest (as on Android: right after a settle the previous snapshot's peers are gone, so more are created).", "",
          "| phase | docs | kind | n | values | wall ms | main-queue CPU ms | GC pause ms | gen0 GCs | alloc KiB | peers created | table peak | peak over settled | write→callback ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---|---:|"]
-# Partial snapshots: kind "partial" under the phase they came from (older runs wrote them all as phase "skipped").
-def is_partial(row): return row["phase"] == "skipped" or row["kind"] == "partial"
-groups = {}
-for row in rows:
-    if is_partial(row): continue
-    kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
-    groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
+# Updates straight after a settle point are their own kind; partial snapshots are left out (counted below).
+groups = group_samples(rows, settles)
 for (phase, size, kind), group in groups.items():
     lines.append("| " + " | ".join([
         phase, str(size), kind, str(len(group)), str(int(med([f(r, "values") for r in group]))),
         rng([f(r, "wall_us") for r in group], 1000), rng([f(r, "thread_cpu_us") for r in group], 1000),
         rng([f(r, "gc_pause_us") for r in group], 1000), f"{med([f(r, 'gen0') for r in group]):.0f}",
         f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}", rng([f(r, "peers_created") for r in group]),
-        rng([f(r, "peers_peak") for r in group]), rng_opt([over_settled(r) for r in group]),
+        rng([f(r, "peers_peak") for r in group]), rng([over_settled(r) for r in group]),
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
 if any(r.get("native_encode_us") for r in rows):

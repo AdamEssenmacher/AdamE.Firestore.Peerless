@@ -36,6 +36,8 @@ jobs:
         run: dotnet test tests/AdamE.Firestore.Peerless.Tests -c Release
       - name: Build the decoder benchmark
         run: dotnet build benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder -c Release
+      - name: Benchmark runner script tests (fake adb, no device)
+        run: scripts/test-benchmark-scripts.sh
 
   android:
     name: Android shim, library and benchmark

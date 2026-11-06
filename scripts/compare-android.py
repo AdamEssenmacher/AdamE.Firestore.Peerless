@@ -8,6 +8,10 @@ import csv, re, statistics, sys
 from collections import defaultdict
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+sys.path.append(str(Path(__file__).resolve().parent))  # python3 -I leaves scripts/ off sys.path
+from settle_points import kind_of, last_settled, settle_points
+
 out = Path(sys.argv[1])
 MODES = ["peered", "peerless-direct", "peerless-bytes"]
 
@@ -32,28 +36,20 @@ for run in runs:
     for row in run_settled:
         settled[(mode, row["phase"], int(row["size"]), row["point"])].append(int(row["gref"]))
 
-    # Peak over the last settle point before the sample (recorded by newer runs, reconstructed for older ones).
-    order = defaultdict(list)
-    for row in run_settled:
-        point = row["point"]
-        key = -1 if point == "before-listen" else 0 if point == "after-initial" else (
-            int(point.rsplit("-", 1)[1]) if point.startswith("after-update-") else None)
-        if key is not None:
-            order[(row["phase"], int(row["size"]))].append((key, int(row["gref"])))
+    # Peak over the last settle point before the sample (recorded by newer runs, reconstructed for older ones), with
+    # the same settle-point logic as summary.md (scripts/settle_points.py).
+    settles = settle_points(run_settled, "gref")
     for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
         # Partial snapshots are skipped: older runs wrote them under phase "skipped", newer ones as kind "partial".
         if row["phase"] not in ("query", "document") or row["kind"] == "partial":
             continue
         if not row.get("gref_peak_over_settled") and row.get("gref_peak"):
-            seq = int(row["seq"])
-            earlier = [g for k, g in order[(row["phase"], int(row["size"]))] if k < seq or (seq == 0 and k == -1)]
-            if earlier:
-                row["gref_peak_over_settled"] = str(float(row["gref_peak"]) - earlier[-1])
+            base = last_settled(settles, row)
+            if base is not None:
+                row["gref_peak_over_settled"] = str(float(row["gref_peak"]) - base)
         # Updates that come straight after a settle point are reported on their own, in every mode: forced GCs at the
         # settle point make some of the following peered callbacks run GC storms (see results/android-peered).
-        kind = row["kind"]
-        if kind == "update" and any(k == int(row["seq"]) - 1 for k, _ in order[(row["phase"], int(row["size"]))]):
-            kind = "update, after a settle"
+        kind = kind_of(settles, row)
         samples[(mode, row["phase"], int(row["size"]), kind)].append(row)
     summary = (run / "summary.md").read_text() if (run / "summary.md").exists() else ""
     summary = summary.split("## ART's JNI tables", 1)[1] if "## ART's JNI tables" in summary else ""
