@@ -1,0 +1,6 @@
+<Project>
+  <ItemGroup>
+    <!-- The ordinary, peered binding that the benchmarks measure against. -->
+    <PackageVersion Include="Xamarin.Firebase.Firestore" Version="126.0.2.4" />
+  </ItemGroup>
+</Project>

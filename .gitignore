@@ -1,0 +1,12 @@
+bin/
+obj/
+.idea/
+.vs/
+*.user
+*.DotSettings.user
+.DS_Store
+# Firebase emulator logs
+*-debug.log
+
+# Raw logcat captured by scripts/run-android-peered.sh (large; summaries keep what matters)
+results/**/logcat.txt
