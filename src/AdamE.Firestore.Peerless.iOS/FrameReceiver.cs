@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using CoreFoundation;
@@ -124,6 +125,8 @@ internal sealed unsafe class FrameReceiver : IDisposable
             receiver.Deliver((nint)data, length, timing);
     }
 
+    private const string FirestoreErrorDomain = "FIRFirestoreErrorDomain";
+
     [UnmanagedCallersOnly]
     private static void OnError(nint context, int code, byte* message, nint native)
     {
@@ -135,23 +138,66 @@ internal sealed unsafe class FrameReceiver : IDisposable
         // Borrowed for this call: the peer retains it, so it outlives the call. Wrapping is best effort: nothing may
         // unwind out of this callback into Objective-C, and the error must be delivered even if the object can't be
         // given a peer (GetNSObject throws for a class whose binding lacks the handle constructor).
-        Exception? inner;
+        Exception? inner = null;
+        NSError? nsError = null;
+        string? domain = null;
+        string? nativeCode = null;
+        string? nativeMessage = null;
         try
         {
-            inner = Runtime.GetNSObject(native) switch
+            switch (Runtime.GetNSObject(native))
             {
-                NSError nsError => new NSErrorException(nsError),
-                NSException nsException => new ObjCException(nsException),
-                _ => null,
-            };
+                case NSError error:
+                    nsError = error;
+                    inner = new NSErrorException(error);
+                    break;
+                case NSException exception:
+                    inner = new ObjCException(exception);
+                    break;
+            }
         }
         catch (Exception)
         {
-            inner = null;
+            (inner, nsError) = (null, null);
         }
+
+        // Separately, so a failed read here keeps the inner exception.
+        if (nsError is not null)
+        {
+            try
+            {
+                domain = nsError.Domain;
+                nativeCode = NativeCode(nsError);
+                nativeMessage = nsError.LocalizedDescription;
+            }
+            catch (Exception)
+            {
+                (domain, nativeCode, nativeMessage) = (null, null, null);
+            }
+        }
+
         _ = receiver.gate.Run(() => receiver.gate.Fail(code == Native.EncodeFailed
             ? new PeerlessFormatException($"The shim could not encode the snapshot: {text}", 0, inner)
-            : new FirestoreListenException((FirestoreErrorCode)code, text, inner)));
+            : new FirestoreListenException(
+                (FirestoreErrorCode)code,
+                text,
+                inner,
+                nsError is null ? null : nameof(NSError),
+                domain,
+                nativeCode,
+                nativeMessage)));
+    }
+
+    // As Plugin.Firebase reports native Auth codes: the enum name for a Firestore code it knows, else the number (a
+    // newer code, or another domain's).
+    private static string NativeCode(NSError error)
+    {
+        long value = (long)error.Code;
+        return error.Domain == FirestoreErrorDomain
+            && value is >= int.MinValue and <= int.MaxValue
+            && Enum.IsDefined((FirestoreErrorCode)(int)value)
+                ? ((FirestoreErrorCode)(int)value).ToString()
+                : value.ToString(CultureInfo.InvariantCulture);
     }
 
     // Called by the shim exactly once, when no native callback can still use the context.

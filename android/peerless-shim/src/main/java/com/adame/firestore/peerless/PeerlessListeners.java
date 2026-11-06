@@ -192,16 +192,25 @@ public final class PeerlessListeners {
             writer.reset();
             String message = failure.getMessage();
             sink.onError(ERROR_ENCODING_FAILED, failure.getClass().getSimpleName() + (message == null ? "" : ": " + message),
-                    failure);
+                    failure, typeName(failure), null);
         }
 
         void fail(@Nullable FirebaseFirestoreException error) {
             if (error == null) {
-                sink.onError(FirebaseFirestoreException.Code.UNKNOWN.value(), "Firestore sent neither a snapshot nor an error.", null);
+                sink.onError(FirebaseFirestoreException.Code.UNKNOWN.value(), "Firestore sent neither a snapshot nor an error.", null,
+                        null, null);
             } else {
                 String message = error.getMessage();
-                sink.onError(error.getCode().value(), message == null ? error.getCode().name() : message, error);
+                sink.onError(error.getCode().value(), message == null ? error.getCode().name() : message, error,
+                        typeName(error), error.getCode().name());
             }
+        }
+
+        // The canonical name, as Plugin.Firebase reports native Auth exceptions. A class without one (anonymous or local) gets
+        // its binary name here, where Plugin.Firebase falls back to the .NET type name.
+        private static String typeName(Throwable throwable) {
+            String canonical = throwable.getClass().getCanonicalName();
+            return canonical != null ? canonical : throwable.getClass().getName();
         }
     }
 }

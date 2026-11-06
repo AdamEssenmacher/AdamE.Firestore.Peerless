@@ -56,20 +56,77 @@ public enum FirestoreErrorCode
 }
 
 /// <summary>
-/// Firestore reported that a listener failed. <see cref="Exception.InnerException"/> is the platform's own error when
-/// Firestore gave one: on Android the <c>FirebaseFirestoreException</c>, on iOS a <c>Foundation.NSErrorException</c>
-/// wrapping the <c>NSError</c> (its <c>Error</c> keeps the domain, code and <c>UserInfo</c>).
+/// Firestore reported that a listener failed. <see cref="Code"/> is Firestore's own code, the same on both platforms
+/// (both SDKs number errors as gRPC does). For anything more specific, the native error is the
+/// <see cref="Exception.InnerException"/>, and the <c>Native*</c> properties describe it without platform code, with the
+/// same meanings as Plugin.Firebase's <c>CrossPlatformFirebaseAuthException</c>.
 /// </summary>
+/// <remarks>
+/// <list type="table">
+/// <listheader><term>Property</term><description>Android / iOS</description></listheader>
+/// <item><term><see cref="Exception.InnerException"/></term><description>The <c>FirebaseFirestoreException</c> /
+/// a <c>Foundation.NSErrorException</c> wrapping the <c>NSError</c>.</description></item>
+/// <item><term><see cref="NativeExceptionTypeName"/></term><description>The Java class name
+/// (<c>com.google.firebase.firestore.FirebaseFirestoreException</c>) / <c>NSError</c>.</description></item>
+/// <item><term><see cref="NativeErrorDomain"/></term><description><see langword="null"/> /
+/// the error's domain (<c>FIRFirestoreErrorDomain</c>, or another domain, whose errors report
+/// <see cref="FirestoreErrorCode.Unknown"/> as <see cref="Code"/>).</description></item>
+/// <item><term><see cref="NativeErrorCode"/></term><description>The Java code's name (<c>PERMISSION_DENIED</c>) /
+/// the <c>FIRFirestoreErrorCode</c> name (<c>PermissionDenied</c>), or the number for a code outside the enum or
+/// another domain.</description></item>
+/// <item><term><see cref="NativeErrorMessage"/></term><description>The native message, or the exception's message
+/// when there is none.</description></item>
+/// </list>
+/// All of them are <see langword="null"/> (except <see cref="NativeErrorMessage"/>) when there was no native error:
+/// Firestore sent neither a snapshot nor an error, or (on iOS) the error object could not be given a .NET peer. So a
+/// <see langword="null"/> <see cref="NativeErrorDomain"/> doesn't by itself mean Android, as it does for
+/// Plugin.Firebase's Auth exception: check <see cref="NativeExceptionTypeName"/> (or <c>OperatingSystem.IsIOS()</c>).
+/// </remarks>
 public sealed class FirestoreListenException : Exception
 {
-    /// <summary>Creates the exception.</summary>
+    /// <summary>Creates the exception, with no native error.</summary>
     public FirestoreListenException(FirestoreErrorCode code, string message)
-        : base(message) => Code = code;
+        : this(code, message, innerException: null, nativeExceptionTypeName: null)
+    {
+    }
 
-    /// <summary>Creates the exception, with the platform's own error as <see cref="Exception.InnerException"/>.</summary>
-    public FirestoreListenException(FirestoreErrorCode code, string message, Exception? innerException)
-        : base(message, innerException) => Code = code;
+    /// <summary>Creates the exception, wrapping the native error.</summary>
+    /// <param name="code">Firestore's error code.</param>
+    /// <param name="message">The message.</param>
+    /// <param name="innerException">The native error, if there is one.</param>
+    /// <param name="nativeExceptionTypeName">The native error's type name, if there is one.</param>
+    /// <param name="nativeErrorDomain">The native error domain (iOS), if available.</param>
+    /// <param name="nativeErrorCode">The native error code, if available.</param>
+    /// <param name="nativeErrorMessage">The native message; <paramref name="message"/> when omitted.</param>
+    public FirestoreListenException(
+        FirestoreErrorCode code,
+        string message,
+        Exception? innerException,
+        string? nativeExceptionTypeName,
+        string? nativeErrorDomain = null,
+        string? nativeErrorCode = null,
+        string? nativeErrorMessage = null)
+        : base(message, innerException)
+    {
+        Code = code;
+        NativeExceptionTypeName = nativeExceptionTypeName;
+        NativeErrorDomain = nativeErrorDomain;
+        NativeErrorCode = nativeErrorCode;
+        NativeErrorMessage = nativeErrorMessage ?? message;
+    }
 
     /// <summary>Firestore's error code. A value outside the enum is a code a newer SDK added.</summary>
     public FirestoreErrorCode Code { get; }
+
+    /// <summary>The native error's type name, or <see langword="null"/> when there was none.</summary>
+    public string? NativeExceptionTypeName { get; }
+
+    /// <summary>The native error domain (iOS only), or <see langword="null"/>.</summary>
+    public string? NativeErrorDomain { get; }
+
+    /// <summary>The native error code, as the platform names it, or <see langword="null"/>.</summary>
+    public string? NativeErrorCode { get; }
+
+    /// <summary>The native error message, or the exception's message when the platform gave none.</summary>
+    public string NativeErrorMessage { get; }
 }

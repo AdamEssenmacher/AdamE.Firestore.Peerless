@@ -58,6 +58,32 @@ lock the callback also takes; either deadlocks. The first error stops the listen
 thread, the first callback can arrive before `Listen` returns (an early error is held and posted after it returns).
 Exceptions thrown from your callbacks are not caught, as with ordinary Firestore listeners.
 
+### Errors
+
+`onError` receives a `FirestoreListenException` when Firestore reports a failure, or a `PeerlessFormatException` when
+a snapshot can't be encoded or decoded; either way the listener has stopped. `FirestoreListenException` follows
+Plugin.Firebase's `CrossPlatformFirebaseAuthException` model: the native error is the `InnerException`
+(`FirebaseFirestoreException` on Android, an `NSErrorException` wrapping the `NSError` on iOS), and
+`NativeExceptionTypeName`, `NativeErrorDomain` (iOS), `NativeErrorCode` and `NativeErrorMessage` describe it without
+platform code. Unlike Auth's codes, Firestore's are numbered the same on both platforms, so `Code` (a
+`FirestoreErrorCode`) is exact and needs no classifier:
+
+```csharp
+static string Describe(Exception error) => error switch
+{
+    FirestoreListenException { Code: FirestoreErrorCode.PermissionDenied } => "You don't have access to these rooms.",
+    FirestoreListenException { Code: FirestoreErrorCode.Unavailable } => "Offline; retry later.",
+    FirestoreListenException listen => $"{listen.NativeErrorCode}: {listen.NativeErrorMessage}",
+    _ => error.Message,
+};
+
+// ...
+    error => Console.WriteLine(Describe(error)));
+```
+
+When Firestore refuses to listen at all, `Listen` throws `InvalidOperationException`, with the native exception as its
+`InnerException`.
+
 ## Benchmarks (Android)
 
 The benchmark app seeds collections of 10, 100, 500 and 1000 realistic documents (16 fields: strings, longs, doubles, a
