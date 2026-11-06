@@ -71,6 +71,47 @@ internal static class SeedData
         return document;
     }
 
+    /// <summary>
+    /// One document with every value kind the wire format has, for checking both paths agree: null, bytes, geo
+    /// points, unicode, extreme numbers, a whole-number double, empty and deeply nested containers.
+    /// </summary>
+    public static Java.Util.HashMap EveryKind(FirebaseFirestore firestore)
+    {
+        var document = new Java.Util.HashMap();
+        _ = document.Put(new Java.Lang.String("null"), null);
+        Put(document, "true", Java.Lang.Boolean.ValueOf(true));
+        Put(document, "int-min", Java.Lang.Long.ValueOf(long.MinValue));
+        Put(document, "int-max", Java.Lang.Long.ValueOf(long.MaxValue));
+        Put(document, "double-whole", Java.Lang.Double.ValueOf(3.0));
+        Put(document, "double-negative-zero", Java.Lang.Double.ValueOf(-0.0));
+        Put(document, "double-nan", Java.Lang.Double.ValueOf(double.NaN));
+        Put(document, "double-infinity", Java.Lang.Double.ValueOf(double.NegativeInfinity));
+        Put(document, "string-empty", Text(""));
+        Put(document, "string-unicode", Text("héllo wörld ✓ 😀 日本語"));
+        Put(document, "bytes", Blob.FromBytes([0x00, 0x01, 0x7F, 0x80, 0xFF]));
+        Put(document, "timestamp", new Firebase.Timestamp(-1, 999_999_999));
+        Put(document, "geopoint", new GeoPoint(42.3314, -83.0458));
+        Put(document, "reference", firestore.Document("users/user-001"));
+        Put(document, "empty-array", new Java.Util.ArrayList());
+        Put(document, "empty-map", new Java.Util.HashMap());
+
+        // Firestore rejects an array directly inside an array, so the innermost array sits in a map.
+        var innermost = new Java.Util.HashMap();
+        Put(innermost, "inner", new Java.Util.ArrayList());
+        var list = new Java.Util.ArrayList();
+        _ = list.Add(Java.Lang.Long.ValueOf(1));
+        _ = list.Add(Java.Lang.Double.ValueOf(2.5));
+        _ = list.Add(Text("three"));
+        _ = list.Add(null);
+        _ = list.Add(innermost);
+        var deeper = new Java.Util.HashMap();
+        Put(deeper, "list", list);
+        var nested = new Java.Util.HashMap();
+        Put(nested, "deeper", deeper);
+        Put(document, "nested", nested);
+        return document;
+    }
+
     private static Java.Lang.String Text(string value) => new(value);
 
     private static void Put(Java.Util.HashMap map, string key, Java.Lang.Object value) =>

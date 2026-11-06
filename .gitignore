@@ -10,3 +10,9 @@ obj/
 
 # Raw logcat captured by scripts/run-android-peered.sh (large; summaries keep what matters)
 results/**/logcat.txt
+
+# Gradle (android/)
+.gradle/
+android/**/build/
+android/build/
+local.properties

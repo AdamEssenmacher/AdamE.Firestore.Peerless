@@ -16,5 +16,6 @@
 
   <ItemGroup>
     <PackageReference Include="Xamarin.Firebase.Firestore" />
+    <ProjectReference Include="../../src/AdamE.Firestore.Peerless.Android/AdamE.Firestore.Peerless.Android.csproj" />
   </ItemGroup>
 </Project>

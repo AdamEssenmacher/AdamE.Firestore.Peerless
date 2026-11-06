@@ -1,0 +1,14 @@
+mode: peerless-direct
+project: demo-peerless
+emulator: 10.0.2.2:8281
+runtime: .NET 10.0.14
+nativeAot: True
+device: sdk_gphone64_arm64 API 36 arm64-v8a
+sizes: 10
+updatesPerSize: 2
+stopwatchFrequency: 1000000000
+gc: server=False latency=Interactive available=2592632832
+verify: identical (11 documents, 465 values)
+disposeRace: ok (20 disposals from the thread pool while frames arrived, 10 of them while a callback was running; one from inside a callback)
+refusedListen: ok (IllegalStateException: The client has already been terminated); settled GREFs before 191, after 10 refused listens 192
+outcome: completed

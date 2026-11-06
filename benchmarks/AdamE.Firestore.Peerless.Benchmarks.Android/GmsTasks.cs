@@ -9,7 +9,7 @@ internal static class GmsTasks
 {
     // The listener's peer is disposed once the task completes, so the harness adds no GREFs that wait for the GC and
     // get counted as listener cost (the count is process-wide).
-    public static async Task AsTask(this Android.Gms.Tasks.Task task)
+    public static async Task AsTask(this global::Android.Gms.Tasks.Task task)
     {
         var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var listener = new Listener(completion);
@@ -19,7 +19,7 @@ internal static class GmsTasks
 
     private sealed class Listener(TaskCompletionSource completion) : Java.Lang.Object, IOnCompleteListener
     {
-        public void OnComplete(Android.Gms.Tasks.Task task)
+        public void OnComplete(global::Android.Gms.Tasks.Task task)
         {
             if (task.IsSuccessful)
                 completion.TrySetResult();

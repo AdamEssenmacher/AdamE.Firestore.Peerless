@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Summarizes a peered benchmark run directory into summary.md (medians and ranges per phase, size and kind)."""
+"""Summarizes one benchmark run directory into summary.md (medians and ranges per phase, size and kind)."""
 import csv, statistics, sys
 from pathlib import Path
 
 run = Path(sys.argv[1])
-rows = list(csv.DictReader(open(run / "peered-samples.csv")))
-settled = list(csv.DictReader(open(run / "peered-settled.csv")))
+mode = next(p.name[: -len("-samples.csv")] for p in run.glob("*-samples.csv"))
+rows = list(csv.DictReader(open(run / f"{mode}-samples.csv")))
+settled = list(csv.DictReader(open(run / f"{mode}-settled.csv")))
 
 def f(row, key): return float(row.get(key) or 0.0)
 def med(values): return statistics.median(values) if values else 0.0
+# Write to snapshot fully converted. Runs before the column was renamed call it write_to_callback_ms; step-1 runs
+# (results/android-peered) measured only to callback entry, so their figures are not comparable with this one.
+def write_to_done(row): return f(row, "write_to_done_ms" if "write_to_done_ms" in row else "write_to_callback_ms")
 has_peak = bool(rows) and "gref_peak" in rows[0]
 
 # The settle point before each sample: before-listen for an initial snapshot, otherwise the latest of after-initial /
@@ -45,7 +49,7 @@ def cadence_text():
              if (n := cadence(phase)) is not None]
     return "after " + "; ".join(parts) if parts else "no settles after updates"
 
-lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().replace("\n", "  \n"), "",
+lines = [f"# {mode} summary", "", (run / f"{mode}-run.txt").read_text().strip().replace("\n", "  \n"), "",
          "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB.", "",
          "*GREF peak* is the highest .NET-side JNI global reference count seen during the callback (sampled after each",
          "document), as an absolute count: **what an app sees**, since an app never forces the settles this benchmark",
@@ -56,7 +60,7 @@ lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().re
          "straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached",
          "java.lang.Class references that ART's own table (below) includes."
          + ("" if has_peak else " n/a: this run predates peak sampling."), "",
-         "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→callback ms |",
+         "| phase | docs | kind | n | values | wall ms | main-thread CPU ms | GC pause ms | gen0 GCs | alloc KB | GREF peak | peak over settled | write→done ms |",
          "|---|---:|---|---:|---:|---|---|---|---:|---:|---|---|---:|"]
 def after_settle(row):
     seq = int(row["seq"])
@@ -80,8 +84,19 @@ for (phase, size, kind), group in groups.items():
         f"{med([f(r, 'alloc_bytes') for r in group]) / 1024:.0f}",
         rng([f(r, "gref_peak") for r in group]) if has_peak else "n/a",
         rng([peak_over_settled(r) for r in group]),
-        f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
+        f"{med([write_to_done(r) for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
+if any(r.get("java_encode_us") for r in rows):
+    lines += ["", "## Where the time goes (Peerless: Java side vs .NET side)", "",
+              "Medians. *Java→.NET* runs from the Java callback's entry to entry into .NET: encoding, copying into the",
+              "delivery buffer and the JNI call. *.NET* runs from there to the snapshot fully decoded.", "",
+              "| phase | docs | kind | frame KB | Java encode ms | Java encode CPU ms | Java→.NET ms | .NET decode ms | end-to-end ms |",
+              "|---|---:|---|---:|---:|---:|---:|---:|---:|"]
+    for (phase, size, kind), group in groups.items():
+        m = lambda key, scale=1000.0: med([f(r, key) for r in group]) / scale
+        lines.append(f"| {phase} | {size} | {kind} | {m('frame_bytes', 1024):.1f} | {m('java_encode_us'):.2f} | "
+                     f"{m('java_encode_cpu_us'):.2f} | {m('java_to_dotnet_us'):.2f} | {m('dotnet_us'):.2f} | {m('wall_us'):.2f} |")
+
 skipped = [r for r in rows if is_partial(r)]
 skipped_by = {}
 for r in skipped: skipped_by[f"{r['phase']} {r['size']}"] = skipped_by.get(f"{r['phase']} {r['size']}", 0) + 1

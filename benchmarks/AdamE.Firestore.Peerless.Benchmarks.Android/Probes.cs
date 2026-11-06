@@ -17,7 +17,7 @@ internal readonly record struct ProbeReading(
 {
     public static ProbeReading Take() => new(
         Stopwatch.GetTimestamp(),
-        Android.OS.Debug.ThreadCpuTimeNanos(),
+        global::Android.OS.Debug.ThreadCpuTimeNanos(),
         GC.GetAllocatedBytesForCurrentThread(),
         JniEnvironment.Runtime.GlobalReferenceCount,
         JniEnvironment.Runtime.WeakGlobalReferenceCount,
@@ -32,7 +32,7 @@ internal static class Probes
     public static double Microseconds(long from, long to) =>
         (to - from) * 1_000_000.0 / Stopwatch.Frequency;
 
-    public static bool IsMainThread => Android.OS.Looper.MyLooper() == Android.OS.Looper.MainLooper;
+    public static bool IsMainThread => global::Android.OS.Looper.MyLooper() == global::Android.OS.Looper.MainLooper;
 
     /// <summary>
     /// Asks ART to log its own JNI reference tables, after a marker line, so the host can read the runtime's own global
@@ -40,10 +40,10 @@ internal static class Probes
     /// </summary>
     public static void DumpArtReferenceTables(string label)
     {
-        Android.Util.Log.Info(BenchmarkRunner.Tag, $"ART_GREF_DUMP {label}");
+        global::Android.Util.Log.Info(BenchmarkRunner.Tag, $"ART_GREF_DUMP {label}");
         try
         {
-            // A hidden API, reached through reflection. scripts/run-android-peered.sh sets
+            // A hidden API, reached through reflection. scripts/run-android-benchmark.sh sets
             // `settings put global hidden_api_policy 1` on the emulator so this keeps working on stricter images.
             using Java.Lang.Class vmDebug = Java.Lang.Class.ForName("dalvik.system.VMDebug");
             using Java.Lang.Reflect.Method? dump = vmDebug.GetDeclaredMethod("dumpReferenceTables");
@@ -51,7 +51,7 @@ internal static class Probes
         }
         catch (Java.Lang.Exception exception)
         {
-            Android.Util.Log.Warn(BenchmarkRunner.Tag, $"ART_GREF_DUMP unavailable: {exception.Message}");
+            global::Android.Util.Log.Warn(BenchmarkRunner.Tag, $"ART_GREF_DUMP unavailable: {exception.Message}");
         }
     }
 

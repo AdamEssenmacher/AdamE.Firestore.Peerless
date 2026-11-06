@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Builds the peered Android benchmark under NativeAOT, runs it on an Android emulator against the Firestore emulator,
-# and copies the files it writes into results/android-peered/<timestamp>/.
+# Builds the Android benchmark under NativeAOT, runs one mode of it on an Android emulator against the Firestore
+# emulator, and copies the files it writes into results/android/<timestamp>-<mode>/ (logcat stays local, uncommitted).
 #
 # Start the Firestore emulator first, from the repo root (alternate ports; see firebase.json):
 #   firebase emulators:start --only firestore --project demo-peerless
 #
-# Usage: scripts/run-android-peered.sh [adb-serial] [extra `am start` args, e.g. --es sizes 10,100 --ei updates 5]
+# Usage: scripts/run-android-benchmark.sh [adb-serial] [peered|peerless-direct|peerless-bytes] [extra `am start` args,
+#        e.g. --es sizes 10,100 --ei updates 5]
 #   ALLOW_DEVICE=1  run against a physical device too: the app then reaches the Firestore emulator through
 #                   `adb reverse` at 127.0.0.1 instead of 10.0.2.2. The script changes a global setting (restored on
 #                   exit, with the port forward) and clears logcat; without it, non-emulator serials are refused
@@ -20,13 +21,18 @@
 set -euo pipefail
 
 serial="${1:-emulator-5650}"
-shift || true
+mode="${2:-peered}"
+case "$mode" in
+  peered|peerless-direct|peerless-bytes) ;;
+  *) echo "Unknown mode '$mode': the second argument is peered, peerless-direct or peerless-bytes (extra am start args follow it)." >&2; exit 1 ;;
+esac
+shift 2 || shift $# || true
 port="${FIRESTORE_PORT:-8181}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android"
 package="com.adame.firestore.peerless.benchmarks"
 files="/sdcard/Android/data/$package/files"
-out="$root/results/android-peered/$(date +%Y%m%d-%H%M%S)${RUN_LABEL:+-$RUN_LABEL}"
+out="${RESULTS_DIR:-$root/results/android}/$(date +%Y%m%d-%H%M%S)-$mode${RUN_LABEL:+-$RUN_LABEL}"
 
 # This script changes a global setting and clears logcat, so it only runs against an emulator unless told otherwise.
 # It exits non-zero unless the run completed and its summary was written.
@@ -112,7 +118,7 @@ apk="$(ls "$project"/bin/Release/net10.0-android/android-arm64/*-Signed.apk)"
 
 adb -s "$serial" install -r "$apk"
 adb -s "$serial" shell am force-stop "$package"
-adb -s "$serial" shell rm -f "$files/peered-samples.csv" "$files/peered-settled.csv" "$files/peered-run.txt"
+adb -s "$serial" shell rm -f "$files/$mode-samples.csv" "$files/$mode-settled.csv" "$files/$mode-run.txt"
 # Start each run from an empty emulator database.
 curl -fsS -X DELETE "http://127.0.0.1:$port/emulator/v1/projects/demo-peerless/databases/(default)/documents" >/dev/null \
   || { echo "Could not clear the Firestore emulator database on port $port." >&2; exit 1; }
@@ -145,7 +151,8 @@ main_not_enlarged=0
 if [ "${log_resized[0]}" != "1" ]; then main_not_enlarged=1; fi
 adb -s "$serial" logcat -c
 activity="$(adb -s "$serial" shell cmd package resolve-activity --brief "$package" | tail -1 | tr -d '\r')"
-adb -s "$serial" shell am start -W -n "$activity" --es host "$app_host" --ei port "$port" "$@"
+load_before="$(uptime)"
+adb -s "$serial" shell am start -W -n "$activity" --es mode "$mode" --es host "$app_host" --ei port "$port" "$@"
 
 echo "Waiting for the run to finish…"
 deadline=$((SECONDS + 1800))
@@ -159,12 +166,12 @@ while ((SECONDS < deadline)); do
 done
 
 mkdir -p "$out"
-for name in peered-samples.csv peered-settled.csv peered-run.txt; do
+for name in "$mode-samples.csv" "$mode-settled.csv" "$mode-run.txt"; do
   adb -s "$serial" pull "$files/$name" "$out/$name" >/dev/null 2>&1 || echo "missing: $name"
 done
 adb -s "$serial" logcat -d > "$out/logcat.txt"
 {
-  echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load: $(uptime)"
+  echo "outcome: $outcome"; echo "build args: ${BUILD_ARGS:-none}"; echo "host load before: $load_before"; echo "host load after: $(uptime)"
   if [ "$main_not_enlarged" = "1" ]; then echo "logcat may be incomplete (the main buffer was not enlarged)"; fi
 } | tee -a "$out/host.txt"
 echo "results: $out"
@@ -174,4 +181,4 @@ if [ "$outcome" != "done" ]; then
   exit 1
 fi
 # A summary that can't be built is a failure too, not something to hide.
-python3 -I "$root/scripts/summarize-peered.py" "$out" >/dev/null
+python3 -I "$root/scripts/summarize-benchmark.py" "$out" >/dev/null

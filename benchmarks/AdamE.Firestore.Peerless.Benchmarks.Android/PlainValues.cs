@@ -12,10 +12,11 @@ internal readonly record struct PlainReference(string Path);
 internal sealed record PlainDocument(string Path, IReadOnlyDictionary<string, object?> Fields);
 
 /// <summary>
-/// The naive, peered conversion an ordinary app does: walk every snapshot through the binding and copy each value into
-/// plain .NET data (string, long, double, bool, <see cref="PlainTimestamp"/>, <see cref="PlainReference"/>, lists and
-/// dictionaries). Every Java object touched on the way gets a managed peer, which is exactly what step 1 measures.
-/// Modelled on the shape of Scavos's FirestoreValues.
+/// The naive, peered conversion an ordinary app does, unchanged from step 1 so the baseline stays comparable: walk
+/// every snapshot through the binding and copy each value into plain .NET data (string, long, double, bool,
+/// <see cref="PlainTimestamp"/>, <see cref="PlainReference"/>, lists and dictionaries). Every Java object touched on
+/// the way gets a managed peer. Modelled on the shape of Scavos's FirestoreValues. (<see cref="PeeredConversion"/>
+/// builds the Peerless model instead; it is used to check both paths agree, not for timing.)
 /// </summary>
 internal static class PlainValues
 {
@@ -43,7 +44,7 @@ internal static class PlainValues
     private static Dictionary<string, object?> Fields(IDictionary<string, Java.Lang.Object>? data) => data switch
     {
         null => [],
-        Java.Lang.Object map => Map(Android.Runtime.Extensions.JavaCast<Java.Util.IMap>(map)),
+        Java.Lang.Object map => Map(global::Android.Runtime.Extensions.JavaCast<Java.Util.IMap>(map)),
         _ => throw new NotSupportedException($"Unexpected document data {data.GetType().Name}."),
     };
 

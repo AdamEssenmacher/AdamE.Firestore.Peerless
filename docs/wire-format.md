@@ -97,7 +97,7 @@ value = tag:u8 body
 | 6 | bytes | `varint` length, raw bytes |
 | 7 | timestamp | `seconds:i64 nanoseconds:i32`, within Firestore's range: 0 ≤ nanoseconds ≤ 999,999,999 and −62,135,596,800 ≤ seconds ≤ 253,402,300,799 (0001-01-01T00:00:00Z to 9999-12-31T23:59:59.999999999Z). Decoders reject anything outside it. |
 | 8 | geo point | `latitude:f64 longitude:f64`, with −90 ≤ latitude ≤ 90 and −180 ≤ longitude ≤ 180 (never NaN), as Firestore requires. Decoders reject anything else. |
-| 9 | reference | `path:string`, the referenced document's full path, under the same rule as a document's path (non-empty, no empty segment, an even number of segments; decoders reject anything else) |
+| 9 | reference | `path:string`, the referenced document's full path within its database, under the same rule as a document's path (non-empty, no empty segment, an even number of segments; decoders reject anything else). The database ID is not carried (the SDKs' `DocumentReference.path` doesn't include it), so a reference into another database of the same project reads as a path in the listener's own database. Carrying it would need a new tag, a major version. |
 | 10 | array | `count:varint value*count` |
 | 11 | map | `map-body` |
 | 12 | unsupported | `typeName:string`, the native type the encoder didn't understand |
@@ -106,8 +106,12 @@ value = tag:u8 body
 map-body = count:varint (key:string value)*count
 ```
 
-- Map keys are unique within a map (encoders read them from a native map, so this holds by construction), and
-  decoders **reject** a map with a repeated key, including a document's fields. Key order is the encoder's iteration
+- Map keys are unique within a map, and decoders **reject** a map with a repeated key, including a document's
+  fields. Encoders read keys from a native map, so they start out unique, with one exception: a lone UTF-16 surrogate
+  is written as U+FFFD, so two keys that differ only in lone surrogates would be written identically. An encoder must
+  detect that (it can only happen in a map where some key held a lone surrogate) and **fail that snapshot** rather
+  than write the duplicate. The Android shim reports it as an encoding failure (`onError` with a
+  `PeerlessFormatException`); the iOS encoder must do the same. Key order is the encoder's iteration
   order and carries no meaning; decoders must not depend on it.
 - A decoder rejects an unknown tag. Because a value carries no length, an unknown tag can't be skipped, so a new value
   kind needs a **major** version bump.

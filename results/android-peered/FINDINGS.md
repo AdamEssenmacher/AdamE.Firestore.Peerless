@@ -176,9 +176,11 @@ All figures here are recomputed from the committed CSVs by `scripts/summarize-pe
   the port is really Firestore's, and exits non-zero unless the run completed and its summary was written.
 - Memory cache (no persistence). A separate `seeder` FirebaseApp writes, so the measured instance starts with an empty
   cache, and each update reaches it as exactly one server snapshot.
-- `FIRESTORE_PORT=8181 scripts/run-android-peered.sh [serial] [am-start extras]`, then
+- `FIRESTORE_PORT=8181 scripts/run-android-peered.sh [serial] [am-start extras]` (now `run-android-benchmark.sh`), then
   `scripts/summarize-peered.py <run-dir>`. `FIRESTORE_PORT` (default 8181) drives the health check, the database
   clear and the port the app connects to.
 - Each run's raw `logcat.txt` is captured by `scripts/run-android-peered.sh` but not committed (it's gitignored). The
   ART reference-table and `monodroid-gc` sections of each `summary.md` were parsed from it. When the logcat is
   missing, `summarize-peered.py` keeps those sections from the existing `summary.md`.
+- Since step 3 these scripts are `scripts/run-android-benchmark.sh [serial] peered …` and
+  `scripts/summarize-benchmark.py`, and new runs write `peered-*` files under `results/android/`.

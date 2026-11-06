@@ -25,8 +25,8 @@ public sealed class MainActivity : Activity
         if (run is not null)
             return;
 
-        Android.Content.Intent? intent = Intent;
-        Android.Content.Context context = ApplicationContext ?? this;
+        global::Android.Content.Intent? intent = Intent;
+        global::Android.Content.Context context = ApplicationContext ?? this;
         run = Task.Run(async () =>
         {
             try
@@ -50,7 +50,7 @@ public sealed class MainActivity : Activity
 
     // One Handler and one Runnable for the whole run: a new pair per status line would add GREFs that wait for the GC,
     // and the GREF count the benchmark records is process-wide.
-    private static readonly Android.OS.Handler MainThread = new(Android.OS.Looper.MainLooper!);
+    private static readonly global::Android.OS.Handler MainThread = new(global::Android.OS.Looper.MainLooper!);
     private static readonly ShowStatus ShowLastStatus = new();
 
     private static void Status(string message)
