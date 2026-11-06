@@ -32,20 +32,22 @@ internal static unsafe class Native
         nint query,
         nint context,
         delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
-        delegate* unmanaged<nint, int, byte*, void> onError,
+        delegate* unmanaged<nint, int, byte*, nint, void> onError,
         int timed,
         byte* error,
-        nuint errorCapacity);
+        nuint errorCapacity,
+        nint* exception);
 
     [DllImport(Library, EntryPoint = "adame_peerless_listen_document")]
     public static extern nint ListenDocument(
         nint document,
         nint context,
         delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
-        delegate* unmanaged<nint, int, byte*, void> onError,
+        delegate* unmanaged<nint, int, byte*, nint, void> onError,
         int timed,
         byte* error,
-        nuint errorCapacity);
+        nuint errorCapacity,
+        nint* exception);
 
     [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);

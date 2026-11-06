@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Text;
 using CoreFoundation;
+using ObjCRuntime;
 
 namespace AdamE.Firestore.Peerless.iOS;
 
@@ -91,17 +92,21 @@ internal sealed unsafe class FrameReceiver : IDisposable
         const int ErrorCapacity = 1024;
         byte* error = stackalloc byte[ErrorCapacity];
         error[0] = 0;
+        nint raised = 0;
         nint created = isDocument
-            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity)
-            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity);
+            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity, &raised)
+            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity, &raised);
         GC.KeepAlive(target);
         if (created == 0)
         {
-            // Nothing was registered and the shim kept no reference to the context.
+            // Nothing was registered and the shim kept no reference to the context. A raised NSException comes back
+            // retained, and the peer takes over that reference.
             self.Free();
             string reason = Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(error));
+            NSException? exception = raised == 0 ? null : Runtime.GetNSObject<NSException>(raised, owns: true);
             throw new InvalidOperationException(
-                $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}");
+                $"Firestore refused to listen to this {target.GetType().Name}: {(reason.Length == 0 ? "no reason given" : reason)}",
+                exception is null ? null : new ObjCException(exception));
         }
 
         // A first callback on another queue may already have failed: Attach then removes it and posts the error.
@@ -120,16 +125,23 @@ internal sealed unsafe class FrameReceiver : IDisposable
     }
 
     [UnmanagedCallersOnly]
-    private static void OnError(nint context, int code, byte* message)
+    private static void OnError(nint context, int code, byte* message, nint native)
     {
         if (GCHandle.FromIntPtr(context).Target is not FrameReceiver receiver)
             return;
         string text = message is null
             ? "Firestore reported an error."
             : Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(message));
+        // Borrowed for this call: the peer retains it, so it outlives the call.
+        Exception? inner = Runtime.GetNSObject(native) switch
+        {
+            NSError nsError => new NSErrorException(nsError),
+            NSException nsException => new ObjCException(nsException),
+            _ => null,
+        };
         _ = receiver.gate.Run(() => receiver.gate.Fail(code == Native.EncodeFailed
-            ? new PeerlessFormatException($"The shim could not encode the snapshot: {text}", 0)
-            : new FirestoreListenException((FirestoreErrorCode)code, text)));
+            ? new PeerlessFormatException($"The shim could not encode the snapshot: {text}", 0, inner)
+            : new FirestoreListenException((FirestoreErrorCode)code, text, inner)));
     }
 
     // Called by the shim exactly once, when no native callback can still use the context.

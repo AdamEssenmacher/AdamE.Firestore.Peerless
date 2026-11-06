@@ -191,15 +191,16 @@ public final class PeerlessListeners {
         void encodingFailed(Throwable failure) {
             writer.reset();
             String message = failure.getMessage();
-            sink.onError(ERROR_ENCODING_FAILED, failure.getClass().getSimpleName() + (message == null ? "" : ": " + message));
+            sink.onError(ERROR_ENCODING_FAILED, failure.getClass().getSimpleName() + (message == null ? "" : ": " + message),
+                    failure);
         }
 
         void fail(@Nullable FirebaseFirestoreException error) {
             if (error == null) {
-                sink.onError(FirebaseFirestoreException.Code.UNKNOWN.value(), "Firestore sent neither a snapshot nor an error.");
+                sink.onError(FirebaseFirestoreException.Code.UNKNOWN.value(), "Firestore sent neither a snapshot nor an error.", null);
             } else {
                 String message = error.getMessage();
-                sink.onError(error.getCode().value(), message == null ? error.getCode().name() : message);
+                sink.onError(error.getCode().value(), message == null ? error.getCode().name() : message, error);
             }
         }
     }

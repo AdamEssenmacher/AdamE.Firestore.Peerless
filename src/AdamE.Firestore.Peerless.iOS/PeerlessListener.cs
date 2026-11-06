@@ -4,72 +4,6 @@ using Firebase.CloudFirestore;
 
 namespace AdamE.Firestore.Peerless.iOS;
 
-/// <summary>Firestore's error codes (the same enum as the Android library's), numbered as gRPC numbers them (and as Firestore's SDKs report them).</summary>
-public enum FirestoreErrorCode
-{
-    /// <summary>Not an error.</summary>
-    Ok = 0,
-
-    /// <summary>The operation was cancelled.</summary>
-    Cancelled = 1,
-
-    /// <summary>An unknown error.</summary>
-    Unknown = 2,
-
-    /// <summary>The client specified an invalid argument.</summary>
-    InvalidArgument = 3,
-
-    /// <summary>The deadline expired before the operation could complete.</summary>
-    DeadlineExceeded = 4,
-
-    /// <summary>A requested document was not found.</summary>
-    NotFound = 5,
-
-    /// <summary>A document the client tried to create already exists.</summary>
-    AlreadyExists = 6,
-
-    /// <summary>The caller lacks permission (for example, security rules denied the query).</summary>
-    PermissionDenied = 7,
-
-    /// <summary>A resource has been exhausted, such as a quota.</summary>
-    ResourceExhausted = 8,
-
-    /// <summary>The system is not in a state required for the operation (for example, a missing index).</summary>
-    FailedPrecondition = 9,
-
-    /// <summary>The operation was aborted, typically by a concurrency issue.</summary>
-    Aborted = 10,
-
-    /// <summary>The operation was attempted past the valid range.</summary>
-    OutOfRange = 11,
-
-    /// <summary>The operation is not implemented or supported.</summary>
-    Unimplemented = 12,
-
-    /// <summary>An internal error.</summary>
-    Internal = 13,
-
-    /// <summary>The service is currently unavailable.</summary>
-    Unavailable = 14,
-
-    /// <summary>Unrecoverable data loss or corruption.</summary>
-    DataLoss = 15,
-
-    /// <summary>The request does not have valid authentication credentials.</summary>
-    Unauthenticated = 16,
-}
-
-/// <summary>Firestore reported that a listener failed.</summary>
-public sealed class FirestoreListenException : Exception
-{
-    /// <summary>Creates the exception.</summary>
-    public FirestoreListenException(FirestoreErrorCode code, string message)
-        : base(message) => Code = code;
-
-    /// <summary>Firestore's error code. A value outside the enum is a code a newer SDK added.</summary>
-    public FirestoreErrorCode Code { get; }
-}
-
 /// <summary>
 /// Listens to Firestore queries and documents without creating a .NET peer per value or per snapshot. Build the
 /// <see cref="Query"/> or <see cref="DocumentReference"/> with the ordinary binding; Peerless takes over from there.
@@ -108,8 +42,9 @@ public sealed class FirestoreListenException : Exception
 /// </para>
 /// <para>
 /// <b>Refused queries.</b> When Firestore refuses to listen (it raises for some invalid queries, and on a terminated
-/// instance), <c>Listen</c> throws <see cref="InvalidOperationException"/> with Firestore's reason; nothing stays
-/// registered.
+/// instance), <c>Listen</c> throws <see cref="InvalidOperationException"/> with Firestore's reason, and the
+/// <c>NSException</c> Firestore raised as its <see cref="Exception.InnerException"/> (an <c>ObjCException</c>);
+/// nothing stays registered.
 /// </para>
 /// <para>
 /// <b>Registration timing.</b> A callback on another thread can run before the calling code assigns the returned
@@ -126,7 +61,11 @@ public sealed class FirestoreListenException : Exception
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
 /// snapshot or .NET could not decode it. If decoding fails some other way (for example,
 /// <see cref="OutOfMemoryException"/> on a very large snapshot), <c>onError</c> receives that exception. Either way
-/// the listener has stopped and nothing more arrives. It is required, so a failing listener can't go silent.
+/// the listener has stopped and nothing more arrives. It is required, so a failing listener can't go silent. The
+/// native error behind a Firestore or encoding failure is the <see cref="Exception.InnerException"/>: an
+/// <c>NSErrorException</c> wrapping Firestore's <c>NSError</c> (domain, code and <c>UserInfo</c> intact, including
+/// errors from outside Firestore's domain, which report <see cref="FirestoreErrorCode.Unknown"/>), or an
+/// <c>ObjCException</c> wrapping what the encoder raised.
 /// </para>
 /// <para>
 /// <b>Exceptions from your callbacks</b> are not caught: one thrown out of <c>onSnapshot</c> or <c>onError</c> can't

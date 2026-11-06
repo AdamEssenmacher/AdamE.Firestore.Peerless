@@ -146,20 +146,22 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
             message = error.localizedDescription ?: @"Firestore reported an error without a description.";
         }
         removeAfterUnlock = AdamEPeerlessStopLocked(listener);
-        listener->_onError(listener->_context, code, message.UTF8String);
+        listener->_onError(listener->_context, code, message.UTF8String, (__bridge void *)error);
     } else {
         NSString *failure = nil;
+        NSException *raised = nil;
         @try {
             encode(listener->_writer);
             if (listener->_writer.length > INT32_MAX)
                 failure = [NSString stringWithFormat:@"The frame is %zu bytes, over the 2 GB limit.", listener->_writer.length];
         } @catch (NSException *exception) {
             failure = exception.reason ?: exception.name;
+            raised = exception;
         }
 
         if (failure != nil) {
             removeAfterUnlock = AdamEPeerlessStopLocked(listener);
-            listener->_onError(listener->_context, ADAME_PEERLESS_ENCODE_FAILED, failure.UTF8String);
+            listener->_onError(listener->_context, ADAME_PEERLESS_ENCODE_FAILED, failure.UTF8String, (__bridge void *)raised);
         } else {
             adame_peerless_frame_timing timing;
             const adame_peerless_frame_timing *timingArg = NULL; // untimed listeners get NULL
@@ -195,7 +197,10 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
 }
 
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback onFrame,
-                                  adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity) {
+                                  adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity,
+                                  void **raised) {
+    if (raised != NULL)
+        *raised = NULL;
     id object = (__bridge id)query;
     if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRQuery class]]) {
         AdamEPeerlessSetError(error, errorCapacity, @"Not a FIRQuery, or a callback is missing.");
@@ -215,8 +220,10 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
     } @catch (NSException *exception) {
         // Firestore raises here when it refuses the listen, for example on a terminated instance. (In 12.18,
         // limit(toLast:) without an orderBy is not checked at this point.) An exception must not unwind into the
-        // .NET caller, so report it and let the listener (never registered, never retained) go.
+        // .NET caller, so report it (and hand it over) and let the listener (never registered, never retained) go.
         AdamEPeerlessSetError(error, errorCapacity, exception.reason ?: exception.name);
+        if (raised != NULL)
+            *raised = (__bridge_retained void *)exception;
         return NULL;
     }
     AdamEPeerlessAttach(listener, registration);
@@ -224,7 +231,10 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
 }
 
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback onFrame,
-                                     adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity) {
+                                     adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity,
+                                     void **raised) {
+    if (raised != NULL)
+        *raised = NULL;
     id object = (__bridge id)document;
     if (object == nil || onFrame == NULL || onError == NULL || ![object isKindOfClass:[FIRDocumentReference class]]) {
         AdamEPeerlessSetError(error, errorCapacity, @"Not a FIRDocumentReference, or a callback is missing.");
@@ -243,8 +253,10 @@ void *adame_peerless_listen_document(void *document, void *context, adame_peerle
         }];
     } @catch (NSException *exception) {
         // As for a query: Firestore raises here when it refuses the listen, for example on a terminated instance.
-        // Report it rather than let it unwind into the .NET caller, and let the listener go.
+        // Report it (and hand it over) rather than let it unwind into the .NET caller, and let the listener go.
         AdamEPeerlessSetError(error, errorCapacity, exception.reason ?: exception.name);
+        if (raised != NULL)
+            *raised = (__bridge_retained void *)exception;
         return NULL;
     }
     AdamEPeerlessAttach(listener, registration);

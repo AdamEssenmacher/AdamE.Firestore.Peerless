@@ -16,72 +16,6 @@ internal enum FrameDelivery
     ByteArray = PeerlessListeners.DeliveryByteArray,
 }
 
-/// <summary>Firestore's error codes, numbered as gRPC numbers them (and as Firestore's SDKs report them).</summary>
-public enum FirestoreErrorCode
-{
-    /// <summary>Not an error.</summary>
-    Ok = 0,
-
-    /// <summary>The operation was cancelled.</summary>
-    Cancelled = 1,
-
-    /// <summary>An unknown error.</summary>
-    Unknown = 2,
-
-    /// <summary>The client specified an invalid argument.</summary>
-    InvalidArgument = 3,
-
-    /// <summary>The deadline expired before the operation could complete.</summary>
-    DeadlineExceeded = 4,
-
-    /// <summary>A requested document was not found.</summary>
-    NotFound = 5,
-
-    /// <summary>A document the client tried to create already exists.</summary>
-    AlreadyExists = 6,
-
-    /// <summary>The caller lacks permission (for example, security rules denied the query).</summary>
-    PermissionDenied = 7,
-
-    /// <summary>A resource has been exhausted, such as a quota.</summary>
-    ResourceExhausted = 8,
-
-    /// <summary>The system is not in a state required for the operation (for example, a missing index).</summary>
-    FailedPrecondition = 9,
-
-    /// <summary>The operation was aborted, typically by a concurrency issue.</summary>
-    Aborted = 10,
-
-    /// <summary>The operation was attempted past the valid range.</summary>
-    OutOfRange = 11,
-
-    /// <summary>The operation is not implemented or supported.</summary>
-    Unimplemented = 12,
-
-    /// <summary>An internal error.</summary>
-    Internal = 13,
-
-    /// <summary>The service is currently unavailable.</summary>
-    Unavailable = 14,
-
-    /// <summary>Unrecoverable data loss or corruption.</summary>
-    DataLoss = 15,
-
-    /// <summary>The request does not have valid authentication credentials.</summary>
-    Unauthenticated = 16,
-}
-
-/// <summary>Firestore reported that a listener failed.</summary>
-public sealed class FirestoreListenException : Exception
-{
-    /// <summary>Creates the exception.</summary>
-    public FirestoreListenException(FirestoreErrorCode code, string message)
-        : base(message) => Code = code;
-
-    /// <summary>Firestore's error code. A value outside the enum is a code a newer SDK added.</summary>
-    public FirestoreErrorCode Code { get; }
-}
-
 /// <summary>
 /// Listens to Firestore queries and documents without creating a .NET peer per value. Build the
 /// <see cref="Query"/> or <see cref="DocumentReference"/> with the ordinary bindings; Peerless takes over from there.
@@ -129,7 +63,8 @@ public sealed class FirestoreListenException : Exception
 /// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails. If
 /// decoding fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
 /// <c>onError</c> receives that exception. Either way the listener has stopped and nothing more arrives. It is
-/// required, so a failing listener can't go silent.
+/// required, so a failing listener can't go silent. The Java exception behind a Firestore or encoding failure is the
+/// <see cref="Exception.InnerException"/> (for Firestore, its <c>FirebaseFirestoreException</c>).
 /// </para>
 /// <para>
 /// <b>Exceptions from your callbacks</b> are not caught: like an exception in an ordinary Firestore listener, one
