@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading.Channels;
+using CoreFoundation;
 using Firebase.CloudFirestore;
 using FirebaseFirestore = Firebase.CloudFirestore.Firestore;
 using Firebase.Core;
@@ -291,11 +292,28 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
     public Func<Task> PrepareUpdate(string collection, string documentId, long version)
     {
-        DocumentReference target = Seeding.GetCollection(collection).GetDocument(documentId);
+        CollectionReference parent = Seeding.GetCollection(collection);
+        DocumentReference target = parent.GetDocument(documentId);
         NSNumber value = NSNumber.FromInt64(version);
         NSString[] keys = [new NSString("version"), new NSString("updatedAt")];
-        return () => target.UpdateDataAsync(NSDictionary<NSObject, NSObject>.FromObjectsAndKeys(
-            [value, Timestamp.Create()], keys, keys.Length));
+        return () =>
+        {
+            Timestamp now = Timestamp.Create();
+            var fields = NSDictionary<NSObject, NSObject>.FromObjectsAndKeys([value, now], keys, keys.Length);
+            Task write = target.UpdateDataAsync(fields);
+            // The peer table is process-wide, so the seeder's peers are disposed as soon as the write is issued (the SDK
+            // holds its own retains): left for the GC, they would pile up between settles and be counted as listener
+            // cost. On the main queue, queued now: the listener's snapshot for this write is queued there only after
+            // a round trip to the emulator, and no conversion can be using a peer (a small NSNumber or NSString is a
+            // tagged pointer, so the listener's own values can share it) while it is disposed.
+            NSObject[] harness = [parent, target, value, keys[0], keys[1], now, fields];
+            DispatchQueue.MainQueue.DispatchAsync(() =>
+            {
+                foreach (NSObject peer in harness)
+                    peer.Dispose();
+            });
+            return write;
+        };
     }
 
     public async Task SettleAsync(string phase, int size, string point)

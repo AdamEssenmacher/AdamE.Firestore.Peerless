@@ -23,6 +23,15 @@ internal sealed class BenchmarkCheckException(string message) : Exception(messag
 /// <summary>How much a run does. The defaults are what every committed run uses.</summary>
 internal sealed record BenchmarkPlan(int[] Sizes, int UpdatesPerSize, int SingleDocumentUpdates)
 {
+    // A run without updates would still complete, with no update rows to compare, so a count must be positive.
+    public int UpdatesPerSize { get; } = UpdatesPerSize > 0
+        ? UpdatesPerSize
+        : throw new ArgumentException($"Updates per size must be positive: {UpdatesPerSize}.");
+
+    public int SingleDocumentUpdates { get; } = SingleDocumentUpdates > 0
+        ? SingleDocumentUpdates
+        : throw new ArgumentException($"Single-document updates must be positive: {SingleDocumentUpdates}.");
+
     public const string ProjectId = "demo-peerless";
     public const int WarmupSize = 10;
     public const int WarmupUpdates = 3;

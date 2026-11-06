@@ -84,7 +84,8 @@ internal sealed class PeeredSampler
                     fromCache = query.Metadata.IsFromCache;
                     break;
                 case DocumentSnapshot document:
-                    documents = [PlainValues.Document(document)];
+                    // A missing document converts to none, so NextAsync doesn't take it for the document it waits for.
+                    documents = document.Exists ? [PlainValues.Document(document)] : [];
                     fromCache = document.Metadata.IsFromCache;
                     break;
             }

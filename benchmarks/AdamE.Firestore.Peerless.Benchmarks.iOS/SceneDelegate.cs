@@ -43,7 +43,9 @@ public sealed class SceneDelegate : UIResponder, IUIWindowSceneDelegate
             return;
         }
 
-        void Status(string message) => UIApplication.SharedApplication.BeginInvokeOnMainThread(() => label.Text = message);
+        // A GCD block, not BeginInvokeOnMainThread: that makes an NSObject dispatcher per call, which would sit in the
+        // peer table until the next settle and be counted as listener cost.
+        void Status(string message) => CoreFoundation.DispatchQueue.MainQueue.DispatchAsync(() => label.Text = message);
         run = Task.Run(async () =>
         {
             try

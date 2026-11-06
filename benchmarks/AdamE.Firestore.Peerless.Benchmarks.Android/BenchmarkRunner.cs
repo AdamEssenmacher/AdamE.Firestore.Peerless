@@ -63,6 +63,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
     private int lastSettledGlobal;
     private FirebaseFirestore? listening;
     private FirebaseFirestore? seeding;
+    private (string Name, CollectionReference Reference)? seedingCollection;
 
     private FirebaseFirestore Listening => listening ?? throw new InvalidOperationException("Not connected.");
 
@@ -405,7 +406,11 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
     public Func<Task> PrepareUpdate(string collection, string documentId, long version)
     {
-        DocumentReference target = Seeding.Collection(collection).Document(documentId);
+        // One seeder CollectionReference per collection, as step 3 had per phase: a new one per update would add a
+        // GREF per update until the next settle, counted in the process-wide GREF figures.
+        if (seedingCollection?.Name != collection)
+            seedingCollection = (collection, Seeding.Collection(collection));
+        DocumentReference target = seedingCollection.Value.Reference.Document(documentId);
         Java.Lang.Long value = Java.Lang.Long.ValueOf(version);
         var updatedAt = new Java.Lang.String("updatedAt");
         return () => target.Update("version", value, updatedAt, Firebase.Timestamp.Now()).AsTask();
