@@ -82,8 +82,14 @@ jobs:
       - name: Boot a simulator
         id: simulator
         run: |
-          runtime="$(xcrun simctl list runtimes --json | python3 -c 'import json,sys; r=[x for x in json.load(sys.stdin)["runtimes"] if x["isAvailable"] and x["platform"]=="iOS"]; print(sorted(r,key=lambda x:[int(p) for p in x["version"].split(".")])[-1]["identifier"])')"
-          device="$(xcrun simctl list devicetypes --json | python3 -c 'import json,sys; t=[x for x in json.load(sys.stdin)["devicetypes"] if x["name"].startswith("iPhone")]; print(t[-1]["identifier"])')"
+          # The newest available iOS runtime, and an iPhone that runtime supports (not every device type does).
+          read -r runtime device < <(xcrun simctl list runtimes --json | python3 -c '
+          import json, sys
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"] if r["isAvailable"] and r["platform"] == "iOS"]
+          newest = max(runtimes, key=lambda r: [int(p) for p in r["version"].split(".")])
+          iphones = [d for d in newest["supportedDeviceTypes"] if d["productFamily"] == "iPhone"]
+          print(newest["identifier"], iphones[-1]["identifier"])')
+          echo "runtime=$runtime device=$device"
           udid="$(xcrun simctl create peerless-ci "$device" "$runtime")"
           xcrun simctl boot "$udid"
           xcrun simctl bootstatus "$udid" -b
