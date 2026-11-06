@@ -104,7 +104,11 @@ internal sealed class PeeredSampler : Java.Lang.Object, IEventListener, ISampler
     }
 }
 
-/// <summary>Converts each snapshot into the Peerless model through the peered binding, to check both paths agree.</summary>
+/// <summary>
+/// Converts the first snapshot that is not from the cache into the Peerless model through the peered binding, to check
+/// both paths agree. Cache snapshots are skipped: listeners registered at different moments can each see a different
+/// one, but their first server snapshot of data that no longer changes is the same.
+/// </summary>
 internal sealed class ModelListener : Java.Lang.Object, IEventListener
 {
     private readonly TaskCompletionSource<FirestoreSnapshot> first = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -118,6 +122,9 @@ internal sealed class ModelListener : Java.Lang.Object, IEventListener
         {
             switch (value)
             {
+                case QuerySnapshot { Metadata.IsFromCache: true }:
+                case DocumentSnapshot { Metadata.IsFromCache: true }:
+                    break;
                 case QuerySnapshot query:
                     first.TrySetResult(PeeredConversion.Query(query, ref peak));
                     break;

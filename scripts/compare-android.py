@@ -111,7 +111,9 @@ table("Wall time per snapshot (ms)", "wall_us", 1000, 2, "Callback start to full
 table("Main-thread CPU per snapshot (ms)", "thread_cpu_us", 1000, 2,
       "Thread CPU time on the callback (main) thread over the same span; for Peerless this includes Java encoding.")
 table("Managed allocation per snapshot (KB)", "alloc_bytes", 1024, 0,
-      ".NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode.")
+      ".NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode."
+      + (" The peerless-bytes column also leaves out the managed copy of each frame's byte[], which the JNI stub "
+         "makes before the sampler's first probe (issue #27)." if "peerless-bytes" in present else ""))
 table("JNI global references at peak during a snapshot (absolute)", "gref_peak", 1, 0,
       "The highest .NET-side count seen during the callback (sampled per document in peered mode): what an app sees, "
       "since an app never forces the settles this benchmark does. The .NET counter leaves out ~435 java.lang.Class "

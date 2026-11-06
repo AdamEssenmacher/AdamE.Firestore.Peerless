@@ -217,9 +217,11 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         IListenerRegistration peeredRegistration = query.AddSnapshotListener(peered);
         try
         {
-            using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => direct.TrySetResult(snapshot),
+            // Like the peered listener, each takes its first snapshot that is not from the cache: the three register
+            // at different moments, so any cache snapshots they see can legitimately differ.
+            using IDisposable directRegistration = PeerlessListener.Listen(query, snapshot => FirstFromServer(direct, snapshot),
                 error => direct.TrySetException(error), FrameDelivery.DirectBuffer, observer: null);
-            using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => bytes.TrySetResult(snapshot),
+            using IDisposable bytesRegistration = PeerlessListener.Listen(query, snapshot => FirstFromServer(bytes, snapshot),
                 error => bytes.TrySetException(error), FrameDelivery.ByteArray, observer: null);
             FirestoreSnapshot expected = await peered.First.WaitAsync(SnapshotTimeout).ConfigureAwait(false);
             string? directDifference = SnapshotAssertions.Difference(expected, await direct.Task.WaitAsync(SnapshotTimeout).ConfigureAwait(false));
@@ -236,6 +238,12 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         {
             peeredRegistration.Remove();
         }
+    }
+
+    private static void FirstFromServer(TaskCompletionSource<FirestoreSnapshot> first, FirestoreSnapshot snapshot)
+    {
+        if (!snapshot.Metadata.IsFromCache)
+            first.TrySetResult(snapshot);
     }
 
     /// <summary>

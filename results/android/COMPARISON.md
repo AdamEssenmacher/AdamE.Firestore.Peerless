@@ -59,7 +59,7 @@ Thread CPU time on the callback (main) thread over the same span; for Peerless t
 
 ## Managed allocation per snapshot (KB)
 
-.NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode.
+.NET allocations on the callback thread. Java-side allocations (getData() maps, the frame buffer) aren't counted in either mode. The peerless-bytes column also leaves out the managed copy of each frame's byte[], which the JNI stub makes before the sampler's first probe (issue #27).
 
 | docs | kind | peered | peerless-direct | peerless-bytes | peered ÷ direct |
 |---:|---|---:|---:|---:|---:|
