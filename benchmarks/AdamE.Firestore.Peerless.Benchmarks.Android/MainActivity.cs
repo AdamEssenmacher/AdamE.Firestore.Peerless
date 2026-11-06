@@ -17,7 +17,20 @@ public sealed class MainActivity : Activity
         if (run is not null)
             return;
 
-        var options = BenchmarkOptions.From(Intent);
+        BenchmarkOptions options;
+        try
+        {
+            options = BenchmarkOptions.From(Intent);
+        }
+        catch (Exception exception)
+        {
+            // Bad intent extras: record why, where the script looks, instead of leaving it to see a dead process.
+            BenchmarkRunner.RecordStartupFailure(this, Intent, exception);
+            text.Text = $"Bad intent extras: {exception.Message}";
+            run = Task.CompletedTask;
+            return;
+        }
+
         void Status(string message) => RunOnUiThread(() => text.Text = message);
         run = Task.Run(async () =>
         {

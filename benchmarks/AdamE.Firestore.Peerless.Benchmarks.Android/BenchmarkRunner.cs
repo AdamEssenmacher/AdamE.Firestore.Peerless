@@ -68,10 +68,36 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
 
     private FirebaseFirestore Seeding => seeding ?? throw new InvalidOperationException("Not connected.");
 
+    private static string ResultsDirectory(Context context) =>
+        context.GetExternalFilesDir(null)?.AbsolutePath ?? context.FilesDir?.AbsolutePath
+            ?? throw new InvalidOperationException("The app has no files directory.");
+
+    /// <summary>
+    /// Records a failure before the run could start (bad intent extras) in the files the script reads: a run file with
+    /// the failure and outcome, and the PEERLESS_DONE line it waits for. The file name comes from the raw <c>mode</c>
+    /// extra the script passed (the mode whose files it pulls), even when that extra is what failed.
+    /// </summary>
+    public static void RecordStartupFailure(Context context, Intent? intent, Exception exception)
+    {
+        string reason = exception.ToString().ReplaceLineEndings(" | ");
+        try
+        {
+            string mode = intent?.GetStringExtra("mode") is { Length: > 0 } requested
+                && requested.All(static c => char.IsAsciiLetterOrDigit(c) || c == '-')
+                    ? requested
+                    : "peered";
+            File.WriteAllText(Path.Combine(ResultsDirectory(context), $"{mode}-run.txt"),
+                $"failure: startup: {reason}\noutcome: failed\n");
+        }
+        finally
+        {
+            Log.Error(Tag, $"PEERLESS_DONE failed: {reason}");
+        }
+    }
+
     public async Task RunAsync()
     {
-        string directory = context.GetExternalFilesDir(null)?.AbsolutePath ?? context.FilesDir?.AbsolutePath
-            ?? throw new InvalidOperationException("The app has no files directory.");
+        string directory = ResultsDirectory(context);
         using var writer = new ResultWriter(directory, options.ModeName);
         results = writer;
         writer.Note("mode", options.ModeName);
