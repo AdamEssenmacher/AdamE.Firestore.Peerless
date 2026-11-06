@@ -83,10 +83,15 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// not. A build whose Firestore lacks a symbol the shim links against fails earlier, when the app loads, before any
 /// check can run.
 /// </para>
+/// <para>
+/// <b>Shim version.</b> Before that, the first <c>Listen</c> checks that the shim linked into the app speaks the C API
+/// these bindings were written for (<c>ADAME_PEERLESS_ABI_VERSION</c>), and throws
+/// <see cref="InvalidOperationException"/> if not, so a stale xcframework can't be called with the wrong arguments.
+/// </para>
 /// </remarks>
 public static class PeerlessListener
 {
-    private static readonly Lazy<string?> FirebaseMismatch = new(CheckFirebaseVersion);
+    private static readonly Lazy<string?> ShimMismatch = new(CheckShim);
 
     /// <summary>Listens to a query. Dispose the result to stop listening.</summary>
     public static IDisposable Listen(
@@ -107,7 +112,7 @@ public static class PeerlessListener
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(onSnapshot);
         ArgumentNullException.ThrowIfNull(onError);
-        EnsureCompatibleFirebase();
+        EnsureCompatibleShim();
         return FrameReceiver.Start(
             query,
             CallbackQueue(query),
@@ -127,7 +132,7 @@ public static class PeerlessListener
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(onSnapshot);
         ArgumentNullException.ThrowIfNull(onError);
-        EnsureCompatibleFirebase();
+        EnsureCompatibleShim();
         return FrameReceiver.Start(
             document,
             CallbackQueue(document),
@@ -166,10 +171,34 @@ public static class PeerlessListener
     /// <summary>The calling thread's CPU time in nanoseconds, the clock <see cref="FrameArrival"/> uses.</summary>
     internal static long ThreadCpuNanoseconds() => (long)Native.ThreadCpuNanos();
 
-    private static void EnsureCompatibleFirebase()
+    private static void EnsureCompatibleShim()
     {
-        if (FirebaseMismatch.Value is { } mismatch)
+        if (ShimMismatch.Value is { } mismatch)
             throw new InvalidOperationException(mismatch);
+    }
+
+    // The C API first: every other shim call, the Firebase checks' included, assumes it matches.
+    private static string? CheckShim() => CheckAbiVersion() ?? CheckFirebaseVersion();
+
+    private static string? CheckAbiVersion()
+    {
+        int linked;
+        try
+        {
+            linked = Native.ShimAbiVersion();
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // A shim from before the version existed. (Linked with direct P/Invoke, as under NativeAOT, the app fails
+            // to link instead.)
+            return $"The PeerlessShim linked into the app predates C API versioning; these bindings need version "
+                + $"{Native.AbiVersion}. Rebuild the shim (ios/build-shim.sh) or update the package.";
+        }
+
+        return linked == Native.AbiVersion
+            ? null
+            : $"The PeerlessShim linked into the app has C API version {linked}, but these bindings need version "
+                + $"{Native.AbiVersion}. Rebuild the shim (ios/build-shim.sh) or use matching packages.";
     }
 
     // The shim only uses long-stable SDK API (snapshot.data, metadata, the value classes), so a newer minor or patch

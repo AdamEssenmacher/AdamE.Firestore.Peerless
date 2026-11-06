@@ -28,6 +28,10 @@ uint64_t adame_peerless_thread_cpu_nanos(void) {
     return clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
 }
 
+int32_t adame_peerless_abi_version(void) {
+    return ADAME_PEERLESS_ABI_VERSION;
+}
+
 const char *adame_peerless_compiled_firebase_version(void) {
     return ADAME_PEERLESS_FIREBASE_VERSION;
 }

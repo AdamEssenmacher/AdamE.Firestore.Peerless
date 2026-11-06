@@ -372,7 +372,15 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
         adame_peerless_listener_remove(listener, NULL);
 }
 
+static void TheShimReportsItsCApiVersion(void) {
+    int32_t version = adame_peerless_abi_version();
+    ListenerTestsRecord(version == ADAME_PEERLESS_ABI_VERSION && version > 0,
+                        @"the shim reports the C API version it was compiled with",
+                        [NSString stringWithFormat:@"reported %d, header %d", version, ADAME_PEERLESS_ABI_VERSION]);
+}
+
 void RunListenerTests(void) {
+    TheShimReportsItsCApiVersion();
     FirstFrameTimingDoesNotRequireTheListenerHandle();
     AnUntimedListenerGetsNoTiming();
     DisposeBeforeFirstCallback();

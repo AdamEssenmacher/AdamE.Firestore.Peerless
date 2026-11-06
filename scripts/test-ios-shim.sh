@@ -8,6 +8,14 @@ set -euo pipefail
 
 udid="${1:?usage: test-ios-shim.sh <simulator-udid>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
+
+# The shim's C API version and the .NET declarations' must be bumped together.
+header_abi="$(sed -n 's/^#define ADAME_PEERLESS_ABI_VERSION \([0-9][0-9]*\)$/\1/p' "$root/ios/PeerlessShim/include/PeerlessShim.h")"
+managed_abi="$(sed -n 's/.*public const int AbiVersion = \([0-9][0-9]*\);.*/\1/p' "$root/src/AdamE.Firestore.Peerless.iOS/Native.cs")"
+if [[ -z "$header_abi" || "$header_abi" != "$managed_abi" ]]; then
+  echo "C API version mismatch: PeerlessShim.h has '${header_abi}', Native.cs has '${managed_abi}'. Bump both together." >&2
+  exit 1
+fi
 shim="$root/ios/PeerlessShim"
 out="$root/ios/build"
 app="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS/bin/Release/net10.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"

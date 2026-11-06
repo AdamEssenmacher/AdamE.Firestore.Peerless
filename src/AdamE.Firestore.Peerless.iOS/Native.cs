@@ -24,6 +24,12 @@ internal static unsafe class Native
 {
     private const string Library = "__Internal";
 
+    /// <summary>
+    /// The shim C API version these declarations match: <c>ADAME_PEERLESS_ABI_VERSION</c> in PeerlessShim.h. Bump both
+    /// together with any change to a signature or to <see cref="FrameTiming"/>.
+    /// </summary>
+    public const int AbiVersion = 1;
+
     /// <summary>The shim's error code for a snapshot it could not encode.</summary>
     public const int EncodeFailed = -1;
 
@@ -51,6 +57,9 @@ internal static unsafe class Native
 
     [DllImport(Library, EntryPoint = "adame_peerless_listener_remove")]
     public static extern void Remove(nint listener, delegate* unmanaged<nint, void> release);
+
+    [DllImport(Library, EntryPoint = "adame_peerless_abi_version")]
+    public static extern int ShimAbiVersion();
 
     [DllImport(Library, EntryPoint = "adame_peerless_compiled_firebase_version")]
     public static extern byte* CompiledFirebaseVersion();
