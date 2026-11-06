@@ -142,7 +142,13 @@ adb -s "$serial" logcat -d > "$out/logcat.txt"
 echo "results: $out"
 
 # The run only counts if it finished, as NativeAOT, with its own checks (verify, dispose race) passed.
-[[ "$outcome" == "done" ]] || { echo "run did not finish: $outcome" >&2; exit 1; }
+if [[ "$outcome" != "done" ]]; then
+  echo "run did not finish: $outcome" >&2
+  # A failed run (a self-check, or a startup failure) names its reason in the run file.
+  failure="$(grep '^failure:' "$out/$mode-run.txt" 2>/dev/null | cut -c1-400 || true)"
+  [ -z "$failure" ] || echo "run failed: $failure" >&2
+  exit 1
+fi
 grep -qx "outcome: completed" "$out/$mode-run.txt" \
   || { echo "run failed: $(grep '^failure:' "$out/$mode-run.txt" | cut -c1-400)" >&2; exit 1; }
 grep -qx "nativeAot: True" "$out/$mode-run.txt" || { echo "not a NativeAOT run" >&2; exit 1; }
