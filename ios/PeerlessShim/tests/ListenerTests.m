@@ -203,12 +203,13 @@ static void EncodeFailureIsCodeMinusOne(void) {
     AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
     AdamEPeerlessTestingCallback callback = nil;
     void *listener = Listen(&probe, OnFrame, registration, &callback);
+    NSException *thrown = [NSException exceptionWithName:NSInvalidArgumentException reason:@"refused" userInfo:nil];
     callback(@"snapshot", nil, ^(AdamEPeerlessFrameWriter *writer) {
-        [NSException raise:NSInvalidArgumentException format:@"refused"];
+        @throw thrown;
     });
     callback(@"snapshot", nil, Encode);
     BOOL stopped = probe.errors == 1 && probe.lastCode == ADAME_PEERLESS_ENCODE_FAILED && probe.frames == 0
-        && probe.lastNativeKind == 2 && registration.removes == 1 && probe.releases == 0;
+        && probe.lastNative == (__bridge void *)thrown && registration.removes == 1 && probe.releases == 0;
     adame_peerless_listener_remove(listener, OnRelease);
     BOOL ok = stopped && probe.releases == 1 && registration.removes == 1;
     ListenerTestsRecord(ok, @"encode failure: code -1 with the raised NSException, stopped, released once on removal",
@@ -349,15 +350,24 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
     void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, error, sizeof error,
                                                  &raised);
     id exception = raised == NULL || raised == (void *)1 ? nil : CFBridgingRelease(raised); // the caller owns it
+    char documentError[512] = "";
+    void *documentRaised = (void *)1;
+    void *documentListener = adame_peerless_listen_document(
+        (__bridge void *)[firestore documentWithPath:@"items/one"], &probe, OnFrame, OnError, 0, documentError,
+        sizeof documentError, &documentRaised);
+    id documentException = documentRaised == NULL || documentRaised == (void *)1 ? nil : CFBridgingRelease(documentRaised);
     char notAQuery[512] = "";
     void *notRaised = (void *)1;
     void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0,
                                                   notAQuery, sizeof notAQuery, &notRaised);
     BOOL ok = didTerminate && listener == NULL && strlen(error) > 0 && [exception isKindOfClass:[NSException class]]
+        && documentListener == NULL && strlen(documentError) > 0 && [documentException isKindOfClass:[NSException class]]
         && wrongType == NULL && strlen(notAQuery) > 0 && notRaised == NULL && probe.frames == 0 && probe.errors == 0;
-    ListenerTestsRecord(ok, [NSString stringWithFormat:@"a listen Firestore refuses returns NULL with its reason (\"%s\") and its NSException", error],
+    ListenerTestsRecord(ok, [NSString stringWithFormat:@"a query or document listen Firestore refuses returns NULL with its reason (\"%s\") and its NSException", error],
                         [NSString stringWithFormat:@"terminated=%d listener=%p error=\"%s\" wrongType=%p", didTerminate,
                                                    listener, error, wrongType]);
+    if (documentListener != NULL)
+        adame_peerless_listener_remove(documentListener, NULL);
     if (listener != NULL)
         adame_peerless_listener_remove(listener, NULL);
 }

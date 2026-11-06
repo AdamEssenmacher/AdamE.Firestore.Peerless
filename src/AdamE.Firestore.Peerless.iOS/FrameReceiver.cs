@@ -132,13 +132,23 @@ internal sealed unsafe class FrameReceiver : IDisposable
         string text = message is null
             ? "Firestore reported an error."
             : Encoding.UTF8.GetString(MemoryMarshal.CreateReadOnlySpanFromNullTerminated(message));
-        // Borrowed for this call: the peer retains it, so it outlives the call.
-        Exception? inner = Runtime.GetNSObject(native) switch
+        // Borrowed for this call: the peer retains it, so it outlives the call. Wrapping is best effort: nothing may
+        // unwind out of this callback into Objective-C, and the error must be delivered even if the object can't be
+        // given a peer (GetNSObject throws for a class whose binding lacks the handle constructor).
+        Exception? inner;
+        try
         {
-            NSError nsError => new NSErrorException(nsError),
-            NSException nsException => new ObjCException(nsException),
-            _ => null,
-        };
+            inner = Runtime.GetNSObject(native) switch
+            {
+                NSError nsError => new NSErrorException(nsError),
+                NSException nsException => new ObjCException(nsException),
+                _ => null,
+            };
+        }
+        catch (Exception)
+        {
+            inner = null;
+        }
         _ = receiver.gate.Run(() => receiver.gate.Fail(code == Native.EncodeFailed
             ? new PeerlessFormatException($"The shim could not encode the snapshot: {text}", 0, inner)
             : new FirestoreListenException((FirestoreErrorCode)code, text, inner)));
