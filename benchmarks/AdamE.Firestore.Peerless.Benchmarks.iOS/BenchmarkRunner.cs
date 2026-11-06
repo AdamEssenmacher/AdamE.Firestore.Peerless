@@ -330,9 +330,22 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         }
         finally
         {
-            registration?.Dispose();
-            modelRegistration?.Remove();
-            peerlessRegistration?.Dispose();
+            // Each in its own finally, so one that throws can't leave the others running into the later checks.
+            try
+            {
+                registration?.Dispose();
+            }
+            finally
+            {
+                try
+                {
+                    modelRegistration?.Remove();
+                }
+                finally
+                {
+                    peerlessRegistration?.Dispose();
+                }
+            }
         }
     }
 
