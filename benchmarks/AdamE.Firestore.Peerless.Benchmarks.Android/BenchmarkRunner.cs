@@ -538,11 +538,12 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
         var value = new Java.Lang.Long(version);
 #pragma warning restore CA1422
         var updatedAt = new Java.Lang.String("updatedAt");
+        // Built here, not in the write: the phases start the write→callback timer between the two.
+        Firebase.Timestamp now = Firebase.Timestamp.Now();
         return async () =>
         {
             try
             {
-                using Firebase.Timestamp now = Firebase.Timestamp.Now();
                 using global::Android.Gms.Tasks.Task write = target.Update("version", value, updatedAt, now);
                 await WriteAsync(write, $"The update of {collection}/{documentId} to version {version}").ConfigureAwait(false);
             }
@@ -552,6 +553,7 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                 parent.Dispose();
                 value.Dispose();
                 updatedAt.Dispose();
+                now.Dispose();
             }
         };
     }

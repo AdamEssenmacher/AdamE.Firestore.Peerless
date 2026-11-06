@@ -19,9 +19,9 @@ under NativeAOT. Nothing is published as a NuGet yet.
 |---|---|
 | [docs/wire-format.md](docs/wire-format.md) | The frame format both shims write (version 1.0) |
 | `src/AdamE.Firestore.Peerless` | Plain .NET: the value model and `SnapshotDecoder` |
-| `src/AdamE.Firestore.Peerless.Android` | `PeerlessListener.Listen(query, onSnapshot)` on Android, binding the shim |
+| `src/AdamE.Firestore.Peerless.Android` | `PeerlessListener.Listen(query, onSnapshot, onError)` on Android, binding the shim |
 | `android/peerless-shim` | The Java shim (AAR), with Kotlin tests against the golden frames |
-| `src/AdamE.Firestore.Peerless.iOS` | `PeerlessListener.Listen(query, onSnapshot)` on iOS, over the shim's C API |
+| `src/AdamE.Firestore.Peerless.iOS` | `PeerlessListener.Listen(query, onSnapshot, onError)` on iOS, over the shim's C API |
 | `ios/PeerlessShim` | The Objective-C shim (static xcframework, linked against the binding's own Firestore), with tests against the golden frames |
 | `fixtures/wire` | Golden frames every encoder must reproduce byte for byte |
 | `benchmarks/Shared` | The platform-neutral half of both benchmark apps: seeded documents, phases, settle points |

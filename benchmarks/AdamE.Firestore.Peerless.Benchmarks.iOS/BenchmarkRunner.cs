@@ -69,6 +69,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
     public const string Tag = "PeerlessBench";
 
     private static readonly TimeSpan VerifyTimeout = TimeSpan.FromSeconds(60);
+    private static readonly TimeSpan WriteTimeout = TimeSpan.FromSeconds(60);
 
     private ResultWriter? results;
     private FirebaseFirestore? listening;
@@ -264,7 +265,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
 
         _ = batch.SetData(SeedData.EveryKind(Seeding), reference.GetDocument("every-kind"));
         expected[$"{collection}/every-kind"] = SeedSpec.EveryKind();
-        await batch.CommitAsync().ConfigureAwait(false);
+        await WriteAsync(batch.CommitAsync(), "Seeding verify").ConfigureAwait(false);
 
         Query query = Listening.GetCollection(collection).OrderedBy(FieldPath.GetDocumentId());
         var model = new TaskCompletionSource<FirestoreSnapshot>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -463,7 +464,7 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         WriteBatch batch = Seeding.CreateBatch();
         for (int index = start; index < start + count; index++)
             _ = batch.SetData(SeedData.Document(Seeding, index), reference.GetDocument(BenchmarkPlan.DocumentId(index)));
-        await batch.CommitAsync().ConfigureAwait(false);
+        await WriteAsync(batch.CommitAsync(), $"Seeding {collection}").ConfigureAwait(false);
     }
 
     public (IDisposable Registration, ChannelReader<Sample> Samples, Func<object?> Latest) ListenToCollection(string collection)
@@ -483,10 +484,11 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
         DocumentReference target = parent.GetDocument(documentId);
         NSNumber value = NSNumber.FromInt64(version);
         NSString[] keys = [new NSString("version"), new NSString("updatedAt")];
+        // Built here, not in the write: the phases start the write→callback timer between the two.
+        Timestamp now = Timestamp.Create();
+        var fields = NSDictionary<NSObject, NSObject>.FromObjectsAndKeys([value, now], keys, keys.Length);
         return () =>
         {
-            Timestamp now = Timestamp.Create();
-            var fields = NSDictionary<NSObject, NSObject>.FromObjectsAndKeys([value, now], keys, keys.Length);
             Task write = target.UpdateDataAsync(fields);
             // The peer table is process-wide, so the seeder's peers are disposed as soon as the write is issued (the SDK
             // holds its own retains): left for the GC, they would pile up between settles and be counted as listener
@@ -499,8 +501,24 @@ internal sealed class BenchmarkRunner(BenchmarkOptions options, Action<string> s
                 foreach (NSObject peer in harness)
                     peer.Dispose();
             });
-            return write;
+            return WriteAsync(write, $"The update of {collection}/{documentId} to version {version}");
         };
+    }
+
+    // As on Android, a write that is never acknowledged (the emulator stopped or unreachable) fails the run with a reason
+    // instead of leaving the script to time out.
+    private async Task WriteAsync(Task write, string what)
+    {
+        try
+        {
+            await write.WaitAsync(WriteTimeout).ConfigureAwait(false);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new TimeoutException(
+                $"{what} was not acknowledged within {WriteTimeout.TotalSeconds:0}s; is the Firestore emulator reachable at "
+                + $"{options.Host}:{options.Port}?", exception);
+        }
     }
 
     public async Task SettleAsync(string phase, int size, string point)
