@@ -37,6 +37,9 @@ public interface FrameSink {
     void onTimedFrame(@Nullable byte[] frame, int length, long startNanos, long startCpuNanos, long encodeNanos,
                       long encodeCpuNanos);
 
-    /** The listener failed; Firestore stops it. {@code code} is FirebaseFirestoreException.Code's ordinal value. */
+    /**
+     * The listener failed; Firestore stops it. {@code code} is {@code FirebaseFirestoreException.Code.value()}, the
+     * gRPC status number (not the enum's ordinal), or {@link PeerlessListeners#ERROR_ENCODING_FAILED}.
+     */
     void onError(int code, @NonNull String message);
 }

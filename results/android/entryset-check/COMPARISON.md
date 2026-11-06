@@ -165,6 +165,7 @@ ART's own global reference table at the settle points (median across runs).
 | 1000 | after-remove | 4,629 | 598 |
 | 1 (doc) | before-listen | 622 | 597 |
 | 1 (doc) | after-initial | 629 | 601 |
+| 1 (doc) | after-update-48 | 634 | 602 |
 | 1 (doc) | after-remove | 633 | 598 |
 
 ## Peerless: where the time goes

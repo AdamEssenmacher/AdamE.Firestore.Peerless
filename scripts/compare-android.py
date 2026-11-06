@@ -127,7 +127,10 @@ lines += ["## Settled JNI global references (after forced .NET + Java GC)", "",
           "ART's own global reference table at the settle points (median across runs).", "",
           "| docs | point | " + " | ".join(present) + " |", "|---:|---|" + "---:|" * len(present)]
 for phase, size in sorted({(k[1], k[2]) for k in art}, key=lambda c: (c[0] != "query", c[1])):
-    for point in ("before-listen", "after-initial", "after-update-20", "after-remove"):
+    # The mid-run row is the last update settle the case has (update 20 in the query phase, 48 in the document phase).
+    updates = sorted({k[3] for k in art if k[1:3] == (phase, size) and re.fullmatch(r"after-update-\d+", k[3])},
+                     key=lambda p: int(p.rsplit("-", 1)[1]))
+    for point in ("before-listen", "after-initial", *updates[-1:], "after-remove"):
         if not any(art.get((m, phase, size, point)) for m in present):
             continue
         values = [art.get((m, phase, size, point)) for m in present]

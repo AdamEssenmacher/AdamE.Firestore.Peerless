@@ -100,14 +100,15 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
         if (arrival is { } timing)
             observer?.Arrived(timing);
 
-        // Only decoding is guarded: a PeerlessFormatException thrown by the app's own callback is the app's exception,
-        // not a frame failure.
+        // Only decoding is guarded: an exception thrown by the app's own callback is the app's exception, not a frame
+        // failure. Any decode failure (a bad frame, or OutOfMemoryException on a huge one) fails the listener rather
+        // than escaping into the Java callback, where it would crash the process.
         FirestoreSnapshot snapshot;
         try
         {
             snapshot = Decode(frame, length);
         }
-        catch (PeerlessFormatException exception)
+        catch (Exception exception)
         {
             gate.Fail(exception);
             return;

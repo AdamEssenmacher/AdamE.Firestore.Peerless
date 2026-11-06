@@ -28,7 +28,9 @@
        build will ship the AAR. It runs before _CategorizeAndroidLibraries, the first target that reads the AAR, so the
        same build binds and packages the rebuilt one. Gradle leaves an up-to-date AAR untouched, so the AAR is touched
        afterwards, or an edit that changes no output would rerun Gradle on every build. IDE design-time builds skip it
-       once an AAR exists. -->
+       once an AAR exists. Gradle gets the Android SDK and JDK that the .NET build resolved (from _ResolveSdks), so it
+       doesn't depend on ANDROID_HOME, JAVA_HOME or a local.properties being set up; a local.properties sdk.dir still
+       wins over ANDROID_HOME. -->
   <ItemGroup>
     <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/src/main/**/*" />
     <PeerlessShimSource Include="$(PeerlessShimDirectory)peerless-shim/*.gradle.kts;$(PeerlessShimDirectory)peerless-shim/*.pro" />
@@ -41,9 +43,15 @@
   </PropertyGroup>
   <Target Name="BuildPeerlessShim"
           BeforeTargets="_CategorizeAndroidLibraries;PrepareForBuild;_ResolveLibraryProjectImports;ResolveAssemblyReferences"
+          DependsOnTargets="_ResolveSdks"
           Condition="'$(DesignTimeBuild)' != 'true' Or !Exists('$(PeerlessShimAar)')"
           Inputs="@(PeerlessShimSource)" Outputs="$(PeerlessShimAar)">
-    <Exec Command="$(PeerlessGradle) :peerless-shim:assembleRelease --console=plain -q" WorkingDirectory="$(PeerlessShimDirectory)" />
+    <ItemGroup>
+      <_PeerlessGradleEnvironment Include="ANDROID_HOME=$(_AndroidSdkDirectory)" Condition="'$(_AndroidSdkDirectory)' != ''" />
+      <_PeerlessGradleEnvironment Include="JAVA_HOME=$(_JavaSdkDirectory)" Condition="'$(_JavaSdkDirectory)' != ''" />
+    </ItemGroup>
+    <Exec Command="$(PeerlessGradle) :peerless-shim:assembleRelease --console=plain -q" WorkingDirectory="$(PeerlessShimDirectory)"
+          EnvironmentVariables="@(_PeerlessGradleEnvironment)" />
     <Touch Files="$(PeerlessShimAar)" />
   </Target>
 </Project>

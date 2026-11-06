@@ -286,7 +286,12 @@ internal sealed class BenchmarkRunner(Context context, BenchmarkOptions options,
                             flowing.TrySetResult();
                         Volatile.Write(ref inside, 0);
                     },
-                    error => flowing.TrySetException(error),
+                    error =>
+                    {
+                        // Both, since forced mid-callback rounds wait on started: an error must not become a timeout.
+                        flowing.TrySetException(error);
+                        started.TrySetException(error);
+                    },
                     iteration % 4 < 2 ? FrameDelivery.DirectBuffer : FrameDelivery.ByteArray,
                     observer: null);
 

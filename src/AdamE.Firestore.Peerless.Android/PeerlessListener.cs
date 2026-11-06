@@ -126,8 +126,9 @@ public sealed class FirestoreListenException : Exception
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
 /// snapshot or .NET could not decode it. One encoding failure is data-dependent: two keys of one map that differ only
-/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails.
-/// Either way the listener has stopped and nothing more arrives. It is
+/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails. If
+/// decoding fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
+/// <c>onError</c> receives that exception. Either way the listener has stopped and nothing more arrives. It is
 /// required, so a failing listener can't go silent.
 /// </para>
 /// <para>
