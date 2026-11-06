@@ -83,7 +83,7 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
 
     public void OnBuffer(Java.Nio.ByteBuffer newBuffer)
     {
-        if (!gate.Run(() => ReplaceBuffer(newBuffer)))
+        if (!gate.Run((receiver: this, newBuffer), static state => state.receiver.ReplaceBuffer(state.newBuffer)))
             newBuffer.Dispose();
     }
 
@@ -102,7 +102,14 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
             : new FirestoreListenException(
                 (FirestoreErrorCode)code, message, cause, causeType, nativeErrorDomain: null, nativeErrorCode: codeName)));
 
-    private void Deliver(byte[]? frame, int length, FrameArrival? arrival) => gate.Run(() =>
+    // The state goes through the gate by value and the lambda is static, so a frame allocates no closure or delegate.
+    private void Deliver(byte[]? frame, int length, FrameArrival? arrival) => gate.Run(
+        new PendingFrame(this, frame, length, arrival),
+        static pending => pending.Receiver.DeliverInGate(pending.Frame, pending.Length, pending.Arrival));
+
+    private readonly record struct PendingFrame(FrameReceiver Receiver, byte[]? Frame, int Length, FrameArrival? Arrival);
+
+    private void DeliverInGate(byte[]? frame, int length, FrameArrival? arrival)
     {
         if (arrival is { } timing)
             observer?.Arrived(timing);
@@ -123,7 +130,7 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
 
         onSnapshot(snapshot);
         observer?.Completed();
-    });
+    }
 
     private unsafe FirestoreSnapshot Decode(byte[]? frame, int length)
     {
