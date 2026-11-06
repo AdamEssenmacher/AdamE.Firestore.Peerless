@@ -26,7 +26,8 @@ internal static unsafe class Native
 
     /// <summary>
     /// The shim C API version these declarations match: <c>ADAME_PEERLESS_ABI_VERSION</c> in PeerlessShim.h. Bump both
-    /// together with any change to a signature or to <see cref="FrameTiming"/>.
+    /// together with any change to a declaration or its contract (signatures, <see cref="FrameTiming"/>'s layout, the
+    /// meaning of codes and pointers, ownership, when callbacks run).
     /// </summary>
     public const int AbiVersion = 1;
 

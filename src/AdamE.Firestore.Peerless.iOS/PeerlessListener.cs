@@ -177,7 +177,8 @@ public static class PeerlessListener
             throw new InvalidOperationException(mismatch);
     }
 
-    // The C API first: every other shim call, the Firebase checks' included, assumes it matches.
+    // The C API first: the Firebase checks and every listener call assume it matches. (The version getters and clocks
+    // can be called earlier, but their void-to-scalar signatures are never to change.)
     private static string? CheckShim() => CheckAbiVersion() ?? CheckFirebaseVersion();
 
     private static string? CheckAbiVersion()
@@ -189,8 +190,9 @@ public static class PeerlessListener
         }
         catch (EntryPointNotFoundException)
         {
-            // A shim from before the version existed. (Linked with direct P/Invoke, as under NativeAOT, the app fails
-            // to link instead.)
+            // A shim from before the version existed. Normally unreachable: the iOS SDK links every __Internal P/Invoke
+            // symbol into the app, on NativeAOT and Mono alike, so such a shim fails the app's link, naming the symbol.
+            // Kept for builds that resolve symbols at run time.
             return $"The PeerlessShim linked into the app predates C API versioning; these bindings need version "
                 + $"{Native.AbiVersion}. Rebuild the shim (ios/build-shim.sh) or update the package.";
         }

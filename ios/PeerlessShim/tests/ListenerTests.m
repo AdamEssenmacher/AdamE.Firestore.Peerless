@@ -375,7 +375,7 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
 static void TheShimReportsItsCApiVersion(void) {
     int32_t version = adame_peerless_abi_version();
     ListenerTestsRecord(version == ADAME_PEERLESS_ABI_VERSION && version > 0,
-                        @"the shim reports the C API version it was compiled with",
+                        @"the shim exports a positive C API version (a smoke test: it shares the header with this test)",
                         [NSString stringWithFormat:@"reported %d, header %d", version, ADAME_PEERLESS_ABI_VERSION]);
 }
 
