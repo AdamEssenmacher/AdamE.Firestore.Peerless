@@ -33,6 +33,18 @@ def peak_over_settled(row):
     base = last_settled(row)
     return None if base is None or not has_peak else f(row, "gref_peak") - base
 
+# The settle cadence per phase, read from the recorded after-update-N settle points (it follows the run's updates and
+# singleUpdates extras, so it is not fixed).
+def cadence(phase):
+    keys = sorted({k for (p, _), points in settles.items() if p == phase for k, _ in points if k > 0})
+    return keys[0] if keys else None
+def every(n): return "every update" if n == 1 else f"every {n}{'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')} update"
+def cadence_text():
+    parts = [f"{every(n)} in the {label}" for phase, label in
+             (("query", "query phases"), ("document", "single-document phase"), ("warmup", "warmup"))
+             if (n := cadence(phase)) is not None]
+    return "after " + "; ".join(parts) if parts else "no settles after updates"
+
 lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().replace("\n", "  \n"), "",
          "Per callback, medians with [min–max]. Wall and CPU in ms; alloc in KB.", "",
          "*GREF peak* is the highest .NET-side JNI global reference count seen during the callback (sampled after each",
@@ -40,8 +52,7 @@ lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().re
          "does. *Peak over settled* is that peak minus the count at the last settle point (forced .NET and Java GC).",
          "Subtracting removes only the references that survive a full GC; references earlier callbacks left for the GC",
          "since that settle are still included, so the figure grows with the number of callbacks since the settle.",
-         "Cadence: a settle before listening, after the initial snapshot, and after every 5th update (every 12th in the",
-         "single-document phase; every update in warmup). *Update, after a settle* rows are the updates that come",
+         f"Cadence: a settle before listening, after the initial snapshot, and {cadence_text()}. *Update, after a settle* rows are the updates that come",
          "straight after a settle point; *update* rows are the rest. The .NET counter excludes ~435 cached",
          "java.lang.Class references that ART's own table (below) includes."
          + ("" if has_peak else " n/a: this run predates peak sampling."), "",
@@ -50,9 +61,11 @@ lines = ["# peered summary", "", (run / "peered-run.txt").read_text().strip().re
 def after_settle(row):
     seq = int(row["seq"])
     return seq >= 1 and any(k == seq - 1 for k, _ in settles.get((row["phase"], int(row["size"])), []))
+# Partial snapshots: kind "partial" under the phase they came from (older runs wrote them all as phase "skipped").
+def is_partial(row): return row["phase"] == "skipped" or row["kind"] == "partial"
 groups = {}
 for row in rows:
-    if row["phase"] == "skipped": continue
+    if is_partial(row): continue
     kind = "update, after a settle" if row["kind"] == "update" and after_settle(row) else row["kind"]
     groups.setdefault((row["phase"], int(row["size"]), kind), []).append(row)
 def rng(values, scale=1.0):
@@ -69,11 +82,15 @@ for (phase, size, kind), group in groups.items():
         rng([peak_over_settled(r) for r in group]),
         f"{med([f(r, 'write_to_callback_ms') for r in group]):.0f}" if kind.startswith("update") else "",
     ]) + " |")
-skipped = [r for r in rows if r["phase"] == "skipped"]
+skipped = [r for r in rows if is_partial(r)]
+skipped_by = {}
+for r in skipped: skipped_by[f"{r['phase']} {r['size']}"] = skipped_by.get(f"{r['phase']} {r['size']}", 0) + 1
 previous = (run / "summary.md").read_text() if (run / "summary.md").exists() else ""
 have_logcat = (run / "logcat.txt").exists()
-forced = [l.split("monodroid-gc: ", 1)[1].strip() for l in ((run / "logcat.txt").read_text(errors="replace").splitlines()
-          if have_logcat else []) if "outstanding GREFs" in l]
+# Read once: with three 16 MB buffers the file can be tens of MB.
+logcat = (run / "logcat.txt").read_text(errors="replace").splitlines() if have_logcat else []
+# The message after the tag when the line has the usual "monodroid-gc: " form, otherwise the whole line.
+forced = [l.partition("monodroid-gc: ")[2].strip() or l.strip() for l in logcat if "outstanding GREFs" in l]
 if have_logcat:
     lines += ["", f"Emergency GCs forced by the runtime's GREF threshold (logcat `monodroid-gc`, whole run): {len(forced)}"
               + (f" (e.g. \"{forced[0]}\")" if forced else "")]
@@ -81,13 +98,19 @@ elif "Emergency GCs" not in previous:
     lines += ["", "Emergency GCs forced by the runtime's GREF threshold: unknown (this run's logcat isn't available)"]
 else:
     lines += ["", next(l for l in previous.splitlines() if l.startswith("Emergency GCs"))]
-lines += ["", f"Partial snapshots skipped: {len(skipped)}", "", "## Settled references (after forced .NET + Java GC)", "",
+# host.txt is committed and logcat.txt isn't, so this is read whether or not the counts come from a summary.md kept
+# from an earlier pass.
+host = (run / "host.txt").read_text(errors="replace").splitlines() if (run / "host.txt").exists() else []
+incomplete = next((l.strip() for l in host if l.startswith("logcat may be incomplete")), None)
+if incomplete:
+    lines += ["", f"**Warning:** {incomplete}, so anything this summary takes from logcat (the emergency-GC count, the ART tables) may be too low or missing."]
+lines += ["", f"Partial snapshots skipped: {len(skipped)}"
+          + (" (" + ", ".join(f"{k}: {n}" for k, n in skipped_by.items()) + ")" if skipped else ""), "", "## Settled references (after forced .NET + Java GC)", "",
           "| phase | docs | point | GREF | weak GREF | surfaced peers |", "|---|---:|---|---:|---:|---:|"]
 lines += [f"| {s['phase']} | {s['size']} | {s['point']} | {s['gref']} | {s['wgref']} | {s['surfaced_peers']} |" for s in settled]
 # ART's own JNI tables, dumped after each "ART_GREF_DUMP <phase>,<size>,<point>" marker. Ground truth: the .NET-side
 # counter (gref column above) does not see every global reference under NativeAOT.
 import re
-logcat = (run / "logcat.txt").read_text(errors="replace").splitlines() if (run / "logcat.txt").exists() else []
 dumps, current, table, summary = [], None, None, []
 for line in logcat:
     if "ART_GREF_DUMP " in line and "unavailable" not in line:
