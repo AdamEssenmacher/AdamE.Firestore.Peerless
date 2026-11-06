@@ -1,3 +1,4 @@
+using System.Text;
 using Xunit;
 
 namespace AdamE.Firestore.Peerless.Tests;
@@ -37,6 +38,78 @@ public sealed class SnapshotDecoderTests
         Assert.Equal("1", snapshot.Document.Id);
     }
 
+    [Fact]
+    public void A_document_count_cannot_claim_bytes_from_the_next_section()
+    {
+        const int count = 128 * 1024;
+        byte[] frame = new TestFrameEncoder()
+            .Header(Wire.FrameKind.Query)
+            .Section(Wire.Section.Metadata, section => section.Byte(0))
+            .Section(Wire.Section.Documents, section => section.Varint(count))
+            .Section(9, section => section.Raw(new byte[2 * count]))
+            .ToArray();
+
+        (Exception? failure, long allocated) = MeasureDecode(frame);
+
+        var exception = Assert.IsType<PeerlessFormatException>(failure);
+        Assert.Contains($"Length {count} runs past the end of the section.", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(Wire.HeaderLength + 6 + 5, exception.Offset); // after the header, metadata section and documents header
+        Assert.True(allocated <= FixedOverhead, $"Decoding allocated {allocated:N0} bytes for a count with no documents.");
+    }
+
+    // Each frame is followed by a 64 KiB unknown section, so a bound on the bytes left in the frame (instead of the
+    // section) would let the content claim or read those bytes and fail differently, or not at all.
+    public static TheoryData<string, byte[], string> SectionBoundFrames => new()
+    {
+        {
+            // Fields map of 502 entries, the first an array of 1,000 nulls, then the section ends: the map's 501
+            // unread entries and the array's items don't both fit in the section.
+            "nested counts", FollowedByUnknownSection(section =>
+            {
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(502).Varint(0).Byte(Wire.Tag.Array).Varint(1_000);
+                section.Raw(new byte[1_000]);
+            }),
+            "left in the section"
+        },
+        {
+            // 1,000 documents in 2,000 bytes; the first one's fields map claims 900 entries, which the other 999
+            // documents' minimum two bytes each leave no room for.
+            "a fields map and the documents after it", FollowedByUnknownSection(section =>
+                section.Varint(1_000).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(900).Raw(new byte[1_993])),
+            "left in the section"
+        },
+        {
+            "a value", FollowedByUnknownSection(section =>
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(1).Varint(0).Byte(Wire.Tag.Integer).Int32(7)),
+            "past the end of its section"
+        },
+        {
+            // The same overrun with no section after it reports the section, not the frame, ending.
+            "a value in the last section", Frame(Wire.FrameKind.Query, section =>
+                section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(1).Varint(0).Byte(Wire.Tag.Integer).Int32(7)),
+            "past the end of its section"
+        },
+        {
+            "section shorter than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
+                .Section(Wire.Section.Metadata, _ => { })
+                .Section(Wire.Section.Documents, section => section.Varint(0)).ToArray(),
+            "past the end of its section"
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(SectionBoundFrames))]
+    public void Content_is_bounded_by_its_section(string because, byte[] frame, string expected)
+    {
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+
+        Assert.Contains(expected, exception.Message, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrEmpty(because));
+    }
+
+    private static byte[] FollowedByUnknownSection(Action<TestFrameEncoder> documents) =>
+        Frame(Wire.FrameKind.Query, documents, unknownSectionBytes: 64 * 1024);
+
     public static TheoryData<string, byte[]> MalformedFrames => new()
     {
         { "empty", [] },
@@ -65,7 +138,7 @@ public sealed class SnapshotDecoderTests
                 .Byte(Wire.Section.Metadata).Int32(1000).Byte(0).ToArray()
         },
         {
-            "section shorter than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
+            "section longer than its content", new TestFrameEncoder().Header(Wire.FrameKind.Query)
                 .Section(Wire.Section.Metadata, section => section.Byte(0).Byte(0))
                 .Section(Wire.Section.Documents, section => section.Varint(0)).ToArray()
         },
@@ -96,8 +169,8 @@ public sealed class SnapshotDecoderTests
         { "duplicate key in a nested map", DocumentWith(raw => raw.Byte(Wire.Tag.Map).Varint(2)
             .String("k").Byte(Wire.Tag.Null).String("k").Byte(Wire.Tag.Null)) },
         { "duplicate key in a large map", DocumentWith(raw => LargeMapWithDuplicate(raw)) },
-        { "timestamp after 9999", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MaxTimestampSeconds + 1).Int32(0)) },
-        { "timestamp before 0001", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MinTimestampSeconds - 1).Int32(0)) },
+        { "timestamp after 9999", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MaxSeconds + 1).Int32(0)) },
+        { "timestamp before 0001", DocumentWith(raw => raw.Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MinSeconds - 1).Int32(0)) },
         {
             "document frame with two documents", Frame(Wire.FrameKind.Document, section => section.Varint(2)
                 .Document(Doc("a/1")).Document(Doc("a/2")))
@@ -140,8 +213,8 @@ public sealed class SnapshotDecoderTests
     public void Timestamps_at_the_edges_of_firestores_range_decode()
     {
         byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.Array).Varint(2)
-            .Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MinTimestampSeconds).Int32(0)
-            .Byte(Wire.Tag.Timestamp).Int64(SnapshotDecoder.MaxTimestampSeconds).Int32(999_999_999));
+            .Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MinSeconds).Int32(0)
+            .Byte(Wire.Tag.Timestamp).Int64(FirestoreTimestamp.MaxSeconds).Int32(999_999_999));
 
         FirestoreArray items = SnapshotDecoder.DecodeDocument(frame).Document.Fields["field"].AsArray();
 
@@ -167,7 +240,7 @@ public sealed class SnapshotDecoderTests
     // The real worst case (docs/wire-format.md): a frame that decodes costs at most about 43 bytes of .NET memory per
     // frame byte on CoreCLR, which is what these tests run on (a chain of one-entry maps, 3 bytes and ~128 bytes of
     // objects each; Mono's larger array headers would add about 5). A malformed frame is rejected as soon as its
-    // declared counts exceed the bytes left; it keeps what its valid prefix cost (up to the same bound) plus at most
+    // declared counts exceed the bytes left in the section; it keeps what its valid prefix cost (up to the same bound) plus at most
     // one slot per byte its open containers claimed (32 for arrays, 20 for maps). Plus about 5 KB of working memory
     // on a thread's first decode.
     private const int BytesPerFrameByte = 48;
@@ -194,7 +267,7 @@ public sealed class SnapshotDecoderTests
         byte[] frame = shape switch
         {
             // Fields map count 2, key "", then an array of `size` nulls and nothing after: the map's unread second
-            // entry keeps the array off the up-front path, so it is read on the scratch stack.
+            // entry stays reserved, so the array's count no longer fits and it is rejected before its array is allocated.
             "map claiming one more entry than the frame holds" => Frame(Wire.FrameKind.Document, section =>
             {
                 section.Varint(1).String("a/1").Byte(Wire.DocumentFlags.Exists).Varint(2).String("")
@@ -243,8 +316,9 @@ public sealed class SnapshotDecoderTests
                     field.Raw(Enumerable.Repeat((byte)0xFF, size - 30).ToArray());
                     break;
                 case "outer array reserved but never filled":
-                    // An outer array claims `size` items and gets its array up front; its first item is an array that
-                    // really holds `size - 4` nulls (read on the scratch stack); then the frame ends.
+                    // An outer array claims `size` items, which fits, so its array is allocated; its first item is an
+                    // array that really holds `size - 4` nulls, which no longer fits beside the outer array's reserved
+                    // items, so it is rejected before its own array is allocated.
                     field.Byte(Wire.Tag.Array).Varint(size).Byte(Wire.Tag.Array).Varint(size - 4);
                     for (int index = 0; index < size - 4; index++)
                         field.Byte(Wire.Tag.Null);
@@ -260,15 +334,12 @@ public sealed class SnapshotDecoderTests
             }
         });
 
-        _ = Record.Exception(() => SnapshotDecoder.Decode(frame)); // warm the per-thread scratch
-        long before = GC.GetAllocatedBytesForCurrentThread();
-        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
-        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        (Exception? failure, long allocated) = MeasureDecode(frame);
 
         if (shape is "map claiming one more entry than the frame holds" or "outer array reserved but never filled"
             or "hostile nested counts" or "map claiming half the frame, holding a map claiming the rest")
         {
-            // Rejected as soon as the declared counts stop fitting in the bytes left, before allocating for them.
+            // Rejected as soon as the declared counts stop fitting in the bytes left in the section, before allocating for them.
             Assert.Contains("Declared counts need", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
         }
         else
@@ -279,6 +350,15 @@ public sealed class SnapshotDecoderTests
         long bound = (long)BytesPerFrameByte * frame.Length + FixedOverhead;
         TestContext.Current.SendDiagnosticMessage($"{shape} x {size}: {(double)allocated / frame.Length:F1} B per frame byte");
         Assert.True(allocated <= bound, $"{shape} x {size}: {allocated:N0} bytes for a {frame.Length:N0}-byte frame (bound {bound:N0}).");
+    }
+
+    // Decodes once to warm the per-thread scratch, then measures a second decode's allocation and outcome.
+    private static (Exception? Failure, long Allocated) MeasureDecode(byte[] frame)
+    {
+        _ = Record.Exception(() => SnapshotDecoder.Decode(frame));
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        Exception? failure = Record.Exception(() => SnapshotDecoder.Decode(frame));
+        return (failure, GC.GetAllocatedBytesForCurrentThread() - before);
     }
 
     // A fixed budget for a typical frame, so decode allocation can't regress silently. 100 documents x 20 fields
@@ -318,6 +398,74 @@ public sealed class SnapshotDecoderTests
         Assert.Equal(2_000, decoded.Count);
         Assert.Equal(1_999, decoded[$"{new string('k', 200)}-1999"].AsInteger());
     }
+
+    [Fact]
+    public void Colliding_map_keys_keep_their_wire_order_and_values()
+    {
+        string[] keys = CollidingKeys();
+
+        FirestoreMap decoded = SnapshotDecoder.DecodeDocument(CollidingMapFrame(keys)).Document.Fields["field"].AsMap();
+
+        Assert.Equal(keys, decoded.Keys);
+        for (int index = 0; index < keys.Length; index++)
+            Assert.Equal(index, decoded[keys[index]].AsInteger());
+    }
+
+    [Fact]
+    public void A_duplicate_among_colliding_map_keys_is_rejected()
+    {
+        string[] keys = CollidingKeys();
+
+        var error = Assert.Throws<PeerlessFormatException>(() =>
+            SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[^1]])));
+
+        Assert.Contains("appears twice", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void The_crafted_map_keys_collide_for_any_seed()
+    {
+        // The two tests above only reach the sorting fallback while these keys share one hash; if the hash changes so
+        // they no longer do, this fails instead of the fallback silently losing its coverage.
+        string[] keys = CollidingKeys();
+        var random = new Random(7);
+        for (int trial = 0; trial < 100; trial++)
+        {
+            uint seed = (uint)random.Next() | 1;
+            uint expected = SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(keys[0]), seed);
+            Assert.All(keys, key => Assert.Equal(expected, SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(key), seed)));
+        }
+    }
+
+    [Fact]
+    public void A_large_map_with_random_keys_and_one_late_duplicate_is_rejected()
+    {
+        var random = new Random(11);
+        string[] keys = [.. Enumerable.Range(0, 40_000).Select(index => $"{index}-{random.Next():x8}")];
+
+        var error = Assert.Throws<PeerlessFormatException>(() =>
+            SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[12_345]])));
+
+        Assert.Contains($"\"{keys[12_345]}\" appears twice", error.Message, StringComparison.Ordinal);
+    }
+
+    private static string[] CollidingKeys()
+    {
+        // These blocks of U+0000 and U+0001 have the same FNV-1a transition for every initial hash state. Each
+        // combination is a distinct ordinal string that hashes to the same value even when the decoder's seed changes.
+        string left = new("00001111111010011101011".Select(static bit => (char)(bit - '0')).ToArray());
+        string right = new("10001001100000111101010".Select(static bit => (char)(bit - '0')).ToArray());
+        const int Blocks = 6;
+        return [.. Enumerable.Range(0, 1 << Blocks).Select(index =>
+            string.Concat(Enumerable.Range(0, Blocks).Select(bit => (index & (1 << bit)) == 0 ? left : right)))];
+    }
+
+    private static byte[] CollidingMapFrame(string[] keys) => DocumentWith(raw =>
+    {
+        raw.Byte(Wire.Tag.Map).Varint(keys.Length);
+        for (int index = 0; index < keys.Length; index++)
+            raw.String(keys[index]).Byte(Wire.Tag.Integer).Int64(index);
+    });
 
     [Theory]
     [InlineData("/")]
@@ -439,6 +587,129 @@ public sealed class SnapshotDecoderTests
     }
 
     [Fact]
+    public void The_wrong_snapshot_kind_is_refused_before_decoding()
+    {
+        // A query frame whose documents section is garbage: refused by its kind byte, not by its content.
+        byte[] query = Frame(Wire.FrameKind.Query, section => section.Raw([0xFF, 0xFF]));
+
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.DecodeDocument(query));
+
+        Assert.Contains("not a document snapshot", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    public void A_document_frame_with_other_than_one_document_is_refused_at_its_count(int count)
+    {
+        byte[] frame = Frame(Wire.FrameKind.Document, section =>
+        {
+            section.Varint(count);
+            for (int index = 0; index < count; index++)
+                section.String($"a/{index}").Byte(Wire.DocumentFlags.Exists).Varint(0);
+        });
+
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+
+        Assert.Contains($"exactly one document, not {count}", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(Wire.HeaderLength + 6 + 5, exception.Offset); // the count, after the metadata and documents headers
+    }
+
+    [Theory]
+    [InlineData(Wire.Tag.Bytes)]
+    [InlineData(Wire.Tag.String)]
+    public void A_value_cannot_claim_bytes_reserved_for_the_items_after_it(byte tag)
+    {
+        // An array of 1,000 items whose first is a value claiming all but 500 of the bytes left: the other 999 items'
+        // minimum byte each no longer fit, so it is refused before its bytes are copied.
+        const int length = 100_000;
+        byte[] frame = DocumentWith(raw =>
+            raw.Byte(Wire.Tag.Array).Varint(1_000).Byte(tag).Varint(length).Raw(new byte[length + 500]));
+
+        (Exception? failure, long allocated) = MeasureDecode(frame);
+
+        Assert.Contains("Declared counts need", Assert.IsType<PeerlessFormatException>(failure).Message, StringComparison.Ordinal);
+        Assert.True(allocated < length, $"Decoding allocated {allocated:N0} bytes before refusing a {length:N0}-byte value.");
+    }
+
+    [Fact]
+    public void A_query_snapshot_copies_its_documents()
+    {
+        List<FirestoreDocument> documents = [Doc("a/1")];
+        var snapshot = new FirestoreQuerySnapshot(Live, documents);
+
+        documents.Clear();
+
+        Assert.Single(snapshot.Documents);
+    }
+
+    [Fact]
+    public void A_query_snapshot_refuses_null_and_missing_documents()
+    {
+        Assert.Throws<ArgumentException>(() => new FirestoreQuerySnapshot(Live, [null!]));
+        Assert.Throws<ArgumentException>(() =>
+            new FirestoreQuerySnapshot(Live, [new FirestoreDocument("a/1", false, Live, FirestoreMap.Empty)]));
+    }
+
+    [Fact]
+    public async Task Arrays_and_maps_can_be_enumerated_with_await_in_the_loop_body()
+    {
+        var array = new FirestoreArray([FirestoreValue.FromInteger(1), FirestoreValue.FromInteger(2)]);
+        var map = new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.FromInteger(3))]);
+        long sum = 0;
+
+        foreach (FirestoreValue value in array)
+        {
+            await Task.Yield();
+            sum += value.AsInteger();
+        }
+
+        foreach ((string _, FirestoreValue value) in map)
+        {
+            await Task.Yield();
+            sum += value.AsInteger();
+        }
+
+        Assert.Equal(6, sum);
+    }
+
+    [Fact]
+    public void Foreach_over_an_array_or_a_map_does_not_allocate()
+    {
+        var array = new FirestoreArray([FirestoreValue.FromInteger(1), FirestoreValue.FromInteger(2)]);
+        var map = new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.FromInteger(3))]);
+        long sum = Sum(array, map); // warm up
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        sum += Sum(array, map);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(12, sum);
+        Assert.Equal(0, allocated);
+
+        static long Sum(FirestoreArray array, FirestoreMap map)
+        {
+            long total = 0;
+            foreach (FirestoreValue value in array)
+                total += value.AsInteger();
+            foreach (KeyValuePair<string, FirestoreValue> entry in map)
+                total += entry.Value.AsInteger();
+            return total;
+        }
+    }
+
+    [Fact]
+    public void A_built_map_keeps_insertion_order_and_refuses_duplicate_keys()
+    {
+        string[] keys = [.. Enumerable.Range(0, 50).Select(index => $"k{(index * 37) % 50}")];
+        var map = new FirestoreMap(keys.Select(key => KeyValuePair.Create(key, FirestoreValue.Null)));
+
+        Assert.Equal(keys, map.Keys);
+        Assert.Throws<ArgumentException>(() =>
+            new FirestoreMap([KeyValuePair.Create("a", FirestoreValue.Null), KeyValuePair.Create("a", FirestoreValue.Null)]));
+    }
+
+    [Fact]
     public void Repeated_field_names_decode_to_one_shared_string_per_frame()
     {
         FirestoreDocument[] documents = [.. Enumerable.Range(0, 3).Select(index =>
@@ -468,11 +739,16 @@ public sealed class SnapshotDecoderTests
     private static FirestoreDocument Doc(string path, params (string Key, FirestoreValue Value)[] fields) =>
         new(path, true, Live, new FirestoreMap(fields.Select(static field => KeyValuePair.Create(field.Key, field.Value))));
 
-    private static byte[] Frame(byte kind, Action<TestFrameEncoder> documents) =>
-        new TestFrameEncoder().Header(kind)
+    // A frame with plain metadata and the given documents section, optionally followed by an unknown section 9.
+    private static byte[] Frame(byte kind, Action<TestFrameEncoder> documents, int? unknownSectionBytes = null)
+    {
+        TestFrameEncoder encoder = new TestFrameEncoder().Header(kind)
             .Section(Wire.Section.Metadata, section => section.Byte(0))
-            .Section(Wire.Section.Documents, documents)
-            .ToArray();
+            .Section(Wire.Section.Documents, documents);
+        if (unknownSectionBytes is int bytes)
+            encoder.Section(9, section => section.Raw(new byte[bytes]));
+        return encoder.ToArray();
+    }
 
     private static byte[] ValidSections(TestFrameEncoder header) =>
         header.Section(Wire.Section.Metadata, section => section.Byte(0))

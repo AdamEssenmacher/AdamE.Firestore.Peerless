@@ -41,7 +41,8 @@ for run in runs:
         if key is not None:
             order[(row["phase"], int(row["size"]))].append((key, int(row["gref"])))
     for row in csv.DictReader(open(run / f"{mode}-samples.csv")):
-        if row["phase"] not in ("query", "document"):
+        # Partial snapshots are skipped: older runs wrote them under phase "skipped", newer ones as kind "partial".
+        if row["phase"] not in ("query", "document") or row["kind"] == "partial":
             continue
         if not row.get("gref_peak_over_settled") and row.get("gref_peak"):
             seq = int(row["seq"])

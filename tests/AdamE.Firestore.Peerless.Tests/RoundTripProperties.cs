@@ -37,7 +37,7 @@ public sealed class RoundTripProperties
         Gen.Long.Select(static bits => FirestoreValue.FromDouble(BitConverter.Int64BitsToDouble(bits))),
         Text.Select(FirestoreValue.FromString),
         Gen.Byte.Array[0, 16].Select(static bytes => FirestoreValue.FromBytes(bytes)),
-        Gen.Select(Gen.Long[SnapshotDecoder.MinTimestampSeconds, SnapshotDecoder.MaxTimestampSeconds], Gen.Int[0, 999_999_999], static (seconds, nanos) =>
+        Gen.Select(Gen.Long[FirestoreTimestamp.MinSeconds, FirestoreTimestamp.MaxSeconds], Gen.Int[0, 999_999_999], static (seconds, nanos) =>
             FirestoreValue.FromTimestamp(new FirestoreTimestamp(seconds, nanos))),
         Gen.Select(Gen.Double[-90, 90], Gen.Double[-180, 180], static (latitude, longitude) =>
             FirestoreValue.FromGeoPoint(new FirestoreGeoPoint(latitude, longitude))),

@@ -46,6 +46,9 @@ internal sealed record JavaSide(
 internal interface ISampler
 {
     ChannelReader<Sample> Samples { get; }
+
+    /// <summary>The most recent conversion, kept alive like an app's view model would keep it.</summary>
+    object? Latest { get; }
 }
 
 /// <summary>
@@ -65,8 +68,10 @@ internal sealed class PeeredSampler : Java.Lang.Object, IEventListener, ISampler
     {
         ProbeReading before = ProbeReading.Take();
         int peak = before.GlobalReferences;
-        string? failure = error?.Message;
+        // ToString, not Message: the message can be null, and the type and code say more.
+        string? failure = error?.ToString();
         bool fromCache = false;
+        int count = 0;
         List<PlainDocument>? documents = null;
         try
         {
@@ -74,11 +79,9 @@ internal sealed class PeeredSampler : Java.Lang.Object, IEventListener, ISampler
             {
                 case QuerySnapshot query:
                     documents = PlainValues.Query(query, ref peak);
-                    fromCache = query.Metadata.IsFromCache;
                     break;
                 case DocumentSnapshot document:
                     documents = [PlainValues.Document(document)];
-                    fromCache = document.Metadata.IsFromCache;
                     break;
                 case null:
                     break;
@@ -93,10 +96,29 @@ internal sealed class PeeredSampler : Java.Lang.Object, IEventListener, ISampler
         }
 
         ProbeReading after = ProbeReading.Take();
+
+        // Bookkeeping outside the measured window. The metadata and Exists reads are the harness's own JNI calls, and
+        // the metadata peer is released straight away, so neither counts as conversion cost.
+        try
+        {
+            using Firebase.Firestore.SnapshotMetadata? metadata =
+                (value as QuerySnapshot)?.Metadata ?? (value as DocumentSnapshot)?.Metadata;
+            fromCache = metadata?.IsFromCache ?? false;
+            // A missing document (for example an initial snapshot from an empty cache) is not the document the phase
+            // waits for, so it counts as no documents and is skipped as partial.
+            count = value is DocumentSnapshot single && documents is not null
+                ? (single.Exists() ? 1 : 0)
+                : documents?.Count ?? 0;
+        }
+        catch (Exception exception)
+        {
+            failure ??= exception.ToString();
+        }
+
         Latest = documents ?? Latest;
         _ = samples.Writer.TryWrite(Samplers.Build(
             fromCache,
-            documents?.Count ?? 0,
+            count,
             documents?.Sum(PlainValues.CountValues) ?? 0,
             before, after, Math.Max(peak, after.GlobalReferences),
             Probes.Microseconds(before.Timestamp, after.Timestamp),
@@ -154,6 +176,8 @@ internal sealed class PeerlessSampler : IFrameObserver, ISampler
 
     public FirestoreSnapshot? Latest { get; private set; }
 
+    object? ISampler.Latest => Latest;
+
     public ChannelReader<Sample> Samples => samples.Reader;
 
     public void OnSnapshot(FirestoreSnapshot snapshot) => pending = snapshot;
@@ -187,7 +211,13 @@ internal sealed class PeerlessSampler : IFrameObserver, ISampler
         Latest = pending ?? Latest;
         _ = samples.Writer.TryWrite(Samplers.Build(
             pending?.Metadata.IsFromCache ?? false,
-            pending is null ? 0 : SnapshotAssertions.DocumentCount(pending),
+            // As in peered mode, a missing document counts as no documents, so the phase skips it as partial.
+            pending switch
+            {
+                null => 0,
+                FirestoreDocumentSnapshot document => document.Document.Exists ? 1 : 0,
+                _ => SnapshotAssertions.DocumentCount(pending),
+            },
             pending is null ? 0 : PeeredConversion.CountValues(pending),
             before, after, after.GlobalReferences, startToDone,
             (after.ThreadCpuNanos - arrival.StartCpuNanos) / 1000.0, java,

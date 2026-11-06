@@ -39,16 +39,14 @@ internal static class PlainValues
     public static PlainDocument Document(DocumentSnapshot snapshot) =>
         new(snapshot.Reference.Path, Fields(snapshot.Data));
 
-    private static Dictionary<string, object?> Fields(IDictionary<string, Java.Lang.Object>? data)
+    // The binding returns the top-level map as a JavaDictionary, whose enumerator walks keySet() and calls get() per
+    // key. Reading it as the java.util.Map it wraps gives the same single entrySet() walk as nested maps.
+    private static Dictionary<string, object?> Fields(IDictionary<string, Java.Lang.Object>? data) => data switch
     {
-        if (data is null)
-            return [];
-
-        var fields = new Dictionary<string, object?>(data.Count, StringComparer.Ordinal);
-        foreach (KeyValuePair<string, Java.Lang.Object> pair in data)
-            fields[pair.Key] = From(pair.Value);
-        return fields;
-    }
+        null => [],
+        Java.Lang.Object map => Map(global::Android.Runtime.Extensions.JavaCast<Java.Util.IMap>(map)),
+        _ => throw new NotSupportedException($"Unexpected document data {data.GetType().Name}."),
+    };
 
     // The binding hands a nested list or map over either as a Java collection or as its own .NET wrapper of one, and
     // a wrapper's items as .NET primitives, so both shapes are read.
@@ -68,9 +66,9 @@ internal static class PlainValues
         Java.Util.IList list => List(list),
         Java.Util.IMap map => Map(map),
         System.Collections.IList list => list.Cast<object?>().Select(From).ToList(),
-        System.Collections.IDictionary map => map.Keys.Cast<object>().ToDictionary(
-            static key => key.ToString() ?? throw new InvalidOperationException("A Firestore map has a null key."),
-            key => From(map[key]),
+        System.Collections.IDictionary map => map.Cast<System.Collections.DictionaryEntry>().ToDictionary(
+            static entry => entry.Key.ToString() ?? throw new InvalidOperationException("A Firestore map has a null key."),
+            static entry => From(entry.Value),
             StringComparer.Ordinal),
         Java.Lang.Object other => throw new NotSupportedException($"Unexpected Java value {other.Class.Name}."),
         _ => throw new NotSupportedException($"Unexpected .NET value {value.GetType().Name}."),
