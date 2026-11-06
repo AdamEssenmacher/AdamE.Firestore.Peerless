@@ -79,6 +79,17 @@ void *adame_peerless_listen_document(void *document, void *context, adame_peerle
 /// than once per listener is a caller error.
 void adame_peerless_listener_remove(void *listener, adame_peerless_release_callback release);
 
+/// The version of this C API: the declarations above and their contract (the signatures, the layout of
+/// adame_peerless_frame_timing, and what the arguments mean: error codes, which objects are borrowed or retained, when
+/// `timing` is NULL, when `release` runs). Bump it with any change to them, and Native.AbiVersion in
+/// src/AdamE.Firestore.Peerless.iOS/Native.cs with it (scripts/test-ios-shim.sh checks the two agree). .NET checks it
+/// before the first listen, so a stale or prebuilt xcframework fails with a clear error instead of calling a callback
+/// with the wrong arguments.
+#define ADAME_PEERLESS_ABI_VERSION 1
+
+/// ADAME_PEERLESS_ABI_VERSION as this shim was compiled.
+int32_t adame_peerless_abi_version(void);
+
 /// The Firebase iOS SDK version the shim was compiled against (for example "12.18.0").
 const char *adame_peerless_compiled_firebase_version(void);
 
