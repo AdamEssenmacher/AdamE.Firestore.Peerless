@@ -403,6 +403,7 @@ public sealed class SnapshotDecoderTests
     public void Colliding_map_keys_keep_their_wire_order_and_values()
     {
         string[] keys = CollidingKeys();
+        using IDisposable colliding = SnapshotDecoder.CollideKeyHashesForTesting();
 
         FirestoreMap decoded = SnapshotDecoder.DecodeDocument(CollidingMapFrame(keys)).Document.Fields["field"].AsMap();
 
@@ -415,6 +416,7 @@ public sealed class SnapshotDecoderTests
     public void A_duplicate_among_colliding_map_keys_is_rejected()
     {
         string[] keys = CollidingKeys();
+        using IDisposable colliding = SnapshotDecoder.CollideKeyHashesForTesting();
 
         var error = Assert.Throws<PeerlessFormatException>(() =>
             SnapshotDecoder.DecodeDocument(CollidingMapFrame([.. keys, keys[^1]])));
@@ -422,18 +424,34 @@ public sealed class SnapshotDecoderTests
         Assert.Contains("appears twice", error.Message, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void The_crafted_map_keys_collide_for_any_seed()
+    [Theory]
+    // SipHash-1-3 with key 00..0f over the message 00, 01, ... (the reference implementation's vectors; also checked
+    // against an independent implementation that reproduces SipHash-2-4's published vector).
+    [InlineData(0, 0xabac0158050fc4dcUL)]
+    [InlineData(1, 0xc9f49bf37d57ca93UL)]
+    [InlineData(7, 0xd3927d989bb11140UL)]
+    [InlineData(8, 0x369095118d299a8eUL)]
+    [InlineData(15, 0xd320d86d2a519956UL)]
+    [InlineData(16, 0xcc4fdd1a7d908b66UL)]
+    [InlineData(63, 0x9d199062b7bbb3a8UL)]
+    public void The_key_hash_is_SipHash_1_3(int length, ulong expected)
     {
-        // The two tests above only reach the sorting fallback while these keys share one hash; if the hash changes so
-        // they no longer do, this fails instead of the fallback silently losing its coverage.
+        byte[] message = [.. Enumerable.Range(0, length).Select(static value => (byte)value)];
+
+        Assert.Equal(expected, SnapshotDecoder.SipHash13(message, 0x0706050403020100UL, 0x0f0e0d0c0b0a0908UL));
+    }
+
+    [Fact]
+    public void Keys_crafted_to_collide_under_FNV_1a_spread_under_the_keyed_hash()
+    {
+        // These keys collide under FNV-1a for every seed, which is why the decoder no longer uses it.
         string[] keys = CollidingKeys();
         var random = new Random(7);
-        for (int trial = 0; trial < 100; trial++)
+        for (int trial = 0; trial < 20; trial++)
         {
-            uint seed = (uint)random.Next() | 1;
-            uint expected = SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(keys[0]), seed);
-            Assert.All(keys, key => Assert.Equal(expected, SnapshotDecoder.KeyHash(Encoding.UTF8.GetBytes(key), seed)));
+            ulong key0 = (ulong)random.NextInt64(), key1 = (ulong)random.NextInt64();
+            int distinct = keys.Select(key => SnapshotDecoder.SipHash13(Encoding.UTF8.GetBytes(key), key0, key1)).Distinct().Count();
+            Assert.Equal(keys.Length, distinct);
         }
     }
 
@@ -451,8 +469,9 @@ public sealed class SnapshotDecoderTests
 
     private static string[] CollidingKeys()
     {
-        // These blocks of U+0000 and U+0001 have the same FNV-1a transition for every initial hash state. Each
-        // combination is a distinct ordinal string that hashes to the same value even when the decoder's seed changes.
+        // These blocks of U+0000 and U+0001 have the same FNV-1a transition for every initial hash state, so under FNV-1a
+        // (the decoder's old hash) all 64 combinations collide for any seed. The keyed hash spreads them, so the tests
+        // that need collisions force them with CollideKeyHashesForTesting.
         string left = new("00001111111010011101011".Select(static bit => (char)(bit - '0')).ToArray());
         string right = new("10001001100000111101010".Select(static bit => (char)(bit - '0')).ToArray());
         const int Blocks = 6;
