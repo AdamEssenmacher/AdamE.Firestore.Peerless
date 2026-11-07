@@ -34,25 +34,45 @@ if ! dotnet build "$project" -c Release ${incremental[@]+"${incremental[@]}"} >"
   exit 1
 fi
 
-xcrun simctl bootstatus "$udid" -b >/dev/null
-xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
-xcrun simctl install "$udid" "$app"
+# CoreSimulatorService can die under load on CI runners ("Mach error -308 - (ipc/mig) server died"), failing whatever
+# simctl call was in flight. It restarts on the next call, so a failed call is retried once the simulator is booted
+# again; each failure is named, so a persistent one still reads clearly.
+simctl() {
+  local attempt
+  for attempt in 1 2 3; do
+    xcrun simctl "$@" && return 0
+    echo "simctl $1 failed (attempt $attempt of 3)." >&2
+    ((attempt < 3)) || return 1
+    sleep 10
+    xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || true
+  done
+}
 
-# --console-pty keeps the app's stdout attached until it exits; the app exits by itself once the summary is printed.
-xcrun simctl launch --console-pty --terminate-running-process "$udid" "$bundle" >"$log" 2>&1 &
-launcher=$!
+simctl bootstatus "$udid" -b >/dev/null
+xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
+simctl install "$udid" "$app"
 
 summary() { grep -aoE 'MANAGED_TESTS passed=[0-9]+ failed=[0-9]+' "$log" | tail -n 1 || true; }
-# Polls until the summary appears, the launcher exits (the app ended, perhaps crashing), or the timeout.
-for ((waited = 0; waited < timeout_seconds; waited++)); do
-  [[ -n "$(summary)" ]] && break
-  kill -0 "$launcher" 2>/dev/null || break
-  sleep 1
+# --console-pty keeps the app's stdout attached until it exits; the app exits by itself once the summary is printed.
+# Polls until the summary appears, the launcher exits (the app ended, perhaps crashing), or the timeout. A launch that
+# CoreSimulatorService dropped (see simctl above) is tried once more.
+for launch in 1 2; do
+  xcrun simctl launch --console-pty --terminate-running-process "$udid" "$bundle" >"$log" 2>&1 &
+  launcher=$!
+  for ((waited = 0; waited < timeout_seconds; waited++)); do
+    [[ -n "$(summary)" ]] && break
+    kill -0 "$launcher" 2>/dev/null || break
+    sleep 1
+  done
+  result="$(summary)"
+  xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
+  wait "$launcher" 2>/dev/null || true
+  [[ -z "$result" && "$launch" == 1 ]] && grep -q 'NSMachErrorDomain' "$log" || break
+  tr -d '\r' <"$log"
+  echo "The launch failed in CoreSimulator; trying once more." >&2
+  sleep 10
+  xcrun simctl bootstatus "$udid" -b >/dev/null 2>&1 || true
 done
-result="$(summary)"
-
-xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
-wait "$launcher" 2>/dev/null || true
 tr -d '\r' <"$log"
 
 if [[ -z "$result" ]]; then
