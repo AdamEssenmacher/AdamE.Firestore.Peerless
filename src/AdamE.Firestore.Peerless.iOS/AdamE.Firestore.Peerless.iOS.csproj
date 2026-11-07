@@ -10,6 +10,7 @@
     <IsBindingProject>true</IsBindingProject>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>true</IsPackable>
     <Description>Listens to Firestore on iOS through a small Objective-C shim that encodes each snapshot once, so no Firestore value crosses into .NET as a peer object.</Description>
 
     <PeerlessShimDirectory>$(MSBuildThisFileDirectory)../../ios/</PeerlessShimDirectory>

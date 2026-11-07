@@ -5,6 +5,7 @@
     <IsAotCompatible>true</IsAotCompatible>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <IsPackable>true</IsPackable>
     <Description>Decodes Firestore snapshots, encoded once by a native shim, into plain .NET values without per-value peer objects.</Description>
   </PropertyGroup>
 

@@ -6,4 +6,13 @@
     <AnalysisLevel>latest</AnalysisLevel>
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
   </PropertyGroup>
+
+  <!-- Package metadata. Only the libraries under src/ pack (scripts/pack-local.sh); tests and benchmarks never do. -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <Authors>Adam Essenmacher</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/AdamEssenmacher/AdamE.Firestore.Peerless</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/AdamEssenmacher/AdamE.Firestore.Peerless</RepositoryUrl>
+  </PropertyGroup>
 </Project>
