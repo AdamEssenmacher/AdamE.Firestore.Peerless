@@ -210,6 +210,16 @@ public sealed class SnapshotDecoderTests
     }
 
     [Fact]
+    public void Nesting_past_the_limit_names_the_limit()
+    {
+        byte[] frame = DocumentWith(raw => Nest(raw, Wire.MaxDepth));
+
+        PeerlessFormatException exception = Assert.Throws<PeerlessFormatException>(() => SnapshotDecoder.Decode(frame));
+
+        Assert.Contains("the format's limit is 99", exception.Message);
+    }
+
+    [Fact]
     public void Timestamps_at_the_edges_of_firestores_range_decode()
     {
         byte[] frame = DocumentWith(raw => raw.Byte(Wire.Tag.Array).Varint(2)

@@ -214,16 +214,57 @@ static void StringEdgeCases(void) {
     }
 }
 
+// A number whose type is unsigned long long ('Q') whatever its value; a real NSNumber reports 'Q' only above
+// INT64_MAX.
+@interface PLSUnsignedNumber : NSNumber
+- (instancetype)initWithUnsignedValue:(unsigned long long)value;
+@end
+
+@implementation PLSUnsignedNumber {
+    unsigned long long _value;
+}
+
+- (instancetype)initWithUnsignedValue:(unsigned long long)value {
+    self = [super init];
+    if (self)
+        _value = value;
+    return self;
+}
+
+- (const char *)objCType {
+    return @encode(unsigned long long);
+}
+
+- (void)getValue:(void *)value {
+    memcpy(value, &_value, sizeof _value);
+}
+
+- (unsigned long long)unsignedLongLongValue {
+    return _value;
+}
+
+- (long long)longLongValue {
+    return (long long)_value;
+}
+@end
+
 // An unsigned NSNumber past INT64_MAX would wrap to a negative integer, so it is unsupported instead. One that fits is
-// still an integer (NSNumber may report a small unsigned value as 'q'; either way it must come out as 42).
+// still an integer.
 static void UnsignedNumbersNeverWrap(void) {
     AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
     [writer writeValue:@(ULLONG_MAX)];
     const uint8_t maxExpected[] = {12, 11, 'N', 'S', 'N', 'u', 'm', 'b', 'e', 'r', '(', 'Q', ')'};
-    Expect(@"UINT64_MAX is unsupported NSNumber(Q), not a wrapped integer", Bytes(maxExpected, sizeof maxExpected), writer);
+    Expect(@"UINT64_MAX is unsupported NSNumber(Q), not a wrapped integer",
+           Bytes(maxExpected, sizeof maxExpected), writer);
 
+    // NSNumber keeps an unsigned value that fits in int64 as signed ('q'), so a stand-in reports 'Q' for 42.
     [writer reset];
-    [writer writeValue:@(42ULL)];
+    NSNumber *fits = [[PLSUnsignedNumber alloc] initWithUnsignedValue:42];
+    if (fits.objCType[0] != 'Q' || fits.objCType[1] != '\0') {
+        failures++;
+        printf("FAIL the unsigned stand-in reports Q (got %s)\n", fits.objCType);
+    }
+    [writer writeValue:fits];
     const uint8_t fitsExpected[] = {3, 42, 0, 0, 0, 0, 0, 0, 0};
     Expect(@"an unsigned long long that fits is an integer", Bytes(fitsExpected, sizeof fitsExpected), writer);
 }

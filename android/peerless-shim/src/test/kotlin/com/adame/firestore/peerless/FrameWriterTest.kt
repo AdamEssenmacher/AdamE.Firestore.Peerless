@@ -110,6 +110,8 @@ class FrameWriterTest {
             writeDocumentWithNesting(nested(100) { listOf(it) })
         }
         assertTrue(refused.message!!.contains("depth 100"))
+        // Maps take their own path (refuseDeep, then the map body one level deeper), so check both edges for them too.
+        writeDocumentWithNesting(nested(99) { linkedMapOf<String, Any?>("k" to it) })
         assertThrows(FrameWriter.NestingTooDeepException::class.java) {
             writeDocumentWithNesting(nested(100) { linkedMapOf<String, Any?>("k" to it) })
         }
