@@ -289,15 +289,8 @@ static void CollidingLoneSurrogateKeysAreRefused(void) {
     }
 }
 
-static void Check(BOOL ok, const char *name, NSString *detail) {
-    if (ok) {
-        passes++;
-        printf("PASS %s\n", name);
-    } else {
-        failures++;
-        printf("FAIL %s\n  %s\n", name, detail.UTF8String);
-    }
-}
+// Defined below, beside the listener tests that share it.
+void ListenerTestsRecord(BOOL ok, NSString *name, NSString *detail);
 
 // A frame of a header and, if given, one bytes value: NSData is copied in exactly, so the frame's length is known.
 static void WriteFrame(AdamEPeerlessFrameWriter *writer, NSData *payload) {
@@ -322,11 +315,11 @@ static void ShrinkingDropsTheContentAndKeepsWorking(void) {
     AdamEPeerlessFrameWriter *fresh = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
     WriteQueryEmpty(fresh);
     BOOL same = [frame isEqualToData:Bytes(fresh.bytes, fresh.length)];
-    Check(grown >= 3 * 1024 * 1024 && shrunk == 100 * 1024 && lengthAfter == 0 && kept == 100 * 1024 && smallest == 64
-              && same,
-          "shrinkToCapacity: replaces a larger buffer, drops the content, and the writer still encodes",
-          [NSString stringWithFormat:@"grown=%zu shrunk=%zu length=%zu kept=%zu smallest=%zu same=%d", grown, shrunk,
-                                     lengthAfter, kept, smallest, same]);
+    BOOL ok = grown >= 3 * 1024 * 1024 && shrunk == 100 * 1024 && lengthAfter == 0 && kept == 100 * 1024
+        && smallest == 64 && same;
+    ListenerTestsRecord(ok, @"shrinkToCapacity: replaces a larger buffer, drops the content, and the writer still encodes",
+                        [NSString stringWithFormat:@"grown=%zu shrunk=%zu length=%zu kept=%zu smallest=%zu same=%d",
+                                                   grown, shrunk, lengthAfter, kept, smallest, same]);
 }
 
 // The listener's policy: 8 frames in a row under a quarter of a buffer above 1 MB shrink it to fit the largest.
@@ -347,9 +340,10 @@ static void AnIdleWriterGivesBackAnOversizedBuffer(void) {
     WriteFrame(writer, nil);
     [writer shrinkIfIdle];
     size_t afterEight = writer.capacity;
-    Check(afterBig == 4 * 1024 * 1024 && afterSeven == afterBig && afterEight == 64 * 1024,
-          "a writer shrinks after 8 small frames in a row, not 7",
-          [NSString stringWithFormat:@"afterBig=%zu afterSeven=%zu afterEight=%zu", afterBig, afterSeven, afterEight]);
+    ListenerTestsRecord(afterBig == 4 * 1024 * 1024 && afterSeven == afterBig && afterEight == 64 * 1024,
+                        @"a writer shrinks after 8 small frames in a row, not 7",
+                        [NSString stringWithFormat:@"afterBig=%zu afterSeven=%zu afterEight=%zu", afterBig, afterSeven,
+                                                   afterEight]);
 
     // A big frame in between starts the count again; the size fits the largest small frame (600 KB → 1 MB).
     WriteFrame(writer, big);
@@ -368,9 +362,9 @@ static void AnIdleWriterGivesBackAnOversizedBuffer(void) {
     WriteFrame(writer, nil);
     [writer shrinkIfIdle];
     size_t fitted = writer.capacity;
-    Check(afterReset == 4 * 1024 * 1024 && fitted == 1024 * 1024,
-          "a large frame resets the count, and the shrink fits the largest small frame",
-          [NSString stringWithFormat:@"afterReset=%zu fitted=%zu", afterReset, fitted]);
+    ListenerTestsRecord(afterReset == 4 * 1024 * 1024 && fitted == 1024 * 1024,
+                        @"a large frame resets the count, and the shrink fits the largest small frame",
+                        [NSString stringWithFormat:@"afterReset=%zu fitted=%zu", afterReset, fitted]);
 
     // A buffer of 1 MB or less is never shrunk.
     AdamEPeerlessFrameWriter *modest = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:1024 * 1024];
@@ -378,8 +372,8 @@ static void AnIdleWriterGivesBackAnOversizedBuffer(void) {
         WriteFrame(modest, nil);
         [modest shrinkIfIdle];
     }
-    Check(modest.capacity == 1024 * 1024, "a buffer of 1 MB or less is not shrunk",
-          [NSString stringWithFormat:@"capacity=%zu", modest.capacity]);
+    ListenerTestsRecord(modest.capacity == 1024 * 1024, @"a buffer of 1 MB or less is not shrunk",
+                        [NSString stringWithFormat:@"capacity=%zu", modest.capacity]);
 }
 
 // Stand-ins for a query snapshot, with only what -writeQuerySnapshot: reads. The writer is typed for FIR classes but

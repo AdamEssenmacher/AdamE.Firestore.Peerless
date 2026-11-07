@@ -119,6 +119,9 @@ internal sealed unsafe class FrameReceiver : IDisposable
         {
             // Attach records the remover before anything in it can throw, so Stop removes the registration exactly
             // once, through the gate, even when Attach already removed it. The shim's release then frees the handle.
+            // Posting a held early error is Attach's last step, so when it throws nothing has been posted for Stop to
+            // cancel; but if it throws after taking that error (removing, or posting), the error is lost and this
+            // exception replaces it.
             receiver.gate.Stop();
             throw;
         }

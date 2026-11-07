@@ -36,16 +36,22 @@ const char *adame_peerless_compiled_firebase_version(void) {
     return ADAME_PEERLESS_FIREBASE_VERSION;
 }
 
+/// Returned by adame_peerless_runtime_firestore_version when Firestore is linked into another binary. Keep in step with
+/// StaticallyLinkedFirestore in src/AdamE.Firestore.Peerless.iOS/PeerlessListener.cs.
+static const char PLSStaticallyLinkedFirestore[] = "static";
+
 const char *adame_peerless_runtime_firestore_version(void) {
     static char version[32];
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        // Statically linked, Firestore's class lives in the app executable and this is the app's bundle, whose version
-        // is the app's own. Report that as unreadable rather than as Firestore's.
+        // Statically linked into the app or another framework, Firestore's class lives in that binary and its bundle
+        // carries that binary's version. Firestore's own framework is told apart by its executable name, which (unlike
+        // the bundle identifier) doesn't vary by packager.
         NSBundle *bundle = [NSBundle bundleForClass:[FIRFirestore class]];
-        NSBundle *app = [NSBundle mainBundle];
-        if (bundle == app || [bundle.bundleURL.URLByStandardizingPath isEqual:app.bundleURL.URLByStandardizingPath])
+        if (![bundle.infoDictionary[@"CFBundleExecutable"] isEqual:@"FirebaseFirestoreInternal"]) {
+            strlcpy(version, PLSStaticallyLinkedFirestore, sizeof version);
             return;
+        }
         NSString *value = bundle.infoDictionary[@"CFBundleShortVersionString"];
         if ([value isKindOfClass:[NSString class]])
             strlcpy(version, value.UTF8String, sizeof version);

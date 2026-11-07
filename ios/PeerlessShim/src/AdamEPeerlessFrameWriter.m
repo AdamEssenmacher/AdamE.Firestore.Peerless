@@ -97,19 +97,18 @@ static const int PLSShrinkAfterFrames = 8;
 // buffer stays: shrinking only saves memory, so it never raises.
 - (void)shrinkToCapacity:(size_t)capacity {
     size_t target = capacity < 64 ? 64 : capacity;
-    if (target < _capacity) {
-        uint8_t *smaller = malloc(target);
-        if (smaller != NULL) {
-            free(_buffer);
-            _buffer = smaller;
-            _capacity = target;
+    uint8_t *smaller = target < _capacity ? malloc(target) : NULL;
+    if (smaller != NULL) {
+        free(_buffer);
+        _buffer = smaller;
+        _capacity = target;
+        // The scratch only grows too, to the longest string with a lone surrogate; it is regrown on demand. Freed only
+        // alongside a real shrink, so a call that keeps the buffer keeps it too.
+        if (_scratchCapacity * sizeof(unichar) > target) {
+            free(_scratch);
+            _scratch = NULL;
+            _scratchCapacity = 0;
         }
-    }
-    // The scratch only grows too, to the longest string with a lone surrogate; it is regrown on demand.
-    if (_scratchCapacity * sizeof(unichar) > target) {
-        free(_scratch);
-        _scratch = NULL;
-        _scratchCapacity = 0;
     }
     [self reset];
 }

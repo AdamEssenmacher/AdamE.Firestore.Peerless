@@ -81,11 +81,11 @@ void adame_peerless_listener_remove(void *listener, adame_peerless_release_callb
 
 /// The version of this C API: the declarations above and their contract (the signatures, the layout of
 /// adame_peerless_frame_timing, and what the arguments mean: error codes, which objects are borrowed or retained, when
-/// `timing` is NULL, when `release` runs). Bump it with any change to them, and Native.AbiVersion in
-/// src/AdamE.Firestore.Peerless.iOS/Native.cs with it (scripts/test-ios-shim.sh checks the two agree). .NET checks it
-/// before the first listen, so a stale or prebuilt xcframework fails with a clear error instead of calling a callback
-/// with the wrong arguments.
-#define ADAME_PEERLESS_ABI_VERSION 1
+/// `timing` is NULL, when `release` runs), plus what the version getters below return. Bump it with any change to
+/// them, and Native.AbiVersion in src/AdamE.Firestore.Peerless.iOS/Native.cs with it (scripts/test-ios-shim.sh checks
+/// the two agree). .NET checks it before the first listen, so a stale or prebuilt xcframework fails with a clear error
+/// instead of calling a callback with the wrong arguments or misreading a version.
+#define ADAME_PEERLESS_ABI_VERSION 2
 
 /// ADAME_PEERLESS_ABI_VERSION as this shim was compiled.
 int32_t adame_peerless_abi_version(void);
@@ -94,9 +94,11 @@ int32_t adame_peerless_abi_version(void);
 const char *adame_peerless_compiled_firebase_version(void);
 
 /// The version of the FirebaseFirestoreInternal framework the app actually loaded, from its bundle's
-/// CFBundleShortVersionString (Firestore has no public version API), or "" if it can't be read. Also "" when Firestore
-/// is statically linked into the app, since its bundle is then the app's and carries the app's version. An ABI break (a
-/// symbol the shim uses gone) fails earlier, when dyld loads the app, before any version check can run.
+/// CFBundleShortVersionString (Firestore has no public version API), or "" if that bundle has none. "static" when
+/// Firestore is statically linked into the app or into another framework (the bundle holding it has no
+/// CFBundleExecutable, or one other than FirebaseFirestoreInternal), since that bundle carries its own binary's
+/// version, not Firestore's. An ABI break (a symbol the shim uses gone) fails earlier, when dyld loads the app, before
+/// any version check can run.
 const char *adame_peerless_runtime_firestore_version(void);
 
 /// The shim's monotonic clock (CLOCK_UPTIME_RAW), in nanoseconds.

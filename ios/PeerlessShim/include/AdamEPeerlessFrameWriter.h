@@ -48,9 +48,10 @@ typedef NS_ENUM(uint8_t, AdamEPeerlessSection) {
 /// The buffer's current size. It grows as frames need, and only -shrinkIfIdle or -shrinkToCapacity: makes it smaller.
 @property(nonatomic, readonly) size_t capacity;
 
-/// Drops the content, and replaces the buffer with one of `capacity` bytes (at least 64) when that is smaller; also
-/// frees a string scratch larger than that. Unlike Android's shrinkTo it resets even when nothing shrinks, so call it
-/// only between frames. If the smaller buffer can't be allocated the old one is kept; it never raises.
+/// Drops the content, and replaces the buffer with one of `capacity` bytes (at least 64) when that is smaller, then
+/// also frees a string scratch larger than that. Unlike Android's shrinkTo it resets even when nothing shrinks, so call
+/// it only between frames. If the smaller buffer can't be allocated the old one (and the scratch) is kept; it never
+/// raises.
 - (void)shrinkToCapacity:(size_t)capacity;
 /// Call once the current frame has been delivered and its bytes are no longer read. After 8 frames in a row that each
 /// used under a quarter of a buffer above 1 MB, shrinks the buffer to fit the largest of them (the next power of two,
