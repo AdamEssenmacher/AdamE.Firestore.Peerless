@@ -142,7 +142,8 @@ map-body = count:varint (key:string value)*count
 - **Server timestamps** that the backend hasn't resolved yet are written exactly as the platform SDK reports them with
   its default `ServerTimestampBehavior` (`NONE`, which means null). Peerless doesn't add its own estimate.
 - **Integers** are whatever the SDK reports as a 64-bit integer (`Long` on Android, an integer `NSNumber` on iOS), and
-  **doubles** are what it reports as a double. Neither is ever converted into the other.
+  **doubles** are what it reports as a double. Neither is ever converted into the other. An unsigned `NSNumber` above
+  the `i64` range (which Firestore doesn't produce) is written as unsupported rather than wrapped.
 - Anything else, for example `VectorValue` or a future SDK type, is written as **unsupported** with the platform's
   class name (on Android, `getClass().getName()`).
 

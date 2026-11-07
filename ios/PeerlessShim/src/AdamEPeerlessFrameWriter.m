@@ -364,9 +364,19 @@ static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth) {
                 PLSDouble(self, [value doubleValue]);
                 break;
             case 'q': case 'l': case 'i': case 's': case 'c':
-            case 'Q': case 'L': case 'I': case 'S': case 'C':
+            case 'I': case 'S': case 'C':
                 PLSByte(self, PLSTagInteger);
                 PLSInt64(self, [value longLongValue]);
+                break;
+            case 'Q': case 'L':
+                // 64 bits unsigned ('L' too on 64-bit iOS): above INT64_MAX, longLongValue would wrap to a negative
+                // number, so it is unsupported rather than a wrong integer.
+                if ([value unsignedLongLongValue] <= (unsigned long long)INT64_MAX) {
+                    PLSByte(self, PLSTagInteger);
+                    PLSInt64(self, [value longLongValue]);
+                } else {
+                    PLSUnsupported(self, [NSString stringWithFormat:@"NSNumber(%s)", type]);
+                }
                 break;
             default:
                 PLSUnsupported(self, [NSString stringWithFormat:@"NSNumber(%s)", type]);
