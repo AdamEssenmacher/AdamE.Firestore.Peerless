@@ -62,7 +62,9 @@ internal sealed unsafe class FrameReceiver : IDisposable
     private readonly Action<FirestoreSnapshot> onSnapshot;
     private readonly IFrameObserver? observer;
 
-    private FrameReceiver(
+    // Internal, not private, only so the iOS test host can build a receiver no shim listener holds and drive its
+    // native entry points and Attach directly.
+    internal FrameReceiver(
         FrameDecoder decode,
         Action<FirestoreSnapshot> onSnapshot,
         Action<Exception> onError,
@@ -110,10 +112,18 @@ internal sealed unsafe class FrameReceiver : IDisposable
                 exception is null ? null : new ObjCException(exception));
         }
 
-        // A first callback on another queue may already have failed: Attach then removes it and posts the error.
+        receiver.Attach(() => Native.Remove(created, &OnRelease), callbackQueue);
+        return receiver;
+    }
+
+    // Start's last step, once the shim has a registration; internal so the iOS test host can run it without
+    // Firestore. A first callback on another queue may already have failed: Attach then removes it and posts the
+    // error.
+    internal void Attach(Action remove, Func<DispatchQueue> callbackQueue)
+    {
         try
         {
-            receiver.gate.Attach(() => Native.Remove(created, &OnRelease), EarlyErrorPost(callbackQueue));
+            gate.Attach(remove, EarlyErrorPost(callbackQueue));
         }
         catch
         {
@@ -122,15 +132,18 @@ internal sealed unsafe class FrameReceiver : IDisposable
             // Posting a held early error is Attach's last step, so when it throws nothing has been posted for Stop to
             // cancel; but if it throws after taking that error (removing, or posting), the error is lost and this
             // exception replaces it.
-            receiver.gate.Stop();
+            gate.Stop();
             throw;
         }
-
-        return receiver;
     }
 
     /// <summary>Stops the listener (see <see cref="PeerlessListener"/>'s remarks). Idempotent; safe from any thread.</summary>
     public void Dispose() => gate.Stop();
+
+    // The entry points Start hands the shim, for the iOS test host to call as the shim would. Test-only.
+    internal static delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> OnFrameEntry => &OnFrame;
+
+    internal static delegate* unmanaged<nint, int, byte*, nint, void> OnErrorEntry => &OnError;
 
     [UnmanagedCallersOnly]
     private static void OnFrame(nint context, byte* data, nuint length, FrameTiming* timing)

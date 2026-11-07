@@ -37,6 +37,8 @@
       <Frameworks>Foundation FirebaseFirestoreInternal FirebaseCore</Frameworks>
     </NativeReference>
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.iOS" />
+    <!-- The managed test host drives FrameReceiver's native entry points and Attach without Firestore. -->
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Tests.iOS" />
   </ItemGroup>
 
   <!-- Builds the shim when its sources are newer than the xcframework. A packaged build will ship the xcframework. -->

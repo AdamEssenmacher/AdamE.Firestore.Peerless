@@ -23,6 +23,8 @@ under NativeAOT. Nothing is published as a NuGet yet.
 | `android/peerless-shim` | The Java shim (AAR), with Kotlin tests against the golden frames |
 | `src/AdamE.Firestore.Peerless.iOS` | `PeerlessListener.Listen(query, onSnapshot, onError)` on iOS, over the shim's C API |
 | `ios/PeerlessShim` | The Objective-C shim (static xcframework, linked against the binding's own Firestore), with tests against the golden frames |
+| `tests/AdamE.Firestore.Peerless.Tests.Android` | Test app: managed tests against the real Android receiver |
+| `tests/AdamE.Firestore.Peerless.Tests.iOS` | Test app (simulator): managed tests against the real iOS receiver |
 | `fixtures/wire` | Golden frames every encoder must reproduce byte for byte |
 | `benchmarks/Shared` | The platform-neutral half of both benchmark apps: seeded documents, phases, settle points |
 | `benchmarks/AdamE.Firestore.Peerless.Benchmarks.Android` | NativeAOT benchmark app: peered vs Peerless |
@@ -36,6 +38,8 @@ dotnet test --project tests/AdamE.Firestore.Peerless.Tests        # decoder, pro
 dotnet run -c Release --project benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder   # decode time and allocation
 (cd android && ./gradlew :peerless-shim:testDebugUnitTest)         # Java encoder against the same golden frames
 scripts/test-ios-shim.sh <simulator-udid>                          # Objective-C encoder against the same golden frames
+scripts/test-android-managed.sh [adb-serial]                       # managed tests against the real Android receiver
+scripts/test-ios-managed.sh <simulator-udid>                       # managed tests against the real iOS receiver
 ```
 
 Using it on Android (queries are built with the ordinary binding):

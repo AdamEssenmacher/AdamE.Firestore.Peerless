@@ -183,9 +183,14 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
     }
 
     // An error that arrived before Listen returned is delivered from here, after the app has its handle.
-    private static void PostToMainThread(Action action)
+    private static void PostToMainThread(Action action) =>
+        PostToLooper(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."), action);
+
+    // Internal, not private, only for tests: the main looper can't quit in a running app, so they pass a quit
+    // HandlerThread's looper to reach the refused-post branch. Production always passes the main looper.
+    internal static void PostToLooper(Looper looper, Action action)
     {
-        using var handler = new Handler(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."));
+        using var handler = new Handler(looper);
         if (!handler.Post(action))
         {
             // The main looper is quitting, so the process is ending. The registration is already removed, and running

@@ -1,6 +1,7 @@
 # Builds everything and runs every test that needs no Firestore emulator: the core library's tests, the Java shim's
-# unit tests, and the Objective-C shim's tests on an iOS Simulator. The benchmarks are built, not run (they need the
-# emulator).
+# unit tests, the Objective-C shim's tests on an iOS Simulator, and the managed receiver tests (test apps that drive
+# the real platform receivers) on an Android emulator and the iOS Simulator. The benchmarks are built, not run (they
+# need the Firestore emulator).
 name: CI
 
 on:
@@ -64,6 +65,52 @@ jobs:
       - name: Build (no Apple projects)
         run: dotnet build AdamE.Firestore.Peerless.NoApple.slnf -c Release
 
+  android-managed:
+    name: Android managed receiver tests (emulator)
+    # Its own job, not steps in 'android': it boots an emulator (minutes, and flakier than a build), so it runs in
+    # parallel and its failures are told apart from build and shim failures.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Hardware acceleration for the x86_64 emulator; GitHub's Linux runners expose /dev/kvm but not to the runner
+      # user.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+          cache-dependency-path: |
+            android/*.gradle.kts
+            android/peerless-shim/*.gradle.kts
+            android/gradle/wrapper/gradle-wrapper.properties
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Install the Android workload
+        run: dotnet workload install android --version "$WORKLOAD_VERSION"
+      # Built before the emulator boots so build errors get their own step and the emulator doesn't idle through a
+      # cold build; the script's own build afterwards is incremental. x64 matches the emulator's x86_64 ABI.
+      - name: Build the managed test app (x86_64)
+        run: dotnet build tests/AdamE.Firestore.Peerless.Tests.Android -c Release -p:RuntimeIdentifier=android-x64
+      - name: Managed receiver tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # A widely used combination for this action; x86_64 so the emulator runs natively under KVM (the script
+          # builds the test app for the device's ABI).
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          # The first emulator the action starts listens on port 5554.
+          script: scripts/test-android-managed.sh emulator-5554
+
   ios:
     name: iOS shim, library and benchmark
     # GitHub's macOS image with Xcode 27 (a preview label; see actions/runner-images#14404).
@@ -98,3 +145,5 @@ jobs:
           echo "udid=$udid" >> "$GITHUB_OUTPUT"
       - name: Objective-C shim tests
         run: scripts/test-ios-shim.sh "${{ steps.simulator.outputs.udid }}"
+      - name: Managed receiver tests
+        run: scripts/test-ios-managed.sh "${{ steps.simulator.outputs.udid }}"
