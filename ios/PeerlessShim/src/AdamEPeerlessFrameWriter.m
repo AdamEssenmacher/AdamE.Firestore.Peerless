@@ -30,7 +30,8 @@ static Class PLSStringClass, PLSNumberClass, PLSDictionaryClass, PLSArrayClass, 
 static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 
 // Buffers above this size are shrunk once frames have been much smaller for a while, so one huge snapshot doesn't pin
-// its memory for the rest of the listener's life. The same policy as the Android shim's Encoder.
+// its memory for the rest of the listener's life. The Android shim's Encoder has the same policy, judged by final
+// length; here it is judged by the room a frame needed while encoding (see -shrinkIfIdle).
 static const size_t PLSShrinkAbove = 1024 * 1024;
 static const int PLSShrinkAfterFrames = 8;
 
@@ -43,8 +44,9 @@ static const int PLSShrinkAfterFrames = 8;
     size_t _scratchCapacity;
     uint64_t _dataNanos;
     BOOL _timesData;
-    int _smallFrames;           // frames in a row that used under a quarter of a buffer above PLSShrinkAbove
-    size_t _largestRecentFrame; // the largest of them
+    size_t _frameNeed;         // the most room this frame has needed while encoding: length plus what PLSEnsure asked
+    int _smallFrames;          // frames in a row that needed under a quarter of a buffer above PLSShrinkAbove
+    size_t _largestRecentNeed; // the most any of them needed
 }
 
 + (void)initialize {
@@ -121,23 +123,25 @@ static size_t PLSCapacityFor(size_t length) {
     return capacity < length ? length : capacity;
 }
 
-// After PLSShrinkAfterFrames frames in a row that each used under a quarter of a buffer above PLSShrinkAbove, the
-// buffer is cut to fit the largest of them. Capacity rather than any one frame decides, because growth doubles and a
-// string reserves room for 3 bytes a character, so even a single frame can leave the buffer well above its length.
+// After PLSShrinkAfterFrames frames in a row that each needed under a quarter of a buffer above PLSShrinkAbove, the
+// buffer is cut to fit the most any of them needed. Need, not final length: a string reserves 3 bytes a character
+// before converting, so a frame of one long ASCII string needs ~3x its length. Judged by length, such frames would
+// shrink the buffer after 8 of them and regrow it on the next, forever. Capacity rather than any one frame decides
+// what "small" means, because growth doubles, so even a single frame can leave the buffer well above its need.
 - (void)shrinkIfIdle {
-    size_t length = _length;
-    if (_capacity <= PLSShrinkAbove || length >= _capacity / 4) {
+    size_t need = _frameNeed > _length ? _frameNeed : _length;
+    if (_capacity <= PLSShrinkAbove || need >= _capacity / 4) {
         _smallFrames = 0;
-        _largestRecentFrame = 0;
+        _largestRecentNeed = 0;
         return;
     }
-    if (length > _largestRecentFrame)
-        _largestRecentFrame = length;
+    if (need > _largestRecentNeed)
+        _largestRecentNeed = need;
     if (++_smallFrames < PLSShrinkAfterFrames)
         return;
-    [self shrinkToCapacity:PLSCapacityFor(_largestRecentFrame)];
+    [self shrinkToCapacity:PLSCapacityFor(_largestRecentNeed)];
     _smallFrames = 0;
-    _largestRecentFrame = 0;
+    _largestRecentNeed = 0;
 }
 
 - (uint64_t)dataNanos {
@@ -152,11 +156,15 @@ static size_t PLSCapacityFor(size_t length) {
     _timesData = timesData;
 }
 
+// Records the frame's need on every call, growth or not, so -shrinkIfIdle never cuts below what a frame like it needs.
 static inline void PLSEnsure(AdamEPeerlessFrameWriter *self, size_t extra) {
-    if (self->_length + extra <= self->_capacity)
+    size_t need = self->_length + extra;
+    if (need > self->_frameNeed)
+        self->_frameNeed = need;
+    if (need <= self->_capacity)
         return;
     size_t capacity = self->_capacity;
-    while (capacity < self->_length + extra)
+    while (capacity < need)
         capacity *= 2;
     uint8_t *grown = realloc(self->_buffer, capacity);
     if (grown == NULL)
@@ -529,6 +537,7 @@ static void PLSSnapshotDocument(AdamEPeerlessFrameWriter *self, FIRDocumentSnaps
 
 - (void)reset {
     _length = 0;
+    _frameNeed = 0;
     _sectionStart = -1;
     _dataNanos = 0;
 }

@@ -322,7 +322,8 @@ static void ShrinkingDropsTheContentAndKeepsWorking(void) {
                                                    grown, shrunk, lengthAfter, kept, smallest, same]);
 }
 
-// The listener's policy: 8 frames in a row under a quarter of a buffer above 1 MB shrink it to fit the largest.
+// The listener's policy: 8 frames in a row needing under a quarter of a buffer above 1 MB shrink it to fit the most
+// they needed. A bytes value is copied in exactly, so these frames need what they end up as: 8 + 1 + varint + count.
 static void AnIdleWriterGivesBackAnOversizedBuffer(void) {
     NSData *big = [NSMutableData dataWithLength:3 * 1024 * 1024];
     NSData *medium = [NSMutableData dataWithLength:600 * 1024];
@@ -374,6 +375,54 @@ static void AnIdleWriterGivesBackAnOversizedBuffer(void) {
     }
     ListenerTestsRecord(modest.capacity == 1024 * 1024, @"a buffer of 1 MB or less is not shrunk",
                         [NSString stringWithFormat:@"capacity=%zu", modest.capacity]);
+}
+
+// A frame of a header and one string value. The string reserves 5 + 3 bytes a character before converting, so an
+// ASCII string of n characters needs 8 (header) + 1 (tag) + 5 + 3n bytes while encoding but ends up about n long.
+static void WriteStringFrame(AdamEPeerlessFrameWriter *writer, NSString *value) {
+    [writer reset];
+    [writer writeHeader:AdamEPeerlessFrameKindQuery];
+    [writer writeValue:value];
+}
+
+// Judged by final length, these frames would shrink the buffer after 8 and regrow it on the 9th, forever.
+static void FramesThatNeedMoreThanTheirLengthDoNotShrink(void) {
+    // 500,000 chars: need 14 + 1,500,000 = 1,500,014, so from 64 bytes the buffer doubles to 2 MB (2,097,152); the
+    // frame is 9 + 3 (varint) + 500,000 = 500,012 bytes, under a quarter (524,288). Its need is not.
+    NSString *large = [@"" stringByPaddingToLength:500000 withString:@"a" startingAtIndex:0];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    WriteStringFrame(writer, large);
+    [writer shrinkIfIdle];
+    size_t first = writer.capacity, lengthOfOne = writer.length;
+    // Checked after every frame: a shrink on the 8th is undone by the 9th, so the end alone would hide it.
+    BOOL steady = YES;
+    for (int frame = 0; frame < 10; frame++) {
+        WriteStringFrame(writer, large);
+        [writer shrinkIfIdle];
+        steady &= writer.capacity == first;
+    }
+    ListenerTestsRecord(first == 2 * 1024 * 1024 && lengthOfOne < first / 4 && steady,
+                        @"frames whose strings need over a quarter of the buffer don't shrink it, however short",
+                        [NSString stringWithFormat:@"first=%zu length=%zu steady=%d final=%zu", first, lengthOfOne,
+                                                   steady, writer.capacity]);
+
+    // The shrink fits the need too: after a 4 MB frame, 8 frames of a 200,000-char string (need 600,014; length
+    // 200,012) cut the buffer to 1 MB, not 256 KB, and the next such frame doesn't grow it again.
+    NSString *medium = [@"" stringByPaddingToLength:200000 withString:@"a" startingAtIndex:0];
+    WriteFrame(writer, [NSMutableData dataWithLength:3 * 1024 * 1024]);
+    [writer shrinkIfIdle];
+    size_t afterBig = writer.capacity;
+    for (int frame = 0; frame < 8; frame++) {
+        WriteStringFrame(writer, medium);
+        [writer shrinkIfIdle];
+    }
+    size_t fitted = writer.capacity;
+    WriteStringFrame(writer, medium);
+    size_t whileEncoding = writer.capacity;
+    ListenerTestsRecord(afterBig == 4 * 1024 * 1024 && fitted == 1024 * 1024 && whileEncoding == fitted,
+                        @"a shrink fits the most the small frames needed, not their length",
+                        [NSString stringWithFormat:@"afterBig=%zu fitted=%zu whileEncoding=%zu", afterBig, fitted,
+                                                   whileEncoding]);
 }
 
 // Stand-ins for a query snapshot, with only what -writeQuerySnapshot: reads. The writer is typed for FIR classes but
@@ -471,6 +520,7 @@ int main(int argc, const char *argv[]) {
         AThrowingSnapshotIsReleased();
         ShrinkingDropsTheContentAndKeepsWorking();
         AnIdleWriterGivesBackAnOversizedBuffer();
+        FramesThatNeedMoreThanTheirLengthDoNotShrink();
         RunListenerTests();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;

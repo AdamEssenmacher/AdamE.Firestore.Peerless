@@ -60,13 +60,15 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
-/// snapshot or .NET could not decode it. If decoding fails some other way (for example,
-/// <see cref="OutOfMemoryException"/> on a very large snapshot), <c>onError</c> receives that exception. Either way
-/// the listener has stopped and nothing more arrives. It is required, so a failing listener can't go silent. The
-/// native error behind a Firestore or encoding failure is the <see cref="Exception.InnerException"/>: an
-/// <c>NSErrorException</c> wrapping Firestore's <c>NSError</c> (domain, code and <c>UserInfo</c> intact, including
-/// errors from outside Firestore's domain, which report <see cref="FirestoreErrorCode.Unknown"/>), or an
-/// <c>ObjCException</c> wrapping what the encoder raised.
+/// snapshot or .NET could not decode it. Encoding failures are data-dependent: two keys of one map that differ only in
+/// lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), and an array or map nested at
+/// depth 100 or more is refused (Firestore's own limit of 20 levels rules that out), so that snapshot fails. If
+/// decoding fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
+/// <c>onError</c> receives that exception. Either way the listener has stopped and nothing more arrives. It is
+/// required, so a failing listener can't go silent. The native error behind a Firestore or encoding failure is the
+/// <see cref="Exception.InnerException"/>: an <c>NSErrorException</c> wrapping Firestore's <c>NSError</c> (domain,
+/// code and <c>UserInfo</c> intact, including errors from outside Firestore's domain, which report
+/// <see cref="FirestoreErrorCode.Unknown"/>), or an <c>ObjCException</c> wrapping what the encoder raised.
 /// </para>
 /// <para>
 /// <b>Exceptions from your callbacks</b> are not caught: one thrown out of <c>onSnapshot</c> or <c>onError</c> can't

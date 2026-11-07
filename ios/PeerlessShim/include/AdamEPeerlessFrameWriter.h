@@ -54,8 +54,11 @@ typedef NS_ENUM(uint8_t, AdamEPeerlessSection) {
 /// raises.
 - (void)shrinkToCapacity:(size_t)capacity;
 /// Call once the current frame has been delivered and its bytes are no longer read. After 8 frames in a row that each
-/// used under a quarter of a buffer above 1 MB, shrinks the buffer to fit the largest of them (the next power of two,
-/// at least 64 KB), as the Android shim does. Any larger frame, or a buffer of 1 MB or less, starts the count again.
+/// needed under a quarter of a buffer above 1 MB, shrinks the buffer to fit the most any of them needed (the next
+/// power of two, at least 64 KB). A frame's need is the most room it asked for while encoding, which can exceed its
+/// length: a string reserves 3 bytes a character before converting. Any frame that needed more, or a buffer of 1 MB
+/// or less, starts the count again. The Android shim has the same policy but judges by final length, which is exact
+/// there because its strings reserve only their real byte count.
 - (void)shrinkIfIdle;
 /// Whether to time -[FIRDocumentSnapshot data] (two clock reads per document). Off unless a listener is timed.
 @property(nonatomic) BOOL timesData;

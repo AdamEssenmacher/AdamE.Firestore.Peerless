@@ -56,6 +56,8 @@ typedef struct Probe {
     int lastNativeKind;  // 0 none, 1 NSError, 2 NSException, 3 something else
     adame_peerless_frame_timing firstFrameTiming;
     atomic_int timedFrames; // frames that arrived with non-NULL timing
+    size_t expectedLength;  // what the last encode wrote, for OnFrameCheckingIntact
+    atomic_int intactFrames; // frames OnFrameCheckingIntact saw arrive as encoded
 } Probe;
 
 static void OnFrame(void *context, const uint8_t *data, size_t length,
@@ -81,6 +83,15 @@ static void OnFrame(void *context, const uint8_t *data, size_t length,
             break;
     }
     atomic_fetch_sub(&probe->inside, 1);
+}
+
+// A shrink frees the buffer and resets the length, so a frame delivered after one arrives empty instead.
+static void OnFrameCheckingIntact(void *context, const uint8_t *data, size_t length,
+                                  const adame_peerless_frame_timing *timing) {
+    Probe *probe = context;
+    if (data != NULL && length >= 8 && length == probe->expectedLength && memcmp(data, "PLSF", 4) == 0)
+        atomic_fetch_add(&probe->intactFrames, 1);
+    OnFrame(context, data, length, timing);
 }
 
 static void OnRelease(void *context) {
@@ -171,12 +182,14 @@ static void AnUntimedListenerGetsNoTiming(void) {
                                                    atomic_load(&probe.timedFrames)]);
 }
 
-// The listener applies the writer's shrink policy after each frame (the policy itself: GoldenFixtureTests.m).
+// The listener applies the writer's shrink policy after each frame (the policy itself: GoldenFixtureTests.m), and
+// only once the frame is delivered: every frame, the 8th small one that shrinks included, must arrive intact.
 static void AnIdleListenerGivesBackAnOversizedBuffer(void) {
     Probe probe = {.behaviour = BehaviourCount};
+    Probe *probeRef = &probe;
     AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
     AdamEPeerlessTestingCallback callback = nil;
-    void *listener = Listen(&probe, OnFrame, registration, &callback);
+    void *listener = Listen(&probe, OnFrameCheckingIntact, registration, &callback);
 
     NSData *big = [NSMutableData dataWithLength:3 * 1024 * 1024];
     __block AdamEPeerlessFrameWriter *seen = nil;
@@ -185,19 +198,25 @@ static void AnIdleListenerGivesBackAnOversizedBuffer(void) {
         [writer reset];
         [writer writeHeader:AdamEPeerlessFrameKindQuery];
         [writer writeValue:big];
+        probeRef->expectedLength = writer.length;
     });
+    void (^small)(AdamEPeerlessFrameWriter *) = ^(AdamEPeerlessFrameWriter *writer) {
+        Encode(writer);
+        probeRef->expectedLength = writer.length;
+    };
     size_t afterBig = seen.capacity;
     for (int frame = 0; frame < 7; frame++)
-        callback(@"snapshot", nil, Encode);
+        callback(@"snapshot", nil, small);
     size_t afterSeven = seen.capacity;
-    callback(@"snapshot", nil, Encode);
+    callback(@"snapshot", nil, small);
     size_t afterEight = seen.capacity;
     adame_peerless_listener_remove(listener, OnRelease);
     BOOL ok = afterBig >= 3 * 1024 * 1024 && afterSeven == afterBig && afterEight == 64 * 1024 && probe.frames == 9
-        && probe.releases == 1 && registration.removes == 1;
+        && atomic_load(&probe.intactFrames) == 9 && probe.releases == 1 && registration.removes == 1;
     ListenerTestsRecord(ok, @"a listener shrinks its writer after 8 small frames, not 7",
-                        [NSString stringWithFormat:@"%@ afterBig=%zu afterSeven=%zu afterEight=%zu",
-                                                   Counts(&probe, registration), afterBig, afterSeven, afterEight]);
+                        [NSString stringWithFormat:@"%@ afterBig=%zu afterSeven=%zu afterEight=%zu intact=%d",
+                                                   Counts(&probe, registration), afterBig, afterSeven, afterEight,
+                                                   atomic_load(&probe.intactFrames)]);
 }
 
 static void DisposeBeforeFirstCallback(void) {
