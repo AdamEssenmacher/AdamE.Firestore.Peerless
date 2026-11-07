@@ -49,8 +49,9 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// <para>
 /// <b>Registration timing.</b> A callback on another thread can run before the calling code assigns the returned
 /// handle. An error that arrives before the native registration is attached is held, then posted to the main queue and
-/// from there to Firestore's callback queue. So a caller on the main thread, or on a serial callback queue, has its
-/// handle before that <c>onError</c> runs; a caller on any other thread may not.
+/// from there to Firestore's callback queue (if that queue can't be read, it runs on the main queue instead). So a
+/// caller on the main thread, or on a serial callback queue, has its handle before that <c>onError</c> runs; a caller
+/// on any other thread may not.
 /// </para>
 /// <para>
 /// <b>Lifetime.</b> Until it is disposed or fails, a listener is rooted: the shim holds a GC handle to its callbacks, so

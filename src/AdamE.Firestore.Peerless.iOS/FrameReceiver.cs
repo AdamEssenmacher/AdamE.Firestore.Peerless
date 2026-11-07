@@ -111,7 +111,18 @@ internal sealed unsafe class FrameReceiver : IDisposable
         }
 
         // A first callback on another queue may already have failed: Attach then removes it and posts the error.
-        receiver.gate.Attach(() => Native.Remove(created, &OnRelease), EarlyErrorPost(callbackQueue));
+        try
+        {
+            receiver.gate.Attach(() => Native.Remove(created, &OnRelease), EarlyErrorPost(callbackQueue));
+        }
+        catch
+        {
+            // Attach records the remover before anything in it can throw, so Stop removes the registration exactly
+            // once, through the gate, even when Attach already removed it. The shim's release then frees the handle.
+            receiver.gate.Stop();
+            throw;
+        }
+
         return receiver;
     }
 
@@ -269,11 +280,21 @@ internal sealed unsafe class FrameReceiver : IDisposable
 
     // An error that arrived before Listen returned. It goes through the main queue first, so a caller on the main
     // thread (or on a serial callback queue) has assigned its handle before onError runs, and then on to Firestore's
-    // callback queue, where the app expects its callbacks.
+    // callback queue, where the app expects its callbacks. If that queue can't be read, the error is delivered on the
+    // main queue rather than lost: onError is how a failed listener is noticed.
     private static void PostEarlyError(Func<DispatchQueue> resolveCallbackQueue, Action action)
     {
-        DispatchQueue callbackQueue = resolveCallbackQueue();
         DispatchQueue main = DispatchQueue.MainQueue;
+        DispatchQueue callbackQueue;
+        try
+        {
+            callbackQueue = resolveCallbackQueue();
+        }
+        catch (Exception)
+        {
+            callbackQueue = main;
+        }
+
         if (callbackQueue.Handle == main.Handle)
             main.DispatchAsync(action);
         else
