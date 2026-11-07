@@ -29,6 +29,11 @@ enum {
 static Class PLSStringClass, PLSNumberClass, PLSDictionaryClass, PLSArrayClass, PLSNullClass, PLSDataClass;
 static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 
+// Buffers above this size are shrunk once frames have been much smaller for a while, so one huge snapshot doesn't pin
+// its memory for the rest of the listener's life. The same policy as the Android shim's Encoder.
+static const size_t PLSShrinkAbove = 1024 * 1024;
+static const int PLSShrinkAfterFrames = 8;
+
 @implementation AdamEPeerlessFrameWriter {
     uint8_t *_buffer;
     size_t _capacity;
@@ -38,6 +43,8 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
     size_t _scratchCapacity;
     uint64_t _dataNanos;
     BOOL _timesData;
+    int _smallFrames;           // frames in a row that used under a quarter of a buffer above PLSShrinkAbove
+    size_t _largestRecentFrame; // the largest of them
 }
 
 + (void)initialize {
@@ -80,6 +87,58 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 
 - (size_t)length {
     return _length;
+}
+
+- (size_t)capacity {
+    return _capacity;
+}
+
+// A fresh buffer rather than realloc, which would copy content that is dropped anyway. If it can't be had, the old
+// buffer stays: shrinking only saves memory, so it never raises.
+- (void)shrinkToCapacity:(size_t)capacity {
+    size_t target = capacity < 64 ? 64 : capacity;
+    if (target < _capacity) {
+        uint8_t *smaller = malloc(target);
+        if (smaller != NULL) {
+            free(_buffer);
+            _buffer = smaller;
+            _capacity = target;
+        }
+    }
+    // The scratch only grows too, to the longest string with a lone surrogate; it is regrown on demand.
+    if (_scratchCapacity * sizeof(unichar) > target) {
+        free(_scratch);
+        _scratch = NULL;
+        _scratchCapacity = 0;
+    }
+    [self reset];
+}
+
+// The next power of two, at least 64 KB (as Android's capacityFor); the frame's own size if doubling would overflow.
+static size_t PLSCapacityFor(size_t length) {
+    size_t capacity = 64 * 1024;
+    while (capacity < length && capacity <= SIZE_MAX / 2)
+        capacity *= 2;
+    return capacity < length ? length : capacity;
+}
+
+// After PLSShrinkAfterFrames frames in a row that each used under a quarter of a buffer above PLSShrinkAbove, the
+// buffer is cut to fit the largest of them. Capacity rather than any one frame decides, because growth doubles and a
+// string reserves room for 3 bytes a character, so even a single frame can leave the buffer well above its length.
+- (void)shrinkIfIdle {
+    size_t length = _length;
+    if (_capacity <= PLSShrinkAbove || length >= _capacity / 4) {
+        _smallFrames = 0;
+        _largestRecentFrame = 0;
+        return;
+    }
+    if (length > _largestRecentFrame)
+        _largestRecentFrame = length;
+    if (++_smallFrames < PLSShrinkAfterFrames)
+        return;
+    [self shrinkToCapacity:PLSCapacityFor(_largestRecentFrame)];
+    _smallFrames = 0;
+    _largestRecentFrame = 0;
 }
 
 - (uint64_t)dataNanos {

@@ -186,6 +186,8 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
                 timingArg = &timing;
             }
             listener->_onFrame(listener->_context, listener->_writer.bytes, listener->_writer.length, timingArg);
+            // Only now: .NET reads the bytes during the call, and a shrink frees them.
+            [listener->_writer shrinkIfIdle];
         }
     }
 

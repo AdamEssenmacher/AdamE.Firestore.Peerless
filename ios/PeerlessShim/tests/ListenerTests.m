@@ -171,6 +171,35 @@ static void AnUntimedListenerGetsNoTiming(void) {
                                                    atomic_load(&probe.timedFrames)]);
 }
 
+// The listener applies the writer's shrink policy after each frame (the policy itself: GoldenFixtureTests.m).
+static void AnIdleListenerGivesBackAnOversizedBuffer(void) {
+    Probe probe = {.behaviour = BehaviourCount};
+    AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
+    AdamEPeerlessTestingCallback callback = nil;
+    void *listener = Listen(&probe, OnFrame, registration, &callback);
+
+    NSData *big = [NSMutableData dataWithLength:3 * 1024 * 1024];
+    __block AdamEPeerlessFrameWriter *seen = nil;
+    callback(@"snapshot", nil, ^(AdamEPeerlessFrameWriter *writer) {
+        seen = writer;
+        [writer reset];
+        [writer writeHeader:AdamEPeerlessFrameKindQuery];
+        [writer writeValue:big];
+    });
+    size_t afterBig = seen.capacity;
+    for (int frame = 0; frame < 7; frame++)
+        callback(@"snapshot", nil, Encode);
+    size_t afterSeven = seen.capacity;
+    callback(@"snapshot", nil, Encode);
+    size_t afterEight = seen.capacity;
+    adame_peerless_listener_remove(listener, OnRelease);
+    BOOL ok = afterBig >= 3 * 1024 * 1024 && afterSeven == afterBig && afterEight == 64 * 1024 && probe.frames == 9
+        && probe.releases == 1 && registration.removes == 1;
+    ListenerTestsRecord(ok, @"a listener shrinks its writer after 8 small frames, not 7",
+                        [NSString stringWithFormat:@"%@ afterBig=%zu afterSeven=%zu afterEight=%zu",
+                                                   Counts(&probe, registration), afterBig, afterSeven, afterEight]);
+}
+
 static void DisposeBeforeFirstCallback(void) {
     Probe probe = {.behaviour = BehaviourCount};
     AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
@@ -383,6 +412,7 @@ void RunListenerTests(void) {
     TheShimReportsItsCApiVersion();
     FirstFrameTimingDoesNotRequireTheListenerHandle();
     AnUntimedListenerGetsNoTiming();
+    AnIdleListenerGivesBackAnOversizedBuffer();
     DisposeBeforeFirstCallback();
     ErrorStopsAndReleasesAfterTheCallback();
     EncodeFailureIsCodeMinusOne();
