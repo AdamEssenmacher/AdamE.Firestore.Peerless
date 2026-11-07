@@ -54,9 +54,8 @@ internal enum FrameDelivery
 /// held until <c>Listen</c> has the native registration, then posted to the main thread. That can still run before the
 /// calling thread has stored the returned handle, so the same caveat applies to <c>onError</c>: don't reach the handle
 /// through a variable that <c>Listen</c>'s return value is assigned to (call <c>Listen</c> on the main thread, where no
-/// callback can run before it returns, if a callback needs it). If there is no main looper, or it is quitting and
-/// refuses the post, that error is delivered on the thread calling <c>Listen</c>, before it returns, rather than lost;
-/// an exception thrown out of <c>onError</c> then comes out of <c>Listen</c> instead of crashing the process.
+/// callback can run before it returns, if a callback needs it). If the app is shutting down and its main looper is
+/// quitting, that early error is not delivered.
 /// </para>
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
@@ -71,8 +70,7 @@ internal enum FrameDelivery
 /// </para>
 /// <para>
 /// <b>Exceptions from your callbacks</b> are not caught: like an exception in an ordinary Firestore listener, one
-/// thrown out of <c>onSnapshot</c> or <c>onError</c> reaches the Java callback and crashes the process (except for
-/// the rare inline early error described above, where it comes out of <c>Listen</c>).
+/// thrown out of <c>onSnapshot</c> or <c>onError</c> reaches the Java callback and crashes the process.
 /// </para>
 /// </remarks>
 public static class PeerlessListener
