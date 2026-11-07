@@ -95,12 +95,17 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
     // Negative codes are the shim's own: it could not encode a snapshot (for example, one over 2 GB).
     // The cause is the Java exception itself (a FirebaseFirestoreException, or what the encoder threw), so it travels as
     // the inner exception. It costs a global reference only on the error path, once per listener. The shim reads its
-    // type and code names, so describing it here makes no JNI calls.
-    public void OnError(int code, string message, Java.Lang.Throwable? cause, string? causeType, string? codeName) =>
-        gate.Run(() => gate.Fail(code < 0
+    // type and code names, so describing it here makes no JNI calls. If the gate is already closed the error goes
+    // nowhere, so the cause's global reference is dropped now, as OnBuffer does. When Run does run, the gate is open
+    // under its lock, so Fail always takes the error and the cause must stay alive as its inner exception.
+    public void OnError(int code, string message, Java.Lang.Throwable? cause, string? causeType, string? codeName)
+    {
+        if (!gate.Run(() => gate.Fail(code < 0
             ? new PeerlessFormatException($"The shim could not encode the snapshot: {message}", 0, cause)
             : new FirestoreListenException(
-                (FirestoreErrorCode)code, message, cause, causeType, nativeErrorDomain: null, nativeErrorCode: codeName)));
+                (FirestoreErrorCode)code, message, cause, causeType, nativeErrorDomain: null, nativeErrorCode: codeName))))
+            cause?.Dispose();
+    }
 
     // The state goes through the gate by value and the lambda is static, so a frame allocates no closure or delegate.
     private void Deliver(byte[]? frame, int length, FrameArrival? arrival) => gate.Run(
