@@ -16,7 +16,8 @@ typedef NS_ENUM(uint8_t, AdamEPeerlessSection) {
     AdamEPeerlessSectionDocuments = 2,
 };
 
-/// Encodes snapshots into frames. Reused per listener: -reset keeps the buffer. Not thread-safe.
+/// Encodes snapshots into frames. Reused per listener: -reset keeps the buffer (-shrinkIfIdle gives back an oversized
+/// one). Not thread-safe.
 @interface AdamEPeerlessFrameWriter : NSObject
 
 - (instancetype)initWithCapacity:(size_t)capacity NS_DESIGNATED_INITIALIZER;
@@ -44,6 +45,21 @@ typedef NS_ENUM(uint8_t, AdamEPeerlessSection) {
 
 @property(nonatomic, readonly) const uint8_t *bytes NS_RETURNS_INNER_POINTER;
 @property(nonatomic, readonly) size_t length;
+/// The buffer's current size. It grows as frames need, and only -shrinkIfIdle or -shrinkToCapacity: makes it smaller.
+@property(nonatomic, readonly) size_t capacity;
+
+/// Drops the content, and replaces the buffer with one of `capacity` bytes (at least 64) when that is smaller, then
+/// also frees a string scratch larger than that. Unlike Android's shrinkTo it resets even when nothing shrinks, so call
+/// it only between frames. If the smaller buffer can't be allocated the old one (and the scratch) is kept; it never
+/// raises.
+- (void)shrinkToCapacity:(size_t)capacity;
+/// Call once the current frame has been delivered and its bytes are no longer read. After 8 frames in a row that each
+/// needed under a quarter of a buffer above 1 MB, shrinks the buffer to fit the most any of them needed (the next
+/// power of two, at least 64 KB). A frame's need is the most room it asked for while encoding, which can exceed its
+/// length: a string reserves 3 bytes a character before converting. Any frame that needed more, or a buffer of 1 MB
+/// or less, starts the count again. The Android shim has the same policy but judges by final length, which is exact
+/// there because its strings reserve only their real byte count.
+- (void)shrinkIfIdle;
 /// Whether to time -[FIRDocumentSnapshot data] (two clock reads per document). Off unless a listener is timed.
 @property(nonatomic) BOOL timesData;
 /// Wall time the last snapshot spent inside Firestore's -[FIRDocumentSnapshot data] (building the NSDictionary), when

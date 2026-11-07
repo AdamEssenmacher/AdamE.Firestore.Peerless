@@ -289,6 +289,142 @@ static void CollidingLoneSurrogateKeysAreRefused(void) {
     }
 }
 
+// Defined below, beside the listener tests that share it.
+void ListenerTestsRecord(BOOL ok, NSString *name, NSString *detail);
+
+// A frame of a header and, if given, one bytes value: NSData is copied in exactly, so the frame's length is known.
+static void WriteFrame(AdamEPeerlessFrameWriter *writer, NSData *payload) {
+    [writer reset];
+    [writer writeHeader:AdamEPeerlessFrameKindQuery];
+    if (payload != nil)
+        [writer writeValue:payload];
+}
+
+static void ShrinkingDropsTheContentAndKeepsWorking(void) {
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    WriteFrame(writer, [NSMutableData dataWithLength:3 * 1024 * 1024]);
+    size_t grown = writer.capacity;
+    [writer shrinkToCapacity:100 * 1024];
+    size_t shrunk = writer.capacity, lengthAfter = writer.length;
+    [writer shrinkToCapacity:1024 * 1024]; // larger than the buffer: kept
+    size_t kept = writer.capacity;
+    [writer shrinkToCapacity:1];
+    size_t smallest = writer.capacity;
+    WriteQueryEmpty(writer);
+    NSData *frame = Bytes(writer.bytes, writer.length);
+    AdamEPeerlessFrameWriter *fresh = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    WriteQueryEmpty(fresh);
+    BOOL same = [frame isEqualToData:Bytes(fresh.bytes, fresh.length)];
+    BOOL ok = grown >= 3 * 1024 * 1024 && shrunk == 100 * 1024 && lengthAfter == 0 && kept == 100 * 1024
+        && smallest == 64 && same;
+    ListenerTestsRecord(ok, @"shrinkToCapacity: replaces a larger buffer, drops the content, and the writer still encodes",
+                        [NSString stringWithFormat:@"grown=%zu shrunk=%zu length=%zu kept=%zu smallest=%zu same=%d",
+                                                   grown, shrunk, lengthAfter, kept, smallest, same]);
+}
+
+// The listener's policy: 8 frames in a row needing under a quarter of a buffer above 1 MB shrink it to fit the most
+// they needed. A bytes value is copied in exactly, so these frames need what they end up as: 8 + 1 + varint + count.
+static void AnIdleWriterGivesBackAnOversizedBuffer(void) {
+    NSData *big = [NSMutableData dataWithLength:3 * 1024 * 1024];
+    NSData *medium = [NSMutableData dataWithLength:600 * 1024];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+
+    // A big frame (4 MB buffer, used over a quarter), then small ones: the 8th shrinks it, to 64 KB.
+    WriteFrame(writer, big);
+    [writer shrinkIfIdle];
+    size_t afterBig = writer.capacity;
+    for (int frame = 0; frame < 7; frame++) {
+        WriteFrame(writer, nil);
+        [writer shrinkIfIdle];
+    }
+    size_t afterSeven = writer.capacity;
+    WriteFrame(writer, nil);
+    [writer shrinkIfIdle];
+    size_t afterEight = writer.capacity;
+    ListenerTestsRecord(afterBig == 4 * 1024 * 1024 && afterSeven == afterBig && afterEight == 64 * 1024,
+                        @"a writer shrinks after 8 small frames in a row, not 7",
+                        [NSString stringWithFormat:@"afterBig=%zu afterSeven=%zu afterEight=%zu", afterBig, afterSeven,
+                                                   afterEight]);
+
+    // A big frame in between starts the count again; the size fits the largest small frame (600 KB → 1 MB).
+    WriteFrame(writer, big);
+    [writer shrinkIfIdle];
+    for (int frame = 0; frame < 7; frame++) {
+        WriteFrame(writer, frame == 3 ? medium : nil);
+        [writer shrinkIfIdle];
+    }
+    WriteFrame(writer, big);
+    [writer shrinkIfIdle];
+    for (int frame = 0; frame < 7; frame++) {
+        WriteFrame(writer, frame == 3 ? medium : nil);
+        [writer shrinkIfIdle];
+    }
+    size_t afterReset = writer.capacity;
+    WriteFrame(writer, nil);
+    [writer shrinkIfIdle];
+    size_t fitted = writer.capacity;
+    ListenerTestsRecord(afterReset == 4 * 1024 * 1024 && fitted == 1024 * 1024,
+                        @"a large frame resets the count, and the shrink fits the largest small frame",
+                        [NSString stringWithFormat:@"afterReset=%zu fitted=%zu", afterReset, fitted]);
+
+    // A buffer of 1 MB or less is never shrunk.
+    AdamEPeerlessFrameWriter *modest = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:1024 * 1024];
+    for (int frame = 0; frame < 16; frame++) {
+        WriteFrame(modest, nil);
+        [modest shrinkIfIdle];
+    }
+    ListenerTestsRecord(modest.capacity == 1024 * 1024, @"a buffer of 1 MB or less is not shrunk",
+                        [NSString stringWithFormat:@"capacity=%zu", modest.capacity]);
+}
+
+// A frame of a header and one string value. The string reserves 5 + 3 bytes a character before converting, so an
+// ASCII string of n characters needs 8 (header) + 1 (tag) + 5 + 3n bytes while encoding but ends up about n long.
+static void WriteStringFrame(AdamEPeerlessFrameWriter *writer, NSString *value) {
+    [writer reset];
+    [writer writeHeader:AdamEPeerlessFrameKindQuery];
+    [writer writeValue:value];
+}
+
+// Judged by final length, these frames would shrink the buffer after 8 and regrow it on the 9th, forever.
+static void FramesThatNeedMoreThanTheirLengthDoNotShrink(void) {
+    // 500,000 chars: need 14 + 1,500,000 = 1,500,014, so from 64 bytes the buffer doubles to 2 MB (2,097,152); the
+    // frame is 9 + 3 (varint) + 500,000 = 500,012 bytes, under a quarter (524,288). Its need is not.
+    NSString *large = [@"" stringByPaddingToLength:500000 withString:@"a" startingAtIndex:0];
+    AdamEPeerlessFrameWriter *writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64];
+    WriteStringFrame(writer, large);
+    [writer shrinkIfIdle];
+    size_t first = writer.capacity, lengthOfOne = writer.length;
+    // Checked after every frame: a shrink on the 8th is undone by the 9th, so the end alone would hide it.
+    BOOL steady = YES;
+    for (int frame = 0; frame < 10; frame++) {
+        WriteStringFrame(writer, large);
+        [writer shrinkIfIdle];
+        steady &= writer.capacity == first;
+    }
+    ListenerTestsRecord(first == 2 * 1024 * 1024 && lengthOfOne < first / 4 && steady,
+                        @"frames whose strings need over a quarter of the buffer don't shrink it, however short",
+                        [NSString stringWithFormat:@"first=%zu length=%zu steady=%d final=%zu", first, lengthOfOne,
+                                                   steady, writer.capacity]);
+
+    // The shrink fits the need too: after a 4 MB frame, 8 frames of a 200,000-char string (need 600,014; length
+    // 200,012) cut the buffer to 1 MB, not 256 KB, and the next such frame doesn't grow it again.
+    NSString *medium = [@"" stringByPaddingToLength:200000 withString:@"a" startingAtIndex:0];
+    WriteFrame(writer, [NSMutableData dataWithLength:3 * 1024 * 1024]);
+    [writer shrinkIfIdle];
+    size_t afterBig = writer.capacity;
+    for (int frame = 0; frame < 8; frame++) {
+        WriteStringFrame(writer, medium);
+        [writer shrinkIfIdle];
+    }
+    size_t fitted = writer.capacity;
+    WriteStringFrame(writer, medium);
+    size_t whileEncoding = writer.capacity;
+    ListenerTestsRecord(afterBig == 4 * 1024 * 1024 && fitted == 1024 * 1024 && whileEncoding == fitted,
+                        @"a shrink fits the most the small frames needed, not their length",
+                        [NSString stringWithFormat:@"afterBig=%zu fitted=%zu whileEncoding=%zu", afterBig, fitted,
+                                                   whileEncoding]);
+}
+
 // Stand-ins for a query snapshot, with only what -writeQuerySnapshot: reads. The writer is typed for FIR classes but
 // only sends these messages, so the stand-ins can carry data that makes it throw.
 @interface PeerlessFakeMetadata : NSObject
@@ -382,6 +518,9 @@ int main(int argc, const char *argv[]) {
         DepthLimitAtDocumentDepth();
         CollidingLoneSurrogateKeysAreRefused();
         AThrowingSnapshotIsReleased();
+        ShrinkingDropsTheContentAndKeepsWorking();
+        AnIdleWriterGivesBackAnOversizedBuffer();
+        FramesThatNeedMoreThanTheirLengthDoNotShrink();
         RunListenerTests();
         printf("SHIM_TESTS passed=%d failed=%d\n", passes, failures);
         return failures == 0 ? 0 : 1;

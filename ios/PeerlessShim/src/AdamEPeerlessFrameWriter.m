@@ -29,6 +29,12 @@ enum {
 static Class PLSStringClass, PLSNumberClass, PLSDictionaryClass, PLSArrayClass, PLSNullClass, PLSDataClass;
 static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
 
+// Buffers above this size are shrunk once frames have been much smaller for a while, so one huge snapshot doesn't pin
+// its memory for the rest of the listener's life. The Android shim's Encoder has the same policy, judged by final
+// length; here it is judged by the room a frame needed while encoding (see -shrinkIfIdle).
+static const size_t PLSShrinkAbove = 1024 * 1024;
+static const int PLSShrinkAfterFrames = 8;
+
 @implementation AdamEPeerlessFrameWriter {
     uint8_t *_buffer;
     size_t _capacity;
@@ -38,6 +44,9 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
     size_t _scratchCapacity;
     uint64_t _dataNanos;
     BOOL _timesData;
+    size_t _frameNeed;         // the most room this frame has needed while encoding: length plus what PLSEnsure asked
+    int _smallFrames;          // frames in a row that needed under a quarter of a buffer above PLSShrinkAbove
+    size_t _largestRecentNeed; // the most any of them needed
 }
 
 + (void)initialize {
@@ -82,6 +91,59 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
     return _length;
 }
 
+- (size_t)capacity {
+    return _capacity;
+}
+
+// A fresh buffer rather than realloc, which would copy content that is dropped anyway. If it can't be had, the old
+// buffer stays: shrinking only saves memory, so it never raises.
+- (void)shrinkToCapacity:(size_t)capacity {
+    size_t target = capacity < 64 ? 64 : capacity;
+    uint8_t *smaller = target < _capacity ? malloc(target) : NULL;
+    if (smaller != NULL) {
+        free(_buffer);
+        _buffer = smaller;
+        _capacity = target;
+        // The scratch only grows too, to the longest string with a lone surrogate; it is regrown on demand. Freed only
+        // alongside a real shrink, so a call that keeps the buffer keeps it too.
+        if (_scratchCapacity * sizeof(unichar) > target) {
+            free(_scratch);
+            _scratch = NULL;
+            _scratchCapacity = 0;
+        }
+    }
+    [self reset];
+}
+
+// The next power of two, at least 64 KB (as Android's capacityFor); the frame's own size if doubling would overflow.
+static size_t PLSCapacityFor(size_t length) {
+    size_t capacity = 64 * 1024;
+    while (capacity < length && capacity <= SIZE_MAX / 2)
+        capacity *= 2;
+    return capacity < length ? length : capacity;
+}
+
+// After PLSShrinkAfterFrames frames in a row that each needed under a quarter of a buffer above PLSShrinkAbove, the
+// buffer is cut to fit the most any of them needed. Need, not final length: a string reserves 3 bytes a character
+// before converting, so a frame of one long ASCII string needs ~3x its length. Judged by length, such frames would
+// shrink the buffer after 8 of them and regrow it on the next, forever. Capacity rather than any one frame decides
+// what "small" means, because growth doubles, so even a single frame can leave the buffer well above its need.
+- (void)shrinkIfIdle {
+    size_t need = _frameNeed > _length ? _frameNeed : _length;
+    if (_capacity <= PLSShrinkAbove || need >= _capacity / 4) {
+        _smallFrames = 0;
+        _largestRecentNeed = 0;
+        return;
+    }
+    if (need > _largestRecentNeed)
+        _largestRecentNeed = need;
+    if (++_smallFrames < PLSShrinkAfterFrames)
+        return;
+    [self shrinkToCapacity:PLSCapacityFor(_largestRecentNeed)];
+    _smallFrames = 0;
+    _largestRecentNeed = 0;
+}
+
 - (uint64_t)dataNanos {
     return _dataNanos;
 }
@@ -94,11 +156,15 @@ static Class PLSTimestampClass, PLSReferenceClass, PLSGeoPointClass;
     _timesData = timesData;
 }
 
+// Records the frame's need on every call, growth or not, so -shrinkIfIdle never cuts below what a frame like it needs.
 static inline void PLSEnsure(AdamEPeerlessFrameWriter *self, size_t extra) {
-    if (self->_length + extra <= self->_capacity)
+    size_t need = self->_length + extra;
+    if (need > self->_frameNeed)
+        self->_frameNeed = need;
+    if (need <= self->_capacity)
         return;
     size_t capacity = self->_capacity;
-    while (capacity < self->_length + extra)
+    while (capacity < need)
         capacity *= 2;
     uint8_t *grown = realloc(self->_buffer, capacity);
     if (grown == NULL)
@@ -471,6 +537,7 @@ static void PLSSnapshotDocument(AdamEPeerlessFrameWriter *self, FIRDocumentSnaps
 
 - (void)reset {
     _length = 0;
+    _frameNeed = 0;
     _sectionStart = -1;
     _dataNanos = 0;
 }
