@@ -172,10 +172,24 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
         capacity = 0;
     }
 
-    // An error that arrived before Listen returned is delivered from here, after the app has its handle.
+    // An error that arrived before Listen returned is delivered from here, after the app has its handle. If there is no
+    // main looper, or it is quitting (Post returns false and drops the action), the error is delivered inline on the
+    // thread calling Listen instead: early, before the handle is returned, but never lost, since onError is what keeps
+    // a failing listener from going silent. The registration is already removed by then, and Stop still cancels it.
     private static void PostToMainThread(Action action)
     {
-        using var handler = new Handler(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."));
-        _ = handler.Post(action);
+        if (Looper.MainLooper is not { } looper)
+        {
+            action();
+            return;
+        }
+
+        using var handler = new Handler(looper);
+        if (!handler.Post(action))
+        {
+            // Post(Action) keeps its Java wrapper in a static table until it runs; it never will, so release it.
+            handler.RemoveCallbacks(action);
+            action();
+        }
     }
 }
