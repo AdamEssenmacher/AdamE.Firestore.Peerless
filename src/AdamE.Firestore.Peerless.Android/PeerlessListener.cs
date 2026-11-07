@@ -54,15 +54,17 @@ internal enum FrameDelivery
 /// held until <c>Listen</c> has the native registration, then posted to the main thread. That can still run before the
 /// calling thread has stored the returned handle, so the same caveat applies to <c>onError</c>: don't reach the handle
 /// through a variable that <c>Listen</c>'s return value is assigned to (call <c>Listen</c> on the main thread, where no
-/// callback can run before it returns, if a callback needs it).
+/// callback can run before it returns, if a callback needs it). If the app is shutting down and its main looper is
+/// quitting, that early error is not delivered.
 /// </para>
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
 /// snapshot or .NET could not decode it. One encoding failure is data-dependent: two keys of one map that differ only
-/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails. If
-/// decoding fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
-/// <c>onError</c> receives that exception. Either way the listener has stopped and nothing more arrives. It is
+/// in lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), so that snapshot fails. (So
+/// would an array or map nested 100 deep, which Firestore's own 20-level limit rules out.) If decoding fails some
+/// other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot), <c>onError</c> receives that
+/// exception. Either way the listener has stopped and nothing more arrives. It is
 /// required, so a failing listener can't go silent. The Java exception behind a Firestore or encoding failure is the
 /// <see cref="Exception.InnerException"/> (for Firestore, its <c>FirebaseFirestoreException</c>).
 /// </para>

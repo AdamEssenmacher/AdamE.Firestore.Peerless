@@ -430,9 +430,20 @@ static void PLSValue(AdamEPeerlessFrameWriter *self, id value, int depth) {
                 PLSDouble(self, [value doubleValue]);
                 break;
             case 'q': case 'l': case 'i': case 's': case 'c':
-            case 'Q': case 'L': case 'I': case 'S': case 'C':
+            case 'L': case 'I': case 'S': case 'C':
+                // 'L' is 32 bits even on 64-bit iOS (an unsigned long encodes as 'Q' there), so these always fit.
                 PLSByte(self, PLSTagInteger);
                 PLSInt64(self, [value longLongValue]);
+                break;
+            case 'Q':
+                // 64 bits unsigned: above INT64_MAX, longLongValue would wrap to a negative number, so it is
+                // unsupported rather than a wrong integer.
+                if ([value unsignedLongLongValue] <= (unsigned long long)INT64_MAX) {
+                    PLSByte(self, PLSTagInteger);
+                    PLSInt64(self, [value longLongValue]);
+                } else {
+                    PLSUnsupported(self, [NSString stringWithFormat:@"NSNumber(%s)", type]);
+                }
                 break;
             default:
                 PLSUnsupported(self, [NSString stringWithFormat:@"NSNumber(%s)", type]);

@@ -2,6 +2,7 @@ package com.adame.firestore.peerless
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FrameWriterTest {
@@ -98,6 +99,39 @@ class FrameWriterTest {
         FrameWriter().writeMapBody(linkedMapOf<String, Any?>("\uD800a" to 1L, "b" to 2L))
         FrameWriter().writeMapBody(linkedMapOf<String, Any?>("😀" to 1L, "a" to 2L))
         assertEquals("\uFFFDa😀", FrameWriter.withLoneSurrogatesReplaced("\uDC00a😀"))
+    }
+
+    // The format counts a document's field values as depth 1 and refuses an array or map value at depth 100 or more; a
+    // scalar may sit at any depth. Entered the way a snapshot is: through a document's fields.
+    @Test
+    fun depthLimitAsTheFormatCountsIt() {
+        writeDocumentWithNesting(nested(99) { listOf(it) }) // innermost array at depth 99, its string at depth 100
+        val refused = assertThrows(FrameWriter.NestingTooDeepException::class.java) {
+            writeDocumentWithNesting(nested(100) { listOf(it) })
+        }
+        assertTrue(refused.message!!.contains("depth 100"))
+        // Maps take their own path (refuseDeep, then the map body one level deeper), so check both edges for them too.
+        writeDocumentWithNesting(nested(99) { linkedMapOf<String, Any?>("k" to it) })
+        assertThrows(FrameWriter.NestingTooDeepException::class.java) {
+            writeDocumentWithNesting(nested(100) { linkedMapOf<String, Any?>("k" to it) })
+        }
+    }
+
+    @Test
+    fun veryDeepDataIsRefusedInsteadOfOverflowingTheStack() {
+        assertThrows(FrameWriter.NestingTooDeepException::class.java) {
+            FrameWriter().writeValue(nested(100_000) { listOf(it) })
+        }
+    }
+
+    private fun nested(containers: Int, wrap: (Any?) -> Any): Any {
+        var value: Any = "leaf"
+        repeat(containers) { value = wrap(value) }
+        return value
+    }
+
+    private fun writeDocumentWithNesting(value: Any) {
+        FrameWriter().writeDocument("c/d", true, false, false, linkedMapOf("field" to value))
     }
 
     private fun encodeString(value: String) = encode { it.writeString(value) }.toList()

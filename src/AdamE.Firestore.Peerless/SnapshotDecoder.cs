@@ -394,7 +394,8 @@ public static class SnapshotDecoder
         private readonly void CheckDepth(int depth, int start)
         {
             if (depth >= Wire.MaxDepth)
-                throw Fail($"Values are nested deeper than {Wire.MaxDepth}.", start);
+                throw Fail(
+                    $"An array or map is nested at depth {depth}; the format's limit is {Wire.MaxDepth - 1}.", start);
         }
 
         // Field names repeat across every document of a snapshot, so they are decoded once per frame.

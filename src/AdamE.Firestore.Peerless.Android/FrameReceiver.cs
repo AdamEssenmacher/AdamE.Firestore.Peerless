@@ -95,12 +95,22 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
     // Negative codes are the shim's own: it could not encode a snapshot (for example, one over 2 GB).
     // The cause is the Java exception itself (a FirebaseFirestoreException, or what the encoder threw), so it travels as
     // the inner exception. It costs a global reference only on the error path, once per listener. The shim reads its
-    // type and code names, so describing it here makes no JNI calls.
-    public void OnError(int code, string message, Java.Lang.Throwable? cause, string? causeType, string? codeName) =>
-        gate.Run(() => gate.Fail(code < 0
+    // type and code names, so describing it here makes no JNI calls. If the gate is already closed the error goes
+    // nowhere, so an encoding failure's cause is dropped now, as OnBuffer does: that exception is a new one from this
+    // listener's own encoder, so no one else holds its peer. Any other cause is left alone, because peers are shared by
+    // Java identity: Firestore hands one exception to every listener on a query, and ART may throw one preallocated
+    // OutOfMemoryError on any thread, so another listener may already hold it as its inner exception. When Run does
+    // run, the gate is open under its lock, so Fail always takes the error and the cause must stay alive as its inner
+    // exception.
+    public void OnError(int code, string message, Java.Lang.Throwable? cause, string? causeType, string? codeName)
+    {
+        if (!gate.Run(() => gate.Fail(code < 0
             ? new PeerlessFormatException($"The shim could not encode the snapshot: {message}", 0, cause)
             : new FirestoreListenException(
-                (FirestoreErrorCode)code, message, cause, causeType, nativeErrorDomain: null, nativeErrorCode: codeName)));
+                (FirestoreErrorCode)code, message, cause, causeType, nativeErrorDomain: null, nativeErrorCode: codeName)))
+            && code < 0 && cause is not Java.Lang.OutOfMemoryError)
+            cause?.Dispose();
+    }
 
     // The state goes through the gate by value and the lambda is static, so a frame allocates no closure or delegate.
     private void Deliver(byte[]? frame, int length, FrameArrival? arrival) => gate.Run(
@@ -176,6 +186,12 @@ internal sealed class FrameReceiver : Java.Lang.Object, IFrameSink
     private static void PostToMainThread(Action action)
     {
         using var handler = new Handler(Looper.MainLooper ?? throw new InvalidOperationException("No main looper."));
-        _ = handler.Post(action);
+        if (!handler.Post(action))
+        {
+            // The main looper is quitting, so the process is ending. The registration is already removed, and running
+            // onError here instead would put it off the main thread, unlike every other callback, so the error is
+            // dropped. Post(Action) keeps its Java wrapper in a static table until it runs; it never will, so release it.
+            handler.RemoveCallbacks(action);
+        }
     }
 }
