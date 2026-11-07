@@ -80,8 +80,10 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// <b>Firebase version.</b> The shim is compiled against one Firebase iOS SDK version (12.18.0 for this build). The
 /// first <c>Listen</c> checks that the FirebaseFirestore framework the app loaded (its bundle version) and FirebaseCore
 /// (<c>App.FirebaseVersion</c>) both have that major version, and throws <see cref="InvalidOperationException"/> if
-/// not. A build whose Firestore lacks a symbol the shim links against fails earlier, when the app loads, before any
-/// check can run.
+/// not. When Firestore's version can't be read (its bundle has no version, or Firestore is statically linked into the
+/// app, whose bundle then carries the app's own version), only FirebaseCore's is checked, since the two ship together.
+/// A build whose Firestore lacks a symbol the shim links against fails earlier, when the app loads, before any check
+/// can run.
 /// </para>
 /// <para>
 /// <b>Shim version.</b> Before that, the first <c>Listen</c> checks that the shim linked into the app speaks the C API
@@ -161,7 +163,10 @@ public static class PeerlessListener
     internal static unsafe string CompiledFirebaseVersion =>
         Marshal.PtrToStringUTF8((nint)Native.CompiledFirebaseVersion()) ?? "unknown";
 
-    /// <summary>The FirebaseFirestore framework version the app loaded, or "" if its bundle doesn't say.</summary>
+    /// <summary>
+    /// The FirebaseFirestore framework version the app loaded, or "" if its bundle doesn't say or Firestore is
+    /// statically linked into the app (its bundle is then the app's, so its version is the app's).
+    /// </summary>
     internal static unsafe string RuntimeFirestoreVersion =>
         Marshal.PtrToStringUTF8((nint)Native.RuntimeFirestoreVersion()) ?? string.Empty;
 
@@ -205,18 +210,23 @@ public static class PeerlessListener
 
     // The shim only uses long-stable SDK API (snapshot.data, metadata, the value classes), so a newer minor or patch
     // release is accepted; a different major version may have changed what it relies on. Firestore's own framework is
-    // what the shim calls; FirebaseCore is checked too, since the two ship together.
+    // what the shim calls; FirebaseCore is checked too, since the two ship together. When Firestore's version can't be
+    // read (no bundle version, or Firestore statically linked into the app), FirebaseCore's stands in for both.
     private static string? CheckFirebaseVersion()
     {
         string compiled = CompiledFirebaseVersion;
         string firestore = RuntimeFirestoreVersion;
         string core = Firebase.Core.App.FirebaseVersion;
         string? expected = Major(compiled);
-        return expected is not null && Major(firestore) == expected && Major(core) == expected
-            ? null
+        if (expected is not null && Major(core) == expected && (firestore.Length == 0 || Major(firestore) == expected))
+            return null;
+
+        return firestore.Length == 0
+            ? $"Peerless's iOS shim was compiled against Firebase {compiled}, but the app loaded FirebaseCore {core} "
+                + "(FirebaseFirestore's version is unreadable, so FirebaseCore's was checked in its place). "
+                + "Use a Peerless build for this Firebase major version."
             : $"Peerless's iOS shim was compiled against Firebase {compiled}, but the app loaded FirebaseFirestore "
-                + $"{(firestore.Length == 0 ? "(version unreadable)" : firestore)} and FirebaseCore {core}. "
-                + "Use a Peerless build for this Firebase major version.";
+                + $"{firestore} and FirebaseCore {core}. Use a Peerless build for this Firebase major version.";
 
         static string? Major(string version) => version.Split('.') is [var major, ..] && major.Length > 0 ? major : null;
     }

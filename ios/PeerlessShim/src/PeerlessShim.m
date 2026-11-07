@@ -40,7 +40,13 @@ const char *adame_peerless_runtime_firestore_version(void) {
     static char version[32];
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSString *value = [NSBundle bundleForClass:[FIRFirestore class]].infoDictionary[@"CFBundleShortVersionString"];
+        // Statically linked, Firestore's class lives in the app executable and this is the app's bundle, whose version
+        // is the app's own. Report that as unreadable rather than as Firestore's.
+        NSBundle *bundle = [NSBundle bundleForClass:[FIRFirestore class]];
+        NSBundle *app = [NSBundle mainBundle];
+        if (bundle == app || [bundle.bundleURL.URLByStandardizingPath isEqual:app.bundleURL.URLByStandardizingPath])
+            return;
+        NSString *value = bundle.infoDictionary[@"CFBundleShortVersionString"];
         if ([value isKindOfClass:[NSString class]])
             strlcpy(version, value.UTF8String, sizeof version);
     });

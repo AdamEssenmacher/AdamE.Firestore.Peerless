@@ -94,7 +94,8 @@ int32_t adame_peerless_abi_version(void);
 const char *adame_peerless_compiled_firebase_version(void);
 
 /// The version of the FirebaseFirestoreInternal framework the app actually loaded, from its bundle's
-/// CFBundleShortVersionString (Firestore has no public version API), or "" if it can't be read. An ABI break (a
+/// CFBundleShortVersionString (Firestore has no public version API), or "" if it can't be read. Also "" when Firestore
+/// is statically linked into the app, since its bundle is then the app's and carries the app's version. An ABI break (a
 /// symbol the shim uses gone) fails earlier, when dyld loads the app, before any version check can run.
 const char *adame_peerless_runtime_firestore_version(void);
 
