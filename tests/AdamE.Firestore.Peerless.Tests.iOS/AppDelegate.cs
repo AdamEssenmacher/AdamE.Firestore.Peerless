@@ -4,10 +4,15 @@ namespace AdamE.Firestore.Peerless.Tests.iOS;
 /// Starts the tests once the app has launched, on the thread pool, so the main queue stays free for the work they wait
 /// on, then ends the process with the result.
 /// </summary>
+/// <remarks>
+/// The app adopts the scene life cycle (Info.plist's scene manifest, <see cref="SceneDelegate"/>): built with the iOS 27
+/// SDK, an app that doesn't fails to launch. The tests still start here rather than when a scene connects: on the iOS
+/// 27.1 simulator this Mono build's scene connected with no configuration or delegate (the NativeAOT benchmark app's
+/// does get its delegate), while <c>FinishedLaunching</c> runs on every runtime.
+/// </remarks>
 [Register("AppDelegate")]
 public sealed class AppDelegate : UIApplicationDelegate
 {
-    // No window: nothing is shown, and the tests need only the main queue, which UIApplication.Main runs.
     public override bool FinishedLaunching(UIApplication application, NSDictionary? launchOptions)
     {
         _ = Task.Run(async () =>
@@ -32,4 +37,8 @@ public sealed class AppDelegate : UIApplicationDelegate
         });
         return true;
     }
+
+    public override UISceneConfiguration GetConfiguration(
+        UIApplication application, UISceneSession connectingSceneSession, UISceneConnectionOptions options) =>
+        new("Default Configuration", connectingSceneSession.Role);
 }

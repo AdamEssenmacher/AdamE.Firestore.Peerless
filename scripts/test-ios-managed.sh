@@ -23,6 +23,8 @@ embedded="$(plutil -extract CFBundleShortVersionString raw \
   "$app/Frameworks/FirebaseFirestoreInternal.framework/Info.plist" 2>/dev/null || true)"
 incremental=()
 [[ "$embedded" == "$(cut -d. -f1-3 <<<"$version")" ]] || incremental=(--no-incremental)
+# Likewise when Info.plist changed: an incremental build keeps the bundle's old compiled copy.
+[[ "$project/Info.plist" -nt "$app/Info.plist" ]] && incremental=(--no-incremental)
 
 # Quiet on success; on failure the build log is printed, since dotnet writes its errors to stdout.
 buildlog="$(mktemp -t peerless-managed-build)"
@@ -76,7 +78,12 @@ done
 tr -d '\r' <"$log"
 
 if [[ -z "$result" ]]; then
-  echo "No MANAGED_TESTS line within ${timeout_seconds}s (the app crashed or hung)." >&2
+  echo "No MANAGED_TESTS line within ${timeout_seconds}s (the app crashed, hung or failed to launch)." >&2
+  # UIKit and the runtime report launch failures (such as a missing scene life cycle) only to the unified log.
+  echo "The app's errors and faults from the simulator's log:" >&2
+  xcrun simctl spawn "$udid" log show --last 5m --style compact \
+    --predicate 'process == "AdamE.Firestore.Peerless.Tests.iOS" AND (messageType == error OR messageType == fault)' \
+    2>/dev/null | tail -n 20 >&2 || true
   exit 1
 fi
 passed="$(sed -E 's/.*passed=([0-9]+).*/\1/' <<<"$result")"
