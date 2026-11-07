@@ -43,6 +43,9 @@ public final class FrameWriter {
     static final byte TAG_MAP = 11;
     static final byte TAG_UNSUPPORTED = 12;
 
+    /** An array or map value at this depth or deeper is refused, as decoders refuse it (docs/wire-format.md). */
+    static final int MAX_DEPTH = 100;
+
     /** The largest frame a writer produces: about the largest array a JVM allocates. */
     public static final int MAX_FRAME_LENGTH = Integer.MAX_VALUE - 8;
 
@@ -156,21 +159,29 @@ public final class FrameWriter {
             writeVarint(0);
             return;
         }
-        writeMapBody(data);
+        writeMapBody(data, 1);
     }
 
     /**
      * Writes a map's entries. Lone UTF-16 surrogates are written as U+FFFD, so two keys that differ only there would
      * become the same key in the frame, which decoders reject. When any key of the map held a lone surrogate, the keys
      * are checked for that and the snapshot fails with {@link KeyCollisionException} instead of producing such a frame.
-     * Maps without one pay nothing for the check.
+     * Maps without one pay nothing for the check. The map's values are at depth 1, as a document's fields are.
      */
     public void writeMapBody(@NonNull Map<String, ?> map) {
+        writeMapBody(map, 1);
+    }
+
+    // Depth as the format counts it (docs/wire-format.md): a document's field values are at depth 1, and the items of
+    // an array or map value at depth d are at depth d + 1. An array or map value at depth 100 or more is refused, as
+    // the decoder refuses it; scalars may sit at any depth. The check also keeps very deep data from overflowing the
+    // stack, which would throw an Error the listener doesn't catch. `depth` here is the depth of the map's values.
+    private void writeMapBody(Map<String, ?> map, int depth) {
         writeVarint(map.size());
         boolean lossy = false;
         for (Map.Entry<String, ?> entry : map.entrySet()) {
             lossy |= writeString(entry.getKey());
-            writeValue(entry.getValue());
+            writeValue(entry.getValue(), depth);
         }
         if (lossy)
             rejectCollidingKeys(map);
@@ -202,9 +213,14 @@ public final class FrameWriter {
 
     /**
      * Writes any value {@code DocumentSnapshot.getData()} can return. Integers and doubles keep their kinds; anything
-     * unrecognised becomes an explicit unsupported value carrying its class name, never a guess.
+     * unrecognised becomes an explicit unsupported value carrying its class name, never a guess. The value is at
+     * depth 1, as a document's field is; nesting past the format's limit throws {@link NestingTooDeepException}.
      */
     public void writeValue(@Nullable Object value) {
+        writeValue(value, 1);
+    }
+
+    private void writeValue(@Nullable Object value, int depth) {
         if (value == null) {
             writeByte(TAG_NULL);
         } else if (value instanceof Boolean) {
@@ -219,15 +235,17 @@ public final class FrameWriter {
             writeByte(TAG_STRING);
             writeString((String) value);
         } else if (value instanceof Map) {
+            refuseDeep(depth);
             writeByte(TAG_MAP);
             @SuppressWarnings("unchecked") Map<String, ?> map = (Map<String, ?>) value;
-            writeMapBody(map);
+            writeMapBody(map, depth + 1);
         } else if (value instanceof List) {
+            refuseDeep(depth);
             List<?> list = (List<?>) value;
             writeByte(TAG_ARRAY);
             writeVarint(list.size());
             for (int index = 0; index < list.size(); index++)
-                writeValue(list.get(index));
+                writeValue(list.get(index), depth + 1);
         } else if (value instanceof Timestamp) {
             Timestamp timestamp = (Timestamp) value;
             writeByte(TAG_TIMESTAMP);
@@ -250,6 +268,12 @@ public final class FrameWriter {
         } else {
             writeUnsupported(value.getClass().getName());
         }
+    }
+
+    private static void refuseDeep(int depth) {
+        if (depth >= MAX_DEPTH)
+            throw new NestingTooDeepException("Peerless refuses an array or map nested at depth " + depth
+                    + " (the format's limit is " + (MAX_DEPTH - 1) + ").");
     }
 
     /**
@@ -424,6 +448,13 @@ public final class FrameWriter {
     /** Two keys of one map would be written identically (they differ only in lone surrogates). */
     public static final class KeyCollisionException extends IllegalStateException {
         KeyCollisionException(String message) {
+            super(message);
+        }
+    }
+
+    /** An array or map is nested deeper than the format allows. */
+    public static final class NestingTooDeepException extends IllegalStateException {
+        NestingTooDeepException(String message) {
             super(message);
         }
     }

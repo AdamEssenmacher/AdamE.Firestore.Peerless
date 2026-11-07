@@ -118,7 +118,8 @@ map-body = count:varint (key:string value)*count
 - Nesting is limited (Firestore's own limit is 20 levels), so a hostile frame can't overflow a decoder's stack. A
   document's field values are at depth 1; the items of an array or map value at depth *d* are at depth *d* + 1. An
   array or map value **at depth 100 or more is rejected**, so at most 99 containers can nest inside a document's
-  fields. (The document's own fields map isn't counted.)
+  fields. (The document's own fields map isn't counted.) Encoders count depth the same way and **fail the snapshot**
+  rather than write a deeper container; both shims report it as an encoding failure, as for colliding keys.
 - A count (array items, map entries, documents, bytes) can't exceed the bytes left in its section. An array item takes
   at least one byte (its tag), a map entry at least two (a key length and a tag), and a document at least two (a path
   length and its flags). So in a frame that can decode, the minimum size of everything the open containers still
