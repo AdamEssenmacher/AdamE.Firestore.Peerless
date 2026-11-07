@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Runs managed tests against the real Android receiver (FrameReceiver, Handler/Looper, JNI peers) on an emulator:
+       scripts/test-android-managed.sh builds, installs and launches it and reads its MANAGED_TESTS line from logcat.
+       No Firebase app is configured and no backend is needed: the tests call the receiver as the shim would. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>AdamE.Firestore.Peerless.Tests.Android</RootNamespace>
+    <ApplicationId>com.adame.firestore.peerless.tests</ApplicationId>
+    <ApplicationTitle>Peerless Tests</ApplicationTitle>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1</ApplicationDisplayVersion>
+    <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Mono, not NativeAOT: it builds in a fraction of the time, and what these tests pin (the gate, looper posts,
+         JNI peer disposal) doesn't depend on the runtime. The benchmark app covers NativeAOT. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- A golden frame for the frame-path test, read with GetManifestResourceStream. -->
+    <EmbeddedResource Include="../../fixtures/wire/document-scalars.bin" LogicalName="document-scalars.bin" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../src/AdamE.Firestore.Peerless.Android/AdamE.Firestore.Peerless.Android.csproj" />
+  </ItemGroup>
+</Project>

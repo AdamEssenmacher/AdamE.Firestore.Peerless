@@ -6,6 +6,8 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/AdamE.Firestore.Peerless.Tests/AdamE.Firestore.Peerless.Tests.csproj" />
+    <Project Path="tests/AdamE.Firestore.Peerless.Tests.Android/AdamE.Firestore.Peerless.Tests.Android.csproj" />
+    <Project Path="tests/AdamE.Firestore.Peerless.Tests.iOS/AdamE.Firestore.Peerless.Tests.iOS.csproj" />
   </Folder>
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/AdamE.Firestore.Peerless.Benchmarks.Decoder/AdamE.Firestore.Peerless.Benchmarks.Decoder.csproj" />

@@ -162,6 +162,80 @@ public sealed class ListenerGateTests
         Assert.Equal(1, harness.Released);
     }
 
+    // iOS FrameReceiver.Start and Android PeerlessListener.Register call Stop in a catch around Attach. That relies on
+    // Attach recording the remover before anything in it can throw, so the remover runs once in total.
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void A_throwing_post_in_attach_propagates_and_stop_removes_once_and_never_delivers(RunOverload overload)
+    {
+        var harness = new Harness(overload);
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("early")));
+        var refused = new InvalidOperationException("post refused");
+        int posts = 0;
+
+        Exception thrown = Assert.Throws<InvalidOperationException>(() => AttachLikeThePlatforms(
+            harness.Gate,
+            harness.Remove,
+            _ =>
+            {
+                posts++;
+                throw refused;
+            }));
+
+        Assert.Same(refused, thrown);
+        Assert.Equal(1, posts);
+        Assert.Equal(1, harness.Removed); // Attach's own removal and Stop's, together
+        Assert.Equal(1, harness.Released);
+        Assert.Empty(harness.Errors);
+        Assert.True(harness.Gate.IsClosed);
+        Assert.False(harness.Run(() => Assert.Fail("A callback ran after Stop.")));
+    }
+
+    [Fact]
+    public void A_post_that_throws_after_queueing_still_never_delivers_once_stopped()
+    {
+        var harness = new Harness(RunOverload.Action);
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("early")));
+
+        Assert.Throws<InvalidOperationException>(() => AttachLikeThePlatforms(
+            harness.Gate,
+            harness.Remove,
+            action =>
+            {
+                harness.Posted.Add(action); // a scheduler that queued the work, then reported failure
+                throw new InvalidOperationException("post failed late");
+            }));
+        harness.RunPosted();
+
+        Assert.Empty(harness.Errors);
+        Assert.Equal(1, harness.Removed);
+        Assert.Equal(1, harness.Released);
+    }
+
+    [Fact]
+    public void A_remover_throwing_inside_attach_is_not_called_again_by_stop()
+    {
+        var harness = new Harness(RunOverload.Action);
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("early")));
+        var removeFailed = new InvalidOperationException("remove failed");
+        int removes = 0;
+
+        Exception thrown = Assert.Throws<InvalidOperationException>(() => AttachLikeThePlatforms(
+            harness.Gate,
+            () =>
+            {
+                removes++;
+                throw removeFailed;
+            },
+            harness.Posted.Add));
+
+        Assert.Same(removeFailed, thrown);
+        Assert.Equal(1, removes);
+        Assert.Empty(harness.Posted); // the remover threw before the held error was posted
+        Assert.Empty(harness.Errors);
+        Assert.Equal(1, harness.Released);
+    }
+
     [Fact]
     public void Fail_outside_a_callback_is_a_programming_error()
     {
@@ -210,6 +284,20 @@ public sealed class ListenerGateTests
         Assert.Equal(0, stateBytes);
         Assert.True(actionBytes >= Calls * 32, $"Expected the capturing lambda to allocate; it allocated {actionBytes} bytes.");
         Assert.Equal(4L * Calls * ((long)Calls - 1) / 2, sink.Total); // every call ran, both ways, warm-up included
+    }
+
+    // The platforms' pattern: Attach, and on any exception Stop (which must remove exactly once) and rethrow.
+    private static void AttachLikeThePlatforms(ListenerGate gate, Action remove, Action<Action> postToCallbackThread)
+    {
+        try
+        {
+            gate.Attach(remove, postToCallbackThread);
+        }
+        catch
+        {
+            gate.Stop();
+            throw;
+        }
     }
 
     // Runs once to warm up (JIT, lock inflation, the static lambda's cached delegate), then measures a second run.

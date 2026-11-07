@@ -22,6 +22,8 @@
   <ItemGroup>
     <AndroidLibrary Include="$(PeerlessShimAar)" />
     <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Benchmarks.Android" />
+    <!-- The on-device test host drives FrameReceiver directly, as the shim would. -->
+    <InternalsVisibleTo Include="AdamE.Firestore.Peerless.Tests.Android" />
   </ItemGroup>
 
   <!-- Builds the Java shim with Gradle when its sources or Gradle configuration are newer than the AAR. A packaged
