@@ -16,6 +16,11 @@ namespace AdamE.Firestore.Peerless;
 /// decides when the app's handle can be counted on: when <c>Listen</c> was called off the callback thread, that
 /// delivery can still run before the caller has stored the returned handle (see each platform's
 /// <c>PeerlessListener</c> remarks).</item>
+/// <item>A held failure is delivered or dropped, never both, and only once. <see cref="Stop"/> drops it if the posted
+/// delivery hasn't run yet (or was never posted, because <see cref="Attach"/> threw or never came), and hands it to
+/// the drop action so the platform can free what it holds. The drop action runs on the thread calling
+/// <see cref="Stop"/>, after the gate's own lock is left (a <see cref="Stop"/> inside a callback is still inside that
+/// callback).</item>
 /// <item>The release action (for example, freeing a native buffer) runs exactly once, after closing, and never while
 /// a callback is running.</item>
 /// </list>
@@ -25,22 +30,27 @@ internal sealed class ListenerGate
     private readonly object sync = new();
     private readonly Action<Exception> onError;
     private readonly Action release;
+    private readonly Action<Exception>? onDropped;
 
     private Action? removeRegistration;
     private Exception? pendingError;
     private bool attached;
     private bool closed;
-    private bool stopped;
     private bool inCallback;
     private bool released;
     private int removed;
 
     /// <param name="onError">The app's error callback.</param>
     /// <param name="release">Frees the listener's resources; called exactly once.</param>
-    public ListenerGate(Action<Exception> onError, Action release)
+    /// <param name="onDropped">
+    /// Given a failure held from before <see cref="Attach"/> that <see cref="Stop"/> cancelled, so it will never reach
+    /// <paramref name="onError"/>; called at most once, and never for a failure that was delivered.
+    /// </param>
+    public ListenerGate(Action<Exception> onError, Action release, Action<Exception>? onDropped = null)
     {
         this.onError = onError;
         this.release = release;
+        this.onDropped = onDropped;
     }
 
     /// <summary>Whether the listener has stopped, for whatever reason.</summary>
@@ -61,28 +71,23 @@ internal sealed class ListenerGate
     /// </param>
     public void Attach(Action remove, Action<Action> postToCallbackThread)
     {
-        Exception? deliver;
+        bool deliver;
         bool removeNow;
         lock (sync)
         {
             removeRegistration = remove;
             attached = true;
             removeNow = closed;
-            deliver = pendingError;
-            pendingError = null;
+            deliver = pendingError is not null;
         }
 
         if (removeNow)
             RemoveOnce();
-        if (deliver is not null)
-            postToCallbackThread(() => RunCore(
-                (gate: this, deliver),
-                static state =>
-                {
-                    if (!state.gate.stopped) // checked when it runs: Stop() after Attach still cancels it
-                        state.gate.onError(state.deliver);
-                },
-                evenIfClosed: true));
+        // The error stays held until the posted action takes it, so whichever of that action and Stop comes first
+        // owns it: delivered, or dropped through onDropped, exactly once. That holds if this throws before or after
+        // queueing, or the action never runs.
+        if (deliver)
+            postToCallbackThread(() => RunCore(this, static gate => gate.DeliverHeld(), evenIfClosed: true));
     }
 
     /// <summary>Runs one callback unless the listener is closed. Returns whether it ran.</summary>
@@ -119,15 +124,17 @@ internal sealed class ListenerGate
 
     /// <summary>
     /// Stops the listener: waits for a callback running on another thread, and makes sure none starts afterwards. From
-    /// inside a callback it returns at once.
+    /// inside a callback it returns at once. An error held from before <see cref="Attach"/> and not yet delivered is
+    /// cancelled and handed to the constructor's <c>onDropped</c>.
     /// </summary>
     public void Stop()
     {
         bool remove;
+        Exception? dropped;
         lock (sync)
         {
-            stopped = true;
-            pendingError = null; // an error not yet delivered never will be: the app asked to stop
+            dropped = pendingError; // an error not yet delivered never will be: the app asked to stop
+            pendingError = null;
             remove = attached;
             closed = true;
             if (!inCallback)
@@ -136,6 +143,17 @@ internal sealed class ListenerGate
 
         if (remove)
             RemoveOnce();
+        if (dropped is not null)
+            onDropped?.Invoke(dropped);
+    }
+
+    // The posted delivery, inside the gate. Finding nothing means Stop took the error first.
+    private void DeliverHeld()
+    {
+        Exception? error = pendingError;
+        pendingError = null;
+        if (error is not null)
+            onError(error);
     }
 
     private bool RunCore<TState>(TState state, Action<TState> callback, bool evenIfClosed)
