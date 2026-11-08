@@ -30,6 +30,11 @@ internal static class ReceiverTests
         new("early error is removed once at Attach and delivered on main after it returns",
             EarlyErrorDeliveredOnMainAfterAttach),
         new("stop before delivery cancels an early error", StopBeforeDeliveryCancelsEarlyError),
+        new("stop before attach disposes a dropped encoding failure's cause", StopBeforeAttachDisposesEncodingCause),
+        new("stop before delivery disposes a dropped encoding failure's cause",
+            StopBeforeDeliveryDisposesEncodingCause),
+        new("stop before delivery keeps a dropped Firestore error's cause", StopBeforeDeliveryKeepsFirestoreCause),
+        new("stop before attach keeps a dropped OutOfMemoryError cause", StopBeforeAttachKeepsOutOfMemoryCause),
         new("timed frame reports its arrival before onSnapshot", TimedFrameReportsArrival),
     ];
 
@@ -268,6 +273,74 @@ internal static class ReceiverTests
         await OnMain(static () => { }).ConfigureAwait(false);
 
         Check.That(Volatile.Read(ref delivered) == 0, "onError ran after Stop");
+        Check.That(registration.Removes == 1, $"removed {registration.Removes} times");
+    }
+
+    // #52: an early error that Stop drops undelivered (Attach threw and Register stopped, or Listen failed and
+    // Abandon stopped) releases an encoding failure's cause, as the closed gate does.
+    private static Task StopBeforeAttachDisposesEncodingCause()
+    {
+        var errors = new List<Exception>();
+        FrameReceiver receiver = NewReceiver(errors.Add);
+        var cause = new Java.Lang.Throwable("encoder failed");
+
+        receiver.OnError(EncodingFailed, "too big", cause, "java.lang.Throwable", codeName: null);
+        CheckAlive(cause, "encoder failed"); // held for delivery after Attach
+        receiver.Stop();
+
+        Check.That(errors.Count == 0, "onError ran after Stop");
+        Check.That(cause.Handle == IntPtr.Zero && !cause.PeerReference.IsValid, "the cause was not disposed");
+        return Task.CompletedTask;
+    }
+
+    // The app disposed its handle before the main looper reached the posted delivery.
+    private static async Task StopBeforeDeliveryDisposesEncodingCause()
+    {
+        var errors = new List<Exception>();
+        var cause = new Java.Lang.Throwable("encoder failed");
+        await StopBeforeDelivery(errors, EncodingFailed, cause).ConfigureAwait(false);
+
+        Check.That(errors.Count == 0, "onError ran after Stop");
+        Check.That(cause.Handle == IntPtr.Zero && !cause.PeerReference.IsValid, "the cause was not disposed");
+    }
+
+    // Firestore hands one exception to every listener on a query, so dropping it must not dispose the shared peer.
+    private static async Task StopBeforeDeliveryKeepsFirestoreCause()
+    {
+        var errors = new List<Exception>();
+        using var cause = new Java.Lang.Throwable("shared by every listener");
+        await StopBeforeDelivery(errors, PermissionDenied, cause).ConfigureAwait(false);
+
+        Check.That(errors.Count == 0, "onError ran after Stop");
+        CheckAlive(cause, "shared by every listener");
+    }
+
+    private static Task StopBeforeAttachKeepsOutOfMemoryCause()
+    {
+        var errors = new List<Exception>();
+        FrameReceiver receiver = NewReceiver(errors.Add);
+        using var cause = new Java.Lang.OutOfMemoryError("preallocated");
+
+        receiver.OnError(EncodingFailed, "out of memory", cause, "java.lang.OutOfMemoryError", codeName: null);
+        receiver.Stop();
+
+        Check.That(errors.Count == 0, "onError ran after Stop");
+        CheckAlive(cause, "preallocated");
+        return Task.CompletedTask;
+    }
+
+    // An early error, then Attach and Stop on main before the posted delivery has its turn, then that turn.
+    private static async Task StopBeforeDelivery(List<Exception> errors, int code, Java.Lang.Throwable cause)
+    {
+        FrameReceiver receiver = NewReceiver(errors.Add);
+        var registration = new FakeRegistration();
+        receiver.OnError(code, "early", cause, "java.lang.Throwable", code < 0 ? null : "PERMISSION_DENIED");
+        await OnMain(() =>
+        {
+            receiver.Attach(registration);
+            receiver.Stop();
+        }).ConfigureAwait(false);
+        await OnMain(static () => { }).ConfigureAwait(false);
         Check.That(registration.Removes == 1, $"removed {registration.Removes} times");
     }
 

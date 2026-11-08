@@ -236,6 +236,159 @@ public sealed class ListenerGateTests
         Assert.Equal(1, harness.Released);
     }
 
+    // #52: a held error Stop cancels goes to onDropped, so the platform can free what it holds (a Java cause's global
+    // reference on Android). Each path: delivered or dropped, exactly once.
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Stop_before_attach_drops_a_held_failure_once(RunOverload overload)
+    {
+        var harness = new Harness(overload);
+        var error = new InvalidOperationException("early");
+        harness.Run(() => harness.Gate.Fail(error));
+
+        harness.Gate.Stop();
+        harness.Gate.Stop();
+        harness.Gate.Attach(harness.Remove, harness.Posted.Add);
+        harness.RunPosted();
+
+        Assert.Same(error, Assert.Single(harness.Dropped));
+        Assert.Empty(harness.Errors);
+        Assert.Empty(harness.Posted);
+        Assert.Equal(1, harness.Removed);
+        Assert.Equal(1, harness.Released);
+    }
+
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Stop_after_attach_before_the_posted_delivery_drops_the_failure_once(RunOverload overload)
+    {
+        var harness = new Harness(overload);
+        var error = new InvalidOperationException("early");
+        harness.Run(() => harness.Gate.Fail(error));
+        harness.Gate.Attach(harness.Remove, harness.Posted.Add);
+
+        harness.Gate.Stop();
+        Assert.Same(error, Assert.Single(harness.Dropped)); // on Stop's thread, not left to the posted action
+        harness.RunPosted();
+        harness.Gate.Stop();
+
+        Assert.Single(harness.Dropped);
+        Assert.Empty(harness.Errors);
+        Assert.Equal(1, harness.Removed);
+        Assert.Equal(1, harness.Released);
+    }
+
+    // Attach throwing on each side of queueing the delivery, or in the remover before it, as Register and Start see.
+    public static TheoryData<string> AttachFailures => ["post refused", "post failed late", "remove failed"];
+
+    [Theory]
+    [MemberData(nameof(AttachFailures))]
+    public void A_held_failure_is_dropped_once_when_attach_throws_and_stop_follows(string failure)
+    {
+        var harness = new Harness(RunOverload.Action);
+        var error = new InvalidOperationException("early");
+        harness.Run(() => harness.Gate.Fail(error));
+        int removes = 0;
+
+        Assert.Throws<InvalidOperationException>(() => AttachLikeThePlatforms(
+            harness.Gate,
+            () =>
+            {
+                removes++;
+                if (failure == "remove failed")
+                    throw new InvalidOperationException(failure);
+            },
+            action =>
+            {
+                if (failure == "post failed late")
+                    harness.Posted.Add(action);
+                throw new InvalidOperationException(failure);
+            }));
+        harness.RunPosted();
+
+        Assert.Same(error, Assert.Single(harness.Dropped));
+        Assert.Empty(harness.Errors);
+        Assert.Equal(1, removes);
+        Assert.Equal(1, harness.Released);
+    }
+
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void A_delivered_early_failure_is_never_dropped(RunOverload overload)
+    {
+        var harness = new Harness(overload);
+        var error = new InvalidOperationException("early");
+        harness.Run(() => harness.Gate.Fail(error));
+        harness.Gate.Attach(harness.Remove, harness.Posted.Add);
+
+        harness.RunPosted();
+        harness.Gate.Stop();
+
+        Assert.Same(error, Assert.Single(harness.Errors));
+        Assert.Empty(harness.Dropped);
+        Assert.Equal(1, harness.Removed);
+        Assert.Equal(1, harness.Released);
+    }
+
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Stopping_inside_the_delivery_of_an_early_failure_does_not_drop_it(RunOverload overload)
+    {
+        var harness = new Harness(overload, onError: (gate, _) => gate.Stop());
+        harness.Run(() => harness.Gate.Fail(new InvalidOperationException("early")));
+        harness.Gate.Attach(harness.Remove, harness.Posted.Add);
+
+        harness.RunPosted();
+
+        Assert.Single(harness.Errors);
+        Assert.Empty(harness.Dropped);
+        Assert.Equal(1, harness.Removed);
+        Assert.Equal(1, harness.Released);
+    }
+
+    [Theory]
+    [MemberData(nameof(Overloads))]
+    public void Nothing_is_dropped_when_no_failure_was_held(RunOverload overload)
+    {
+        var stoppedEarly = new Harness(overload);
+        stoppedEarly.Gate.Stop();
+        stoppedEarly.Gate.Attach(stoppedEarly.Remove, stoppedEarly.Posted.Add);
+
+        var failedAttached = new Harness(overload);
+        failedAttached.Gate.Attach(failedAttached.Remove, failedAttached.Posted.Add);
+        failedAttached.Run(() => failedAttached.Gate.Fail(new InvalidOperationException("late")));
+        failedAttached.Gate.Stop();
+
+        Assert.Empty(stoppedEarly.Dropped);
+        Assert.Empty(failedAttached.Dropped);
+        Assert.Single(failedAttached.Errors);
+        Assert.Equal(1, stoppedEarly.Removed);
+        Assert.Equal(1, failedAttached.Removed);
+        Assert.Equal(1, stoppedEarly.Released);
+        Assert.Equal(1, failedAttached.Released);
+    }
+
+    [Fact]
+    public void The_drop_action_runs_outside_the_gates_lock()
+    {
+        bool lockFree = false;
+        ListenerGate? gate = null;
+        gate = new ListenerGate(
+            _ => Assert.Fail("delivered"),
+            static () => { },
+            _ =>
+            {
+                // Another thread can take the gate only if Stop has left its lock.
+                lockFree = Task.Run(() => gate!.IsClosed).Wait(Wait, TestContext.Current.CancellationToken);
+            });
+        gate.Run(() => gate.Fail(new InvalidOperationException("early")));
+        gate.Attach(static () => { }, static _ => { });
+
+        gate.Stop();
+
+        Assert.True(lockFree);
+    }
+
     [Fact]
     public void Fail_outside_a_callback_is_a_programming_error()
     {
@@ -331,13 +484,16 @@ public sealed class ListenerGateTests
                     if (gate is not null)
                         onError?.Invoke(gate, error);
                 },
-                () => Released++);
+                () => Released++,
+                Dropped.Add);
             Gate = gate;
         }
 
         public ListenerGate Gate { get; }
 
         public List<Exception> Errors { get; } = [];
+
+        public List<Exception> Dropped { get; } = [];
 
         public List<Action> Posted { get; } = [];
 
