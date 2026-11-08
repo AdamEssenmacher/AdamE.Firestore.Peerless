@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Packs AdamE.Firestore.Peerless and AdamE.Firestore.Peerless.iOS into a local NuGet feed (a folder), so an app can use
-# Peerless as packages before anything is published. Needs macOS with Xcode and the ios workload: the iOS package
-# carries the shim xcframework, rebuilt here from source.
+# Packs AdamE.Firestore.Peerless, AdamE.Firestore.Peerless.Android and AdamE.Firestore.Peerless.iOS into a local NuGet
+# feed (a folder), so an app can use Peerless as packages before anything is published. Needs macOS with Xcode and the
+# android and ios workloads: the platform packages carry the shims (the Android AAR, the iOS xcframework), rebuilt
+# here from source. All three share one version, which an app pins once.
 #
 #   scripts/pack-local.sh <feed directory> [version]
 #
@@ -29,7 +30,8 @@ fi
 # NuGet caches a package by its version, so one already restored on this Mac would shadow the new build.
 cache="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
 lower_version="$(printf '%s' "$version" | tr '[:upper:]' '[:lower:]')"
-for id in AdamE.Firestore.Peerless AdamE.Firestore.Peerless.iOS; do
+projects=(AdamE.Firestore.Peerless AdamE.Firestore.Peerless.Android AdamE.Firestore.Peerless.iOS)
+for id in "${projects[@]}"; do
   lower_id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
   if [[ -e "$feed/$id.$version.nupkg" || -e "$cache/$lower_id/$lower_version" ]]; then
     echo "pack-local: $id $version is already in $feed or the NuGet cache; pick another version" >&2
@@ -42,9 +44,10 @@ out="$(mktemp -d)"
 trap 'rm -rf "$out"' EXIT
 # From the repository, so its global.json picks the SDK and workloads, wherever the script is run from.
 cd "$root"
-# A package must not carry a shim left over from another checkout state.
-rm -rf ios/build/PeerlessShim.xcframework
-for project in AdamE.Firestore.Peerless AdamE.Firestore.Peerless.iOS; do
+# A package must not carry a shim left over from another checkout state: each build target decides from timestamps,
+# which a checkout doesn't order.
+rm -rf ios/build/PeerlessShim.xcframework android/peerless-shim/build/outputs/aar
+for project in "${projects[@]}"; do
   dotnet pack "src/$project/$project.csproj" -c Release -p:Version="$version" -o "$out"
 done
 mv "$out"/*.nupkg "$feed"/

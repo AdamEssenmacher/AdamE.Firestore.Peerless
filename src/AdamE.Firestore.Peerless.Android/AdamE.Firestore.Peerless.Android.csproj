@@ -8,6 +8,9 @@
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <!-- Generated binding code lacks XML docs; everything it produces is internal anyway. -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <!-- The package carries the shim's AAR next to the assembly; the app supplies Firestore itself, through the
+         Xamarin.Firebase.Firestore dependency, as the shim is compiled against it (compileOnly). -->
+    <IsPackable>true</IsPackable>
     <Description>Listens to Firestore on Android through a small Java shim that encodes each snapshot once, so no Firestore value crosses into .NET as a peer object.</Description>
 
     <PeerlessShimDirectory>$(MSBuildThisFileDirectory)../../android/</PeerlessShimDirectory>
@@ -30,7 +33,8 @@
        build will ship the AAR. It runs before _CategorizeAndroidLibraries, the first target that reads the AAR, so the
        same build binds and packages the rebuilt one. Gradle leaves an up-to-date AAR untouched, so the AAR is touched
        afterwards, or an edit that changes no output would rerun Gradle on every build. IDE design-time builds skip it
-       once an AAR exists. Gradle gets the Android SDK and JDK that the .NET build resolved (from _ResolveSdks), so it
+       once an AAR exists. scripts/pack-local.sh deletes the AAR first, so a package never carries one from another
+       checkout state. Gradle gets the Android SDK and JDK that the .NET build resolved (from _ResolveSdks), so it
        doesn't depend on ANDROID_HOME, JAVA_HOME or a local.properties being set up; a local.properties sdk.dir still
        wins over ANDROID_HOME. -->
   <ItemGroup>
