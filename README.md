@@ -15,9 +15,11 @@ compared with the naive peered approach.
 Status: the wire format, the .NET decoder and both shims exist, and both are benchmarked against the peered approach
 under NativeAOT. Nothing is published as a NuGet yet.
 
-To try it as packages before then, pack the core, Android and iOS libraries into a local feed (macOS, Xcode, the
-`android` and `ios` workloads) and add that folder to the app's NuGet sources. All three get one version, which
-defaults to `0.1.0-preview.g<commit>`:
+To try it as packages before then, pack the core, Android and iOS libraries into a local feed and add that folder to
+the app's NuGet sources. Packing needs macOS with Xcode, the `android` and `ios` workloads, and what Gradle needs to
+build the Android shim: the Android SDK with platform 36, a JDK 17 or later, and network access the first time (Gradle,
+its Android plugin and Firestore's library download then). All three get one version, which defaults to
+`0.1.0-preview.g<commit>`:
 
 ```bash
 scripts/pack-local.sh ~/RiderProjects/peerless-feed
