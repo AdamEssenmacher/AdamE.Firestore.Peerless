@@ -53,7 +53,8 @@ typedef void (*adame_peerless_error_callback)(void *context, int32_t code, const
 /// Releases the context once nothing can use it again (see the contract above).
 typedef void (*adame_peerless_release_callback)(void *context);
 
-/// The shim's code for "could not encode a snapshot" (a value it refuses, or a frame over 2 GB).
+/// The shim's code for "could not encode a snapshot" (a value it refuses, a frame over 2 GB, or memory it couldn't
+/// allocate).
 #define ADAME_PEERLESS_ENCODE_FAILED (-1)
 
 /// Listens to a FIRQuery (passed as its Objective-C object pointer). Returns the listener, or NULL if `query` isn't

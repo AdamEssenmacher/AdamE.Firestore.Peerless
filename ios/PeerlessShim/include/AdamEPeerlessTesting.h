@@ -22,4 +22,8 @@ void *adame_peerless_testing_listen(void *context, adame_peerless_frame_callback
                                     adame_peerless_error_callback on_error, id<FIRListenerRegistration> registration,
                                     BOOL timed, AdamEPeerlessTestingCallback _Nullable *_Nonnull callback);
 
+/// Makes the next listener created (by any listen function) start without a frame writer, as when its buffer can't be
+/// allocated.
+void adame_peerless_testing_fail_next_writer_allocation(void);
+
 NS_ASSUME_NONNULL_END

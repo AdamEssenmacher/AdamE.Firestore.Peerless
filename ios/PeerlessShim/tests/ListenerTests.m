@@ -54,6 +54,8 @@ typedef struct Probe {
     int lastCode;
     void *lastNative;    // the error callback's `native`, compared by identity only (borrowed, never dereferenced later)
     int lastNativeKind;  // 0 none, 1 NSError, 2 NSException, 3 something else
+    char lastMessage[256];   // the error callback's `message`, copied (valid only during the call)
+    char lastNativeName[64]; // the name of the error callback's NSException, if that's what `native` was
     adame_peerless_frame_timing firstFrameTiming;
     atomic_int timedFrames; // frames that arrived with non-NULL timing
     size_t expectedLength;  // what the last encode wrote, for OnFrameCheckingIntact
@@ -111,11 +113,14 @@ static void OnError(void *context, int32_t code, const char *message, void *nati
     Probe *probe = context;
     probe->lastCode = code;
     probe->lastNative = native;
+    strlcpy(probe->lastMessage, message != NULL ? message : "", sizeof probe->lastMessage);
     id object = (__bridge id)native;
     probe->lastNativeKind = object == nil ? 0
         : [object isKindOfClass:[NSError class]] ? 1
         : [object isKindOfClass:[NSException class]] ? 2
         : 3;
+    strlcpy(probe->lastNativeName, probe->lastNativeKind == 2 ? ((NSException *)object).name.UTF8String : "",
+            sizeof probe->lastNativeName);
     atomic_fetch_add(&probe->errors, 1);
     if (probe->behaviour == BehaviourRemoveInside) {
         adame_peerless_listener_remove(probe->listener, OnRelease); // as the .NET side does after an error
@@ -262,6 +267,28 @@ static void EncodeFailureIsCodeMinusOne(void) {
     BOOL ok = stopped && probe.releases == 1 && registration.removes == 1;
     ListenerTestsRecord(ok, @"encode failure: code -1 with the raised NSException, stopped, released once on removal",
                         Counts(&probe, registration));
+}
+
+// A writer whose buffer couldn't be allocated must fail the listener like any other allocation failure in the writer
+// (code -1, an NSMallocException), not deliver an empty frame that .NET would report as malformed.
+static void AFailedWriterAllocationIsAnEncodeFailure(void) {
+    Probe probe = {.behaviour = BehaviourCount};
+    AdamEPeerlessFakeRegistration *registration = [AdamEPeerlessFakeRegistration new];
+    AdamEPeerlessTestingCallback callback = nil;
+    adame_peerless_testing_fail_next_writer_allocation();
+    void *listener = Listen(&probe, OnFrame, registration, &callback);
+    callback(@"snapshot", nil, Encode);
+    callback(@"snapshot", nil, Encode);
+    BOOL stopped = probe.errors == 1 && probe.lastCode == ADAME_PEERLESS_ENCODE_FAILED && probe.frames == 0
+        && strcmp(probe.lastMessage, "Peerless could not allocate its frame buffer.") == 0
+        && strcmp(probe.lastNativeName, NSMallocException.UTF8String) == 0
+        && registration.removes == 1 && probe.releases == 0;
+    adame_peerless_listener_remove(listener, OnRelease);
+    BOOL ok = stopped && probe.releases == 1 && registration.removes == 1;
+    ListenerTestsRecord(ok, @"failed writer allocation: code -1 (\"could not allocate its frame buffer\"), stopped, "
+                            @"released once on removal",
+                        [NSString stringWithFormat:@"%@, message \"%s\", native \"%s\"", Counts(&probe, registration),
+                                                   probe.lastMessage, probe.lastNativeName]);
 }
 
 static void DisposeFromInsideACallback(void) {
@@ -427,14 +454,38 @@ static void TheShimReportsItsCApiVersion(void) {
                         [NSString stringWithFormat:@"reported %d, header %d", version, ADAME_PEERLESS_ABI_VERSION]);
 }
 
+// This executable links the dynamic FirebaseFirestoreInternal.framework the benchmark app embeds, so the shim must
+// report that framework's own version: not "static" (which skips the Firestore check in .NET) and not "" (refused).
+// Read independently from the framework bundle on disk, by path, so a repackaged framework whose executable name the
+// shim no longer recognises fails here.
+static void TheShimReportsTheDynamicFirestoreFrameworksVersion(void) {
+    NSString *reported = [NSString stringWithUTF8String:adame_peerless_runtime_firestore_version()];
+    NSString *path = [NSBundle bundleForClass:[FIRFirestore class]].bundlePath;
+    NSString *expected = nil;
+    NSString *plist = [path stringByAppendingPathComponent:@"Info.plist"];
+    NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:plist];
+    if ([path.lastPathComponent isEqual:@"FirebaseFirestoreInternal.framework"])
+        expected = info[@"CFBundleShortVersionString"];
+    NSString *compiled = @ADAME_PEERLESS_FIREBASE_VERSION;
+    NSString *compiledMajor = [compiled componentsSeparatedByString:@"."].firstObject;
+    NSString *reportedMajor = [reported componentsSeparatedByString:@"."].firstObject;
+    BOOL ok = [expected isKindOfClass:[NSString class]] && expected.length > 0 && [reported isEqual:expected]
+        && [reportedMajor isEqual:compiledMajor];
+    ListenerTestsRecord(ok, @"the shim reports the linked FirebaseFirestoreInternal.framework's version",
+                        [NSString stringWithFormat:@"reported \"%@\", framework %@ says \"%@\", compiled \"%@\"",
+                                                   reported, path, expected, compiled]);
+}
+
 void RunListenerTests(void) {
     TheShimReportsItsCApiVersion();
+    TheShimReportsTheDynamicFirestoreFrameworksVersion();
     FirstFrameTimingDoesNotRequireTheListenerHandle();
     AnUntimedListenerGetsNoTiming();
     AnIdleListenerGivesBackAnOversizedBuffer();
     DisposeBeforeFirstCallback();
     ErrorStopsAndReleasesAfterTheCallback();
     EncodeFailureIsCodeMinusOne();
+    AFailedWriterAllocationIsAnEncodeFailure();
     DisposeFromInsideACallback();
     RemovalWaitsForACallbackInFlight();
     ConcurrentQueue();

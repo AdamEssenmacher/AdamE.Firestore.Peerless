@@ -37,7 +37,7 @@ const char *adame_peerless_compiled_firebase_version(void) {
 }
 
 /// Returned by adame_peerless_runtime_firestore_version when Firestore is linked into another binary. Keep in step with
-/// StaticallyLinkedFirestore in src/AdamE.Firestore.Peerless.iOS/PeerlessListener.cs.
+/// FirebaseVersionCheck.StaticallyLinkedFirestore in src/AdamE.Firestore.Peerless/FirebaseVersionCheck.cs.
 static const char PLSStaticallyLinkedFirestore[] = "static";
 
 const char *adame_peerless_runtime_firestore_version(void) {
@@ -96,10 +96,23 @@ const char *adame_peerless_runtime_firestore_version(void) {
 
 @end
 
+#ifdef ADAME_PEERLESS_TESTING
+static atomic_bool PLSTestingFailNextWriter;
+
+void adame_peerless_testing_fail_next_writer_allocation(void) {
+    atomic_store(&PLSTestingFailNextWriter, true);
+}
+#endif
+
+// The writer is nil if its buffer couldn't be allocated; AdamEPeerlessHandle reports that as an encode failure.
 static AdamEPeerlessListener *AdamEPeerlessNewListener(void *context, adame_peerless_frame_callback onFrame,
                                                        adame_peerless_error_callback onError, BOOL timed) {
     AdamEPeerlessListener *listener = [AdamEPeerlessListener new];
     listener->_writer = [[AdamEPeerlessFrameWriter alloc] initWithCapacity:64 * 1024];
+#ifdef ADAME_PEERLESS_TESTING
+    if (atomic_exchange(&PLSTestingFailNextWriter, false))
+        listener->_writer = nil;
+#endif
     listener->_writer.timesData = timed;
     listener->_timed = timed;
     listener->_context = context;
@@ -167,6 +180,10 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
         NSString *failure = nil;
         NSException *raised = nil;
         @try {
+            // Raised like the writer's own allocation failures, so it fails the listener the same way rather than
+            // reaching .NET as an empty (malformed) frame.
+            if (listener->_writer == nil)
+                [NSException raise:NSMallocException format:@"Peerless could not allocate its frame buffer."];
             encode(listener->_writer);
             if (listener->_writer.length > INT32_MAX)
                 failure = [NSString stringWithFormat:@"The frame is %zu bytes, over the 2 GB limit.", listener->_writer.length];

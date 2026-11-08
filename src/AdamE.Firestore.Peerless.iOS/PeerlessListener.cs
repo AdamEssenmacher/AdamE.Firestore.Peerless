@@ -60,10 +60,11 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// <para>
 /// <b>Errors.</b> <c>onError</c> receives a <see cref="FirestoreListenException"/> when Firestore reports a failure
 /// (for example, permission denied), or a <see cref="PeerlessFormatException"/> when the shim could not encode a
-/// snapshot or .NET could not decode it. Encoding failures are data-dependent: two keys of one map that differ only in
-/// lone UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), and an array or map nested at
-/// depth 100 or more is refused (Firestore's own limit of 20 levels rules that out), so that snapshot fails. If
-/// decoding fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
+/// snapshot or .NET could not decode it. Apart from the shim running out of memory (an <c>ObjCException</c> wrapping
+/// <c>NSMallocException</c>), encoding failures are data-dependent: two keys of one map that differ only in lone
+/// UTF-16 surrogates can't both be written (UTF-8 can't carry a lone surrogate), and an array or map nested at depth
+/// 100 or more is refused (Firestore's own limit of 20 levels rules that out), so that snapshot fails. If decoding
+/// fails some other way (for example, <see cref="OutOfMemoryException"/> on a very large snapshot),
 /// <c>onError</c> receives that exception. Either way the listener has stopped and nothing more arrives. It is
 /// required, so a failing listener can't go silent. The native error behind a Firestore or encoding failure is the
 /// <see cref="Exception.InnerException"/>: an <c>NSErrorException</c> wrapping Firestore's <c>NSError</c> (domain,
@@ -168,8 +169,8 @@ public static class PeerlessListener
 
     /// <summary>
     /// The FirebaseFirestore framework version the app loaded, "" if its bundle doesn't say, or
-    /// <see cref="StaticallyLinkedFirestore"/> if Firestore is statically linked into the app or another framework
-    /// (the bundle holding it then carries that binary's version, not Firestore's).
+    /// <see cref="FirebaseVersionCheck.StaticallyLinkedFirestore"/> if Firestore is statically linked into the app or
+    /// another framework (the bundle holding it then carries that binary's version, not Firestore's).
     /// </summary>
     internal static unsafe string RuntimeFirestoreVersion =>
         Marshal.PtrToStringUTF8((nint)Native.RuntimeFirestoreVersion()) ?? string.Empty;
@@ -212,52 +213,7 @@ public static class PeerlessListener
                 + $"{Native.AbiVersion}. Rebuild the shim (ios/build-shim.sh) or use matching packages.";
     }
 
-    /// <summary>
-    /// What the shim's <c>adame_peerless_runtime_firestore_version</c> returns when Firestore is statically linked into
-    /// another binary. Keep in step with <c>PLSStaticallyLinkedFirestore</c> in ios/PeerlessShim/src/PeerlessShim.m.
-    /// </summary>
-    internal const string StaticallyLinkedFirestore = "static";
-
-    // The shim only uses long-stable SDK API (snapshot.data, metadata, the value classes), so a newer minor or patch
-    // release is accepted; a different major version may have changed what it relies on. Firestore's own framework is
-    // what the shim calls; FirebaseCore is checked too, since the two ship together. When Firestore is statically
-    // linked into something else its version can't be read, so FirebaseCore's stands in for both; a Firestore
-    // framework with no readable version is refused.
-    private static string? CheckFirebaseVersion()
-    {
-        string compiled = CompiledFirebaseVersion;
-        string firestore = RuntimeFirestoreVersion;
-        string core = Firebase.Core.App.FirebaseVersion;
-        string? expected = Major(compiled);
-        if (expected is null)
-        {
-            return $"Peerless's iOS shim reports a malformed compiled Firebase version '{compiled}'. Rebuild the shim "
-                + "(ios/build-shim.sh).";
-        }
-
-        if (firestore == StaticallyLinkedFirestore)
-        {
-            return Major(core) == expected
-                ? null
-                : $"Peerless's iOS shim was compiled against Firebase {compiled}, but the app loaded FirebaseCore "
-                    + $"{core} (FirebaseFirestore isn't in its own FirebaseFirestoreInternal framework, e.g. it is "
-                    + "statically linked, so its version can't be read and FirebaseCore's was checked in its place). Use "
-                    + "a Peerless build for this Firebase major version.";
-        }
-
-        if (firestore.Length == 0)
-        {
-            return $"Peerless's iOS shim was compiled against Firebase {compiled}, but the version of the "
-                + "FirebaseFirestore framework the app loaded is unreadable (its bundle has none; FirebaseCore is "
-                + $"{core}), so it can't be checked. Use the FirebaseFirestoreInternal framework as Firebase ships it "
-                + "(its Info.plist carries CFBundleShortVersionString).";
-        }
-
-        return Major(core) == expected && Major(firestore) == expected
-            ? null
-            : $"Peerless's iOS shim was compiled against Firebase {compiled}, but the app loaded FirebaseFirestore "
-                + $"{firestore} and FirebaseCore {core}. Use a Peerless build for this Firebase major version.";
-
-        static string? Major(string version) => version.Split('.') is [var major, ..] && major.Length > 0 ? major : null;
-    }
+    // The decision lives in the core library (FirebaseVersionCheck) so it can be tested without a simulator.
+    private static string? CheckFirebaseVersion() =>
+        FirebaseVersionCheck.Check(CompiledFirebaseVersion, RuntimeFirestoreVersion, Firebase.Core.App.FirebaseVersion);
 }
