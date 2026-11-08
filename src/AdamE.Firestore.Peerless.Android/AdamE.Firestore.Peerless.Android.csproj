@@ -6,6 +6,7 @@
     <IsAotCompatible>true</IsAotCompatible>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <!-- Generated binding code lacks XML docs; everything it produces is internal anyway. -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <!-- The package carries the shim's AAR next to the assembly; the app supplies Firestore itself, through the

@@ -1,7 +1,10 @@
 <Project>
   <ItemGroup>
     <!-- The ordinary, peered bindings that the benchmarks measure against. -->
-    <PackageVersion Include="Xamarin.Firebase.Firestore" Version="126.0.2.4" />
+    <!-- Bounded below the next major: the Android shim is compiled against the Firestore 26 inside this binding
+         (compileOnly), so the package must not let an app restore Firestore 27 under it. Restore picks the lower
+         bound. -->
+    <PackageVersion Include="Xamarin.Firebase.Firestore" Version="[126.0.2.4,127)" />
     <PackageVersion Include="AdamE.Firebase.iOS.CloudFirestore" Version="12.18.0" />
   </ItemGroup>
 
