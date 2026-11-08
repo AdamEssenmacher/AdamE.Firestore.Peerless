@@ -13,6 +13,8 @@ results/**/logcat.txt
 
 # Gradle (android/)
 .gradle/
+# The Kotlin Gradle plugin's session and error logs; an untracked log would block scripts/pack-local.sh.
+.kotlin/
 android/**/build/
 android/build/
 local.properties
