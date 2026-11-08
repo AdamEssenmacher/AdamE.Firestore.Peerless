@@ -232,7 +232,8 @@ static void AdamEPeerlessHandle(AdamEPeerlessListener *listener, id snapshot, NS
 }
 
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback onFrame,
-                                  adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity,
+                                  adame_peerless_error_callback onError, int timed, int includeMetadataChanges,
+                                  char *error, size_t errorCapacity,
                                   void **raised) {
     if (raised != NULL)
         *raised = NULL;
@@ -245,7 +246,8 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
     __weak AdamEPeerlessListener *weak = listener;
     id<FIRListenerRegistration> registration = nil;
     @try {
-        registration = [(FIRQuery *)object addSnapshotListener:^(FIRQuerySnapshot *snapshot, NSError *error) {
+        registration = [(FIRQuery *)object addSnapshotListenerWithIncludeMetadataChanges:includeMetadataChanges != 0
+            listener:^(FIRQuerySnapshot *snapshot, NSError *error) {
             AdamEPeerlessListener *strong = weak; // keeps the listener alive while this callback runs
             if (strong != nil)
                 AdamEPeerlessHandle(strong, snapshot, error, ^(AdamEPeerlessFrameWriter *writer) {

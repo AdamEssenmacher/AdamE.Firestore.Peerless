@@ -86,7 +86,8 @@ internal sealed unsafe class FrameReceiver : IDisposable
         Action<FirestoreSnapshot> onSnapshot,
         Action<Exception> onError,
         IFrameObserver? observer,
-        bool isDocument)
+        bool isDocument,
+        bool includeMetadataChanges = false)
     {
         var receiver = new FrameReceiver(decode, onSnapshot, onError, observer);
         GCHandle self = GCHandle.Alloc(receiver);
@@ -98,7 +99,8 @@ internal sealed unsafe class FrameReceiver : IDisposable
         nint raised = 0;
         nint created = isDocument
             ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity, &raised)
-            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity, &raised);
+            : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed, includeMetadataChanges ? 1 : 0,
+                error, ErrorCapacity, &raised);
         GC.KeepAlive(target);
         if (created == 0)
         {

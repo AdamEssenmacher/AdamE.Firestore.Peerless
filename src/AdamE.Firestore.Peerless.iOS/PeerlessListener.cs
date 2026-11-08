@@ -77,8 +77,8 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// can handle inside the callback.
 /// </para>
 /// <para>
-/// <b>Not supported yet</b> (on either platform): metadata-only changes (<c>includeMetadataChanges</c>) and
-/// <c>ListenSource</c>; listeners behave like the SDK's default <c>addSnapshotListener</c>.
+/// Query listeners can opt in to metadata-only changes. Document listeners use the SDK defaults.
+/// <c>ListenSource</c> is not supported.
 /// </para>
 /// <para>
 /// <b>Firebase version.</b> The shim is compiled against one Firebase iOS SDK version (12.18.0 for this build). The
@@ -104,6 +104,11 @@ public static class PeerlessListener
         Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(query, onSnapshot, onError, observer: null);
 
+    /// <summary>Listens to a query, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
+    public static IDisposable Listen(
+        Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError, bool includeMetadataChanges) =>
+        Listen(query, onSnapshot, onError, observer: null, includeMetadataChanges);
+
     /// <summary>Listens to one document. Dispose the result to stop listening.</summary>
     public static IDisposable Listen(
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError) =>
@@ -113,7 +118,8 @@ public static class PeerlessListener
         Query query,
         Action<FirestoreQuerySnapshot> onSnapshot,
         Action<Exception> onError,
-        IFrameObserver? observer)
+        IFrameObserver? observer,
+        bool includeMetadataChanges = false)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(onSnapshot);
@@ -126,7 +132,8 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
             observer,
-            isDocument: false);
+            isDocument: false,
+            includeMetadataChanges);
     }
 
     internal static IDisposable Listen(

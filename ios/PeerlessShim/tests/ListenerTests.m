@@ -422,7 +422,7 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
     Probe probe = {.behaviour = BehaviourCount};
     char error[512] = "";
     void *raised = (void *)1; // must be overwritten either way
-    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, error, sizeof error,
+    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, 0, error, sizeof error,
                                                  &raised);
     id exception = raised == NULL || raised == (void *)1 ? nil : CFBridgingRelease(raised); // the caller owns it
     char documentError[512] = "";
@@ -433,7 +433,7 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
     id documentException = documentRaised == NULL || documentRaised == (void *)1 ? nil : CFBridgingRelease(documentRaised);
     char notAQuery[512] = "";
     void *notRaised = (void *)1;
-    void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0,
+    void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0, 0,
                                                   notAQuery, sizeof notAQuery, &notRaised);
     BOOL ok = didTerminate && listener == NULL && strlen(error) > 0 && [exception isKindOfClass:[NSException class]]
         && documentListener == NULL && strlen(documentError) > 0 && [documentException isKindOfClass:[NSException class]]

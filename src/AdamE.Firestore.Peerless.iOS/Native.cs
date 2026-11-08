@@ -29,7 +29,7 @@ internal static unsafe class Native
     /// together with any change to a declaration or its contract (signatures, <see cref="FrameTiming"/>'s layout, the
     /// meaning of codes, pointers and returned version strings, ownership, when callbacks run).
     /// </summary>
-    public const int AbiVersion = 2;
+    public const int AbiVersion = 3;
 
     /// <summary>The shim's error code for a snapshot it could not encode.</summary>
     public const int EncodeFailed = -1;
@@ -41,6 +41,7 @@ internal static unsafe class Native
         delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
         delegate* unmanaged<nint, int, byte*, nint, void> onError,
         int timed,
+        int includeMetadataChanges,
         byte* error,
         nuint errorCapacity,
         nint* exception);
