@@ -15,6 +15,13 @@ compared with the naive peered approach.
 Status: the wire format, the .NET decoder and both shims exist, and both are benchmarked against the peered approach
 under NativeAOT. Nothing is published as a NuGet yet.
 
+To try it as packages before then, pack the core and iOS libraries into a local feed (macOS, Xcode, `ios` workload)
+and add that folder to the app's NuGet sources. The version defaults to `0.1.0-preview.g<commit>`:
+
+```bash
+scripts/pack-local.sh ~/RiderProjects/peerless-feed
+```
+
 | path | what |
 |---|---|
 | [docs/wire-format.md](docs/wire-format.md) | The frame format both shims write (version 1.0) |
