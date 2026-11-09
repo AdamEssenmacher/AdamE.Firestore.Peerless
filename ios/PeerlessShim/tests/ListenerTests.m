@@ -428,7 +428,7 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
     char documentError[512] = "";
     void *documentRaised = (void *)1;
     void *documentListener = adame_peerless_listen_document(
-        (__bridge void *)[firestore documentWithPath:@"items/one"], &probe, OnFrame, OnError, 0, documentError,
+        (__bridge void *)[firestore documentWithPath:@"items/one"], &probe, OnFrame, OnError, 0, 0, documentError,
         sizeof documentError, &documentRaised);
     id documentException = documentRaised == NULL || documentRaised == (void *)1 ? nil : CFBridgingRelease(documentRaised);
     char notAQuery[512] = "";
@@ -476,6 +476,66 @@ static void TheShimReportsTheDynamicFirestoreFrameworksVersion(void) {
                                                    reported, path, expected, compiled]);
 }
 
+// A stand-in for the SDK registration. It publishes an unchanged result a second time only when the shim
+// requests metadata-only changes, so the test exercises both native option values without a network dependency.
+@interface MetadataQuery : NSObject
+@property(nonatomic) BOOL isFromCache;
+@end
+
+@implementation MetadataQuery
+- (BOOL)isKindOfClass:(Class)type {
+    return type == [FIRQuery class] || [super isKindOfClass:type];
+}
+- (id)metadata { return self; }
+- (BOOL)hasPendingWrites { return NO; }
+- (NSArray *)documents { return @[]; }
+- (id<FIRListenerRegistration>)addSnapshotListenerWithIncludeMetadataChanges:(BOOL)includeMetadataChanges
+                                                                   listener:(void (^)(FIRQuerySnapshot *, NSError *))callback {
+    self.isFromCache = YES;
+    callback((id)self, nil);
+    if (includeMetadataChanges) {
+        self.isFromCache = NO;
+        callback((id)self, nil);
+    }
+    return [AdamEPeerlessFakeRegistration new];
+}
+@end
+
+static void CollectFrames(void *context, const uint8_t *data, size_t length,
+                          const adame_peerless_frame_timing *timing) {
+    NSMutableArray<NSData *> *frames = (__bridge NSMutableArray<NSData *> *)context;
+    [frames addObject:[NSData dataWithBytes:data length:length]];
+}
+
+static void MetadataError(void *context, int32_t code, const char *message, void *native) {
+    ListenerTestsRecord(NO, @"metadata listener did not report an error", @(message));
+}
+
+static void QueryMetadataChangesAreOptIn(void) {
+    MetadataQuery *query = [MetadataQuery new];
+    for (int include = 0; include <= 1; include++) {
+        NSMutableArray<NSData *> *frames = [NSMutableArray array];
+        void *listener = adame_peerless_listen_query((__bridge void *)query, (__bridge void *)frames,
+            CollectFrames, MetadataError, 0, include, NULL, 0, NULL);
+        if (listener != NULL)
+            adame_peerless_listener_remove(listener, NULL);
+
+        // Wire format 1.0: the snapshot metadata byte follows the eight-byte header and five-byte section header.
+        const NSUInteger metadataOffset = 13;
+        NSData *cached = frames.firstObject;
+        BOOL ok = listener != NULL && frames.count == (NSUInteger)(include + 1)
+            && cached.length > metadataOffset && ((const uint8_t *)cached.bytes)[metadataOffset] == 1;
+        if (ok && include) {
+            NSMutableData *expected = [cached mutableCopy];
+            ((uint8_t *)expected.mutableBytes)[metadataOffset] = 0;
+            ok = [expected isEqualToData:frames.lastObject];
+        }
+        ListenerTestsRecord(ok, include ? @"metadata opt-in delivers the unchanged query with server metadata"
+                                        : @"metadata exclusion delivers only the initial query",
+                            [NSString stringWithFormat:@"received %lu frames", (unsigned long)frames.count]);
+    }
+}
+
 void RunListenerTests(void) {
     TheShimReportsItsCApiVersion();
     TheShimReportsTheDynamicFirestoreFrameworksVersion();
@@ -492,4 +552,5 @@ void RunListenerTests(void) {
     ErrorWithoutRemovalReleasesOnceLater();
     RemovalDoesNotHoldTheLockWhileFirestoreRemoves();
     ARefusedListenReturnsAnErrorInsteadOfRaising();
+    QueryMetadataChangesAreOptIn();
 }

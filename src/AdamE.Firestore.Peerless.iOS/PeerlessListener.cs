@@ -77,7 +77,7 @@ namespace AdamE.Firestore.Peerless.iOS;
 /// can handle inside the callback.
 /// </para>
 /// <para>
-/// Query listeners can opt in to metadata-only changes. Document listeners use the SDK defaults.
+/// Query and document listeners can opt in to metadata-only changes.
 /// <c>ListenSource</c> is not supported.
 /// </para>
 /// <para>
@@ -105,6 +105,7 @@ public static class PeerlessListener
         Listen(query, onSnapshot, onError, observer: null);
 
     /// <summary>Listens to a query, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
+    /// <remarks>Each callback encodes and decodes the entire query result, even when only metadata changed.</remarks>
     public static IDisposable Listen(
         Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError, bool includeMetadataChanges) =>
         Listen(query, onSnapshot, onError, observer: null, includeMetadataChanges);
@@ -113,6 +114,13 @@ public static class PeerlessListener
     public static IDisposable Listen(
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(document, onSnapshot, onError, observer: null);
+
+    /// <summary>Listens to a document, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
+    /// <remarks>Each callback encodes and decodes the full document, even when only metadata changed.</remarks>
+    public static IDisposable Listen(
+        DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError,
+        bool includeMetadataChanges) =>
+        Listen(document, onSnapshot, onError, observer: null, includeMetadataChanges);
 
     internal static IDisposable Listen(
         Query query,
@@ -140,7 +148,8 @@ public static class PeerlessListener
         DocumentReference document,
         Action<FirestoreDocumentSnapshot> onSnapshot,
         Action<Exception> onError,
-        IFrameObserver? observer)
+        IFrameObserver? observer,
+        bool includeMetadataChanges = false)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(onSnapshot);
@@ -153,7 +162,8 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer,
-            isDocument: true);
+            isDocument: true,
+            includeMetadataChanges);
     }
 
     // Built in their own methods, not as lambdas inside Listen: there they would share a closure with onSnapshot's

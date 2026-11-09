@@ -93,12 +93,26 @@ public static class PeerlessListener
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(document, onSnapshot, onError, FrameDelivery.DirectBuffer, observer: null);
 
+    /// <summary>Listens to a query, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
+    /// <remarks>Each callback encodes and decodes the entire query result, even when only metadata changed.</remarks>
+    public static IDisposable Listen(
+        Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError, bool includeMetadataChanges) =>
+        Listen(query, onSnapshot, onError, FrameDelivery.DirectBuffer, observer: null, includeMetadataChanges);
+
+    /// <summary>Listens to a document, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
+    /// <remarks>Each callback encodes and decodes the full document, even when only metadata changed.</remarks>
+    public static IDisposable Listen(
+        DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError,
+        bool includeMetadataChanges) =>
+        Listen(document, onSnapshot, onError, FrameDelivery.DirectBuffer, observer: null, includeMetadataChanges);
+
     internal static IDisposable Listen(
         Query query,
         Action<FirestoreQuerySnapshot> onSnapshot,
         Action<Exception> onError,
         FrameDelivery delivery,
-        IFrameObserver? observer)
+        IFrameObserver? observer,
+        bool includeMetadataChanges = false)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(onSnapshot);
@@ -108,7 +122,7 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreQuerySnapshot)snapshot),
             onError,
             observer);
-        return Register(receiver, () => PeerlessListeners.Listen(query, receiver, (int)delivery, receiver.Timed));
+        return Register(receiver, () => PeerlessListeners.Listen(query, receiver, (int)delivery, receiver.Timed, includeMetadataChanges));
     }
 
     internal static IDisposable Listen(
@@ -116,7 +130,8 @@ public static class PeerlessListener
         Action<FirestoreDocumentSnapshot> onSnapshot,
         Action<Exception> onError,
         FrameDelivery delivery,
-        IFrameObserver? observer)
+        IFrameObserver? observer,
+        bool includeMetadataChanges = false)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(onSnapshot);
@@ -126,7 +141,7 @@ public static class PeerlessListener
             snapshot => onSnapshot((FirestoreDocumentSnapshot)snapshot),
             onError,
             observer);
-        return Register(receiver, () => PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed));
+        return Register(receiver, () => PeerlessListeners.Listen(document, receiver, (int)delivery, receiver.Timed, includeMetadataChanges));
     }
 
     // If addSnapshotListener itself throws, nothing was registered and Java kept no reference to the receiver: it is

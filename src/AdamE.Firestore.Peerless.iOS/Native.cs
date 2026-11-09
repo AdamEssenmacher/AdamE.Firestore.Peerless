@@ -53,6 +53,7 @@ internal static unsafe class Native
         delegate* unmanaged<nint, byte*, nuint, FrameTiming*, void> onFrame,
         delegate* unmanaged<nint, int, byte*, nint, void> onError,
         int timed,
+        int includeMetadataChanges,
         byte* error,
         nuint errorCapacity,
         nint* exception);

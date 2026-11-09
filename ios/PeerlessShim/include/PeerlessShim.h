@@ -72,9 +72,9 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
                                   char *error, size_t error_capacity,
                                   void **exception);
 
-/// Listens to a FIRDocumentReference. Same contract as adame_peerless_listen_query, excluding metadata-only changes.
+/// Listens to a FIRDocumentReference. Same contract as adame_peerless_listen_query.
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback on_frame,
-                                     adame_peerless_error_callback on_error, int timed, char *error,
+                                     adame_peerless_error_callback on_error, int timed, int include_metadata_changes, char *error,
                                      size_t error_capacity, void **exception);
 
 /// Stops the listener (see the contract above) and invalidates the listener pointer. Safe from any thread, and more

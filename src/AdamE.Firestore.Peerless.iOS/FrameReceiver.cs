@@ -98,7 +98,8 @@ internal sealed unsafe class FrameReceiver : IDisposable
         error[0] = 0;
         nint raised = 0;
         nint created = isDocument
-            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed, error, ErrorCapacity, &raised)
+            ? Native.ListenDocument(target.Handle, context, &OnFrame, &OnError, timed, includeMetadataChanges ? 1 : 0,
+                error, ErrorCapacity, &raised)
             : Native.ListenQuery(target.Handle, context, &OnFrame, &OnError, timed, includeMetadataChanges ? 1 : 0,
                 error, ErrorCapacity, &raised);
         GC.KeepAlive(target);

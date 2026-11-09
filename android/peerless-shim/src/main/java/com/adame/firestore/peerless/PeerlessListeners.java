@@ -36,9 +36,11 @@ public final class PeerlessListeners {
     }
 
     @NonNull
-    public static ListenerRegistration listen(@NonNull Query query, @NonNull FrameSink sink, int delivery, boolean timed) {
+    public static ListenerRegistration listen(@NonNull Query query, @NonNull FrameSink sink, int delivery,
+                                              boolean timed, boolean includeMetadataChanges) {
         Encoder encoder = new Encoder(sink, delivery, timed);
-        return query.addSnapshotListener(MetadataChanges.EXCLUDE, new EventListener<QuerySnapshot>() {
+        MetadataChanges metadata = includeMetadataChanges ? MetadataChanges.INCLUDE : MetadataChanges.EXCLUDE;
+        return query.addSnapshotListener(metadata, new EventListener<QuerySnapshot>() {
             @Override
             public void onEvent(@Nullable QuerySnapshot snapshot, @Nullable FirebaseFirestoreException error) {
                 long start = encoder.timed ? System.nanoTime() : 0;
@@ -60,9 +62,10 @@ public final class PeerlessListeners {
 
     @NonNull
     public static ListenerRegistration listen(@NonNull DocumentReference document, @NonNull FrameSink sink, int delivery,
-                                              boolean timed) {
+                                              boolean timed, boolean includeMetadataChanges) {
         Encoder encoder = new Encoder(sink, delivery, timed);
-        return document.addSnapshotListener(MetadataChanges.EXCLUDE, new EventListener<DocumentSnapshot>() {
+        MetadataChanges metadata = includeMetadataChanges ? MetadataChanges.INCLUDE : MetadataChanges.EXCLUDE;
+        return document.addSnapshotListener(metadata, new EventListener<DocumentSnapshot>() {
             @Override
             public void onEvent(@Nullable DocumentSnapshot snapshot, @Nullable FirebaseFirestoreException error) {
                 long start = encoder.timed ? System.nanoTime() : 0;

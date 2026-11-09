@@ -268,7 +268,8 @@ void *adame_peerless_listen_query(void *query, void *context, adame_peerless_fra
 }
 
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback onFrame,
-                                     adame_peerless_error_callback onError, int timed, char *error, size_t errorCapacity,
+                                     adame_peerless_error_callback onError, int timed, int includeMetadataChanges,
+                                     char *error, size_t errorCapacity,
                                      void **raised) {
     if (raised != NULL)
         *raised = NULL;
@@ -281,7 +282,8 @@ void *adame_peerless_listen_document(void *document, void *context, adame_peerle
     __weak AdamEPeerlessListener *weak = listener;
     id<FIRListenerRegistration> registration = nil;
     @try {
-        registration = [(FIRDocumentReference *)object addSnapshotListener:^(FIRDocumentSnapshot *snapshot, NSError *error) {
+        registration = [(FIRDocumentReference *)object addSnapshotListenerWithIncludeMetadataChanges:includeMetadataChanges != 0
+            listener:^(FIRDocumentSnapshot *snapshot, NSError *error) {
             AdamEPeerlessListener *strong = weak;
             if (strong != nil)
                 AdamEPeerlessHandle(strong, snapshot, error, ^(AdamEPeerlessFrameWriter *writer) {
