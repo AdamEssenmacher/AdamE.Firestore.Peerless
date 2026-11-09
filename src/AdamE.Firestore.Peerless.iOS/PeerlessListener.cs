@@ -100,23 +100,35 @@ public static class PeerlessListener
     private static readonly Lazy<string?> ShimMismatch = new(CheckShim);
 
     /// <summary>Listens to a query. Dispose the result to stop listening.</summary>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen or the linked shim or Firebase SDK is incompatible.
+    /// </exception>
     public static IDisposable Listen(
         Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(query, onSnapshot, onError, observer: null);
 
     /// <summary>Listens to a query, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
     /// <remarks>Each callback encodes and decodes the entire query result, even when only metadata changed.</remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen or the linked shim or Firebase SDK is incompatible.
+    /// </exception>
     public static IDisposable Listen(
         Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError, bool includeMetadataChanges) =>
         Listen(query, onSnapshot, onError, observer: null, includeMetadataChanges);
 
     /// <summary>Listens to one document. Dispose the result to stop listening.</summary>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen or the linked shim or Firebase SDK is incompatible.
+    /// </exception>
     public static IDisposable Listen(
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError) =>
         Listen(document, onSnapshot, onError, observer: null);
 
     /// <summary>Listens to a document, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
     /// <remarks>Each callback encodes and decodes the full document, even when only metadata changed.</remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen or the linked shim or Firebase SDK is incompatible.
+    /// </exception>
     public static IDisposable Listen(
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError,
         bool includeMetadataChanges) =>

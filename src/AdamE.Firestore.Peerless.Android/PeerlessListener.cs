@@ -95,12 +95,18 @@ public static class PeerlessListener
 
     /// <summary>Listens to a query, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
     /// <remarks>Each callback encodes and decodes the entire query result, even when only metadata changed.</remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen (for example, the Firestore instance was terminated).
+    /// </exception>
     public static IDisposable Listen(
         Query query, Action<FirestoreQuerySnapshot> onSnapshot, Action<Exception> onError, bool includeMetadataChanges) =>
         Listen(query, onSnapshot, onError, FrameDelivery.DirectBuffer, observer: null, includeMetadataChanges);
 
     /// <summary>Listens to a document, optionally including metadata-only snapshots. Dispose to stop listening.</summary>
     /// <remarks>Each callback encodes and decodes the full document, even when only metadata changed.</remarks>
+    /// <exception cref="InvalidOperationException">
+    /// Firestore refused to listen (for example, the Firestore instance was terminated).
+    /// </exception>
     public static IDisposable Listen(
         DocumentReference document, Action<FirestoreDocumentSnapshot> onSnapshot, Action<Exception> onError,
         bool includeMetadataChanges) =>

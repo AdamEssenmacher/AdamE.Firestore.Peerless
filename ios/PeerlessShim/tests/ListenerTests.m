@@ -9,6 +9,7 @@
 #import <FirebaseCore/FIRApp.h>
 #import <FirebaseCore/FIROptions.h>
 #import <FirebaseFirestoreInternal/FIRCollectionReference.h>
+#import <FirebaseFirestoreInternal/FIRDocumentReference.h>
 #import <FirebaseFirestoreInternal/FIRFirestore.h>
 #import <FirebaseFirestoreInternal/FIRFirestoreErrors.h>
 #import <FirebaseFirestoreInternal/FIRFirestoreSettings.h>
@@ -478,19 +479,23 @@ static void TheShimReportsTheDynamicFirestoreFrameworksVersion(void) {
 
 // A stand-in for the SDK registration. It publishes an unchanged result a second time only when the shim
 // requests metadata-only changes, so the test exercises both native option values without a network dependency.
-@interface MetadataQuery : NSObject
+@interface MetadataTarget : NSObject
+@property(nonatomic) BOOL document;
 @property(nonatomic) BOOL isFromCache;
 @end
 
-@implementation MetadataQuery
+@implementation MetadataTarget
 - (BOOL)isKindOfClass:(Class)type {
-    return type == [FIRQuery class] || [super isKindOfClass:type];
+    return type == (self.document ? [FIRDocumentReference class] : [FIRQuery class]) || [super isKindOfClass:type];
 }
 - (id)metadata { return self; }
 - (BOOL)hasPendingWrites { return NO; }
 - (NSArray *)documents { return @[]; }
+- (id)reference { return self; }
+- (NSString *)path { return @"items/one"; }
+- (BOOL)exists { return NO; }
 - (id<FIRListenerRegistration>)addSnapshotListenerWithIncludeMetadataChanges:(BOOL)includeMetadataChanges
-                                                                   listener:(void (^)(FIRQuerySnapshot *, NSError *))callback {
+                                                                   listener:(void (^)(id, NSError *))callback {
     self.isFromCache = YES;
     callback((id)self, nil);
     if (includeMetadataChanges) {
@@ -511,11 +516,14 @@ static void MetadataError(void *context, int32_t code, const char *message, void
     ListenerTestsRecord(NO, @"metadata listener did not report an error", @(message));
 }
 
-static void QueryMetadataChangesAreOptIn(void) {
-    MetadataQuery *query = [MetadataQuery new];
+static void MetadataChangesAreOptIn(BOOL document) {
+    MetadataTarget *target = [MetadataTarget new];
+    target.document = document;
+    NSString *kind = document ? @"document" : @"query";
     for (int include = 0; include <= 1; include++) {
         NSMutableArray<NSData *> *frames = [NSMutableArray array];
-        void *listener = adame_peerless_listen_query((__bridge void *)query, (__bridge void *)frames,
+        void *listener = (document ? adame_peerless_listen_document : adame_peerless_listen_query)(
+            (__bridge void *)target, (__bridge void *)frames,
             CollectFrames, MetadataError, 0, include, NULL, 0, NULL);
         if (listener != NULL)
             adame_peerless_listener_remove(listener, NULL);
@@ -525,13 +533,18 @@ static void QueryMetadataChangesAreOptIn(void) {
         NSData *cached = frames.firstObject;
         BOOL ok = listener != NULL && frames.count == (NSUInteger)(include + 1)
             && cached.length > metadataOffset && ((const uint8_t *)cached.bytes)[metadataOffset] == 1;
+        // The missing document ends with its own flags byte, which also carries its cache bit.
+        if (ok && document)
+            ok = ((const uint8_t *)cached.bytes)[cached.length - 1] == 2;
         if (ok && include) {
             NSMutableData *expected = [cached mutableCopy];
             ((uint8_t *)expected.mutableBytes)[metadataOffset] = 0;
+            if (document)
+                ((uint8_t *)expected.mutableBytes)[expected.length - 1] = 0;
             ok = [expected isEqualToData:frames.lastObject];
         }
-        ListenerTestsRecord(ok, include ? @"metadata opt-in delivers the unchanged query with server metadata"
-                                        : @"metadata exclusion delivers only the initial query",
+        ListenerTestsRecord(ok, [NSString stringWithFormat:@"%@ metadata %@ delivers %d frame(s)",
+                                 kind, include ? @"opt-in" : @"exclusion", include + 1],
                             [NSString stringWithFormat:@"received %lu frames", (unsigned long)frames.count]);
     }
 }
@@ -552,5 +565,6 @@ void RunListenerTests(void) {
     ErrorWithoutRemovalReleasesOnceLater();
     RemovalDoesNotHoldTheLockWhileFirestoreRemoves();
     ARefusedListenReturnsAnErrorInsteadOfRaising();
-    QueryMetadataChangesAreOptIn();
+    MetadataChangesAreOptIn(NO);
+    MetadataChangesAreOptIn(YES);
 }
