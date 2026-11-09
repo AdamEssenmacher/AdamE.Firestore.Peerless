@@ -104,7 +104,7 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
   frameworks as step 4.
 - **The C API** (`ios/PeerlessShim/include/PeerlessShim.h`; every symbol is prefixed `adame_peerless_` and every
   Objective-C class `AdamEPeerless`, so neither collides with an app's own):
-  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error, timed, error, error_capacity)` and
+  - `adame_peerless_listen_query(FIRQuery*, context, on_frame, on_error, timed, include_metadata_changes, error, error_capacity, exception)` and
     `adame_peerless_listen_document(...)`. The frame callback receives the context, bytes, length and a timing
     pointer, which is non-NULL only when `timed` is nonzero. Timing travels with the frame so it is available even if
     the callback runs before the listener handle is returned. The error callback
@@ -151,9 +151,8 @@ Set B (the run with the `snapshot.data` timer), updates, medians:
       Objective-C, so it ends the process, as the API docs say.
   - A listener that is never disposed (and never fails) stays rooted: the shim's `GCHandle` keeps its callbacks, and
     what they capture, alive. Dispose it.
-  - Not supported, on either platform: `includeMetadataChanges` and `ListenSource`. Listeners behave like the SDK's
-    default `addSnapshotListener`. Both would be cheap to add (a flag passed to the SDK's listen-options call); they
-    were left out to keep the two platforms' APIs identical.
+  - Query and document listeners on iOS and Android can opt in with `includeMetadataChanges: true`. The default
+    matches the SDK's `addSnapshotListener`. `ListenSource` is unsupported.
 - **Packaging for a NuGet.** The library is a binding project with an empty API definition, because the SDK packages
   a `NativeReference` only from a binding project. Its build produces `AdamE.Firestore.Peerless.iOS.resources.zip`
   holding `PeerlessShim.xcframework` (simulator arm64 + x86_64, device arm64), as the AdamE.Firebase bindings ship

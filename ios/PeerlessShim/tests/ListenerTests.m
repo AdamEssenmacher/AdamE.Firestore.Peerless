@@ -9,6 +9,7 @@
 #import <FirebaseCore/FIRApp.h>
 #import <FirebaseCore/FIROptions.h>
 #import <FirebaseFirestoreInternal/FIRCollectionReference.h>
+#import <FirebaseFirestoreInternal/FIRDocumentReference.h>
 #import <FirebaseFirestoreInternal/FIRFirestore.h>
 #import <FirebaseFirestoreInternal/FIRFirestoreErrors.h>
 #import <FirebaseFirestoreInternal/FIRFirestoreSettings.h>
@@ -422,18 +423,18 @@ static void ARefusedListenReturnsAnErrorInsteadOfRaising(void) {
     Probe probe = {.behaviour = BehaviourCount};
     char error[512] = "";
     void *raised = (void *)1; // must be overwritten either way
-    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, error, sizeof error,
+    void *listener = adame_peerless_listen_query((__bridge void *)query, &probe, OnFrame, OnError, 0, 0, error, sizeof error,
                                                  &raised);
     id exception = raised == NULL || raised == (void *)1 ? nil : CFBridgingRelease(raised); // the caller owns it
     char documentError[512] = "";
     void *documentRaised = (void *)1;
     void *documentListener = adame_peerless_listen_document(
-        (__bridge void *)[firestore documentWithPath:@"items/one"], &probe, OnFrame, OnError, 0, documentError,
+        (__bridge void *)[firestore documentWithPath:@"items/one"], &probe, OnFrame, OnError, 0, 0, documentError,
         sizeof documentError, &documentRaised);
     id documentException = documentRaised == NULL || documentRaised == (void *)1 ? nil : CFBridgingRelease(documentRaised);
     char notAQuery[512] = "";
     void *notRaised = (void *)1;
-    void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0,
+    void *wrongType = adame_peerless_listen_query((__bridge void *)@"not a query", &probe, OnFrame, OnError, 0, 0,
                                                   notAQuery, sizeof notAQuery, &notRaised);
     BOOL ok = didTerminate && listener == NULL && strlen(error) > 0 && [exception isKindOfClass:[NSException class]]
         && documentListener == NULL && strlen(documentError) > 0 && [documentException isKindOfClass:[NSException class]]
@@ -476,6 +477,78 @@ static void TheShimReportsTheDynamicFirestoreFrameworksVersion(void) {
                                                    reported, path, expected, compiled]);
 }
 
+// A stand-in for the SDK registration. It publishes an unchanged result a second time only when the shim
+// requests metadata-only changes, so the test exercises both native option values without a network dependency.
+@interface MetadataTarget : NSObject
+@property(nonatomic) BOOL document;
+@property(nonatomic) BOOL isFromCache;
+@end
+
+@implementation MetadataTarget
+- (BOOL)isKindOfClass:(Class)type {
+    return type == (self.document ? [FIRDocumentReference class] : [FIRQuery class]) || [super isKindOfClass:type];
+}
+- (id)metadata { return self; }
+- (BOOL)hasPendingWrites { return NO; }
+- (NSArray *)documents { return @[]; }
+- (id)reference { return self; }
+- (NSString *)path { return @"items/one"; }
+- (BOOL)exists { return NO; }
+- (id<FIRListenerRegistration>)addSnapshotListenerWithIncludeMetadataChanges:(BOOL)includeMetadataChanges
+                                                                   listener:(void (^)(id, NSError *))callback {
+    self.isFromCache = YES;
+    callback((id)self, nil);
+    if (includeMetadataChanges) {
+        self.isFromCache = NO;
+        callback((id)self, nil);
+    }
+    return [AdamEPeerlessFakeRegistration new];
+}
+@end
+
+static void CollectFrames(void *context, const uint8_t *data, size_t length,
+                          const adame_peerless_frame_timing *timing) {
+    NSMutableArray<NSData *> *frames = (__bridge NSMutableArray<NSData *> *)context;
+    [frames addObject:[NSData dataWithBytes:data length:length]];
+}
+
+static void MetadataError(void *context, int32_t code, const char *message, void *native) {
+    ListenerTestsRecord(NO, @"metadata listener did not report an error", @(message));
+}
+
+static void MetadataChangesAreOptIn(BOOL document) {
+    MetadataTarget *target = [MetadataTarget new];
+    target.document = document;
+    NSString *kind = document ? @"document" : @"query";
+    for (int include = 0; include <= 1; include++) {
+        NSMutableArray<NSData *> *frames = [NSMutableArray array];
+        void *listener = (document ? adame_peerless_listen_document : adame_peerless_listen_query)(
+            (__bridge void *)target, (__bridge void *)frames,
+            CollectFrames, MetadataError, 0, include, NULL, 0, NULL);
+        if (listener != NULL)
+            adame_peerless_listener_remove(listener, NULL);
+
+        // Wire format 1.0: the snapshot metadata byte follows the eight-byte header and five-byte section header.
+        const NSUInteger metadataOffset = 13;
+        NSData *cached = frames.firstObject;
+        BOOL ok = listener != NULL && frames.count == (NSUInteger)(include + 1)
+            && cached.length > metadataOffset && ((const uint8_t *)cached.bytes)[metadataOffset] == 1;
+        // The missing document ends with its own flags byte, which also carries its cache bit.
+        if (ok && document)
+            ok = ((const uint8_t *)cached.bytes)[cached.length - 1] == 2;
+        if (ok && include) {
+            NSMutableData *expected = [cached mutableCopy];
+            ((uint8_t *)expected.mutableBytes)[metadataOffset] = 0;
+            if (document)
+                ((uint8_t *)expected.mutableBytes)[expected.length - 1] = 0;
+            ok = [expected isEqualToData:frames.lastObject];
+        }
+        ListenerTestsRecord(ok, [NSString stringWithFormat:@"%@ metadata %@ delivers %d frame(s)",
+                                 kind, include ? @"opt-in" : @"exclusion", include + 1],
+                            [NSString stringWithFormat:@"received %lu frames", (unsigned long)frames.count]);
+    }
+}
+
 void RunListenerTests(void) {
     TheShimReportsItsCApiVersion();
     TheShimReportsTheDynamicFirestoreFrameworksVersion();
@@ -492,4 +565,6 @@ void RunListenerTests(void) {
     ErrorWithoutRemovalReleasesOnceLater();
     RemovalDoesNotHoldTheLockWhileFirestoreRemoves();
     ARefusedListenReturnsAnErrorInsteadOfRaising();
+    MetadataChangesAreOptIn(NO);
+    MetadataChangesAreOptIn(YES);
 }

@@ -59,7 +59,7 @@ typedef void (*adame_peerless_release_callback)(void *context);
 
 /// Listens to a FIRQuery (passed as its Objective-C object pointer). Returns the listener, or NULL if `query` isn't
 /// a FIRQuery. Callbacks run on the Firestore instance's callback queue (the main queue unless the app chose
-/// another), with metadata-only changes excluded, as addSnapshotListener: does by default. With `timed` nonzero the
+/// another). Pass nonzero `include_metadata_changes` to receive metadata-only changes. With `timed` nonzero the
 /// listener measures each frame (a few clock reads, plus two per document) and passes the adame_peerless_frame_timing
 /// as on_frame's `timing` argument; production listeners pass 0, take no clock reads, and receive `timing` == NULL.
 /// If Firestore refuses the query (it raises for, e.g., limit(toLast:) without an orderBy, or a terminated instance),
@@ -68,13 +68,15 @@ typedef void (*adame_peerless_release_callback)(void *context);
 /// `*exception` is set to NULL. `exception` itself may be NULL. Nothing is left registered and the context is not
 /// referenced.
 void *adame_peerless_listen_query(void *query, void *context, adame_peerless_frame_callback on_frame,
-                                  adame_peerless_error_callback on_error, int timed, char *error, size_t error_capacity,
+                                  adame_peerless_error_callback on_error, int timed, int include_metadata_changes,
+                                  char *error, size_t error_capacity,
                                   void **exception);
 
 /// Listens to a FIRDocumentReference. Same contract as adame_peerless_listen_query.
 void *adame_peerless_listen_document(void *document, void *context, adame_peerless_frame_callback on_frame,
-                                     adame_peerless_error_callback on_error, int timed, char *error,
-                                     size_t error_capacity, void **exception);
+                                     adame_peerless_error_callback on_error, int timed, int include_metadata_changes,
+                                     char *error, size_t error_capacity,
+                                     void **exception);
 
 /// Stops the listener (see the contract above) and invalidates the listener pointer. Safe from any thread, and more
 /// than once per listener is a caller error.
@@ -86,7 +88,7 @@ void adame_peerless_listener_remove(void *listener, adame_peerless_release_callb
 /// them, and Native.AbiVersion in src/AdamE.Firestore.Peerless.iOS/Native.cs with it (scripts/test-ios-shim.sh checks
 /// the two agree). .NET checks it before the first listen, so a stale or prebuilt xcframework fails with a clear error
 /// instead of calling a callback with the wrong arguments or misreading a version.
-#define ADAME_PEERLESS_ABI_VERSION 2
+#define ADAME_PEERLESS_ABI_VERSION 3
 
 /// ADAME_PEERLESS_ABI_VERSION as this shim was compiled.
 int32_t adame_peerless_abi_version(void);
