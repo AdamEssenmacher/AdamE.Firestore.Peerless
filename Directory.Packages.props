@@ -6,7 +6,11 @@
          bound. -->
     <PackageVersion Include="Xamarin.Firebase.Firestore" Version="[126.0.2.4,127)" />
     <PackageVersion Include="AdamE.Firebase.iOS.CloudFirestore" Version="12.18.0" />
-    <!-- Above Firestore's own 1.82.0.1, which breaks NativeAOT builds on .NET 11 (see the Android library). -->
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- A dependency of the shipped Android library, so apps that use the package get it too: above Firestore's own
+         1.82.0.1, which breaks NativeAOT builds on .NET 11 (see the Android library). -->
     <PackageVersion Include="Xamarin.Grpc.Core" Version="1.82.0.2" />
   </ItemGroup>
 
