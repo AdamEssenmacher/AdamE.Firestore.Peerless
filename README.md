@@ -15,11 +15,12 @@ compared with the naive peered approach.
 Status: the wire format, the .NET decoder and both shims exist, and both are benchmarked against the peered approach
 under NativeAOT. Nothing is published as a NuGet yet.
 
-To try it as packages before then, pack the core, Android and iOS libraries into a local feed and add that folder to
-the app's NuGet sources. Packing needs macOS with Xcode, the `android` and `ios` workloads, and what Gradle needs to
-build the Android shim: the Android SDK with platform 36, the JDK the .NET Android build uses (17 or 21; Gradle 8.13
-doesn't run on 24 or later), and network access the first time (Gradle, its Android plugin and Firestore's library
-download then). All three get one version, which defaults to `0.1.0-preview.g<commit>`:
+To try it as packages before then, pack the core, Android and iOS libraries into a local feed and add that folder to the
+app's NuGet sources. Packing needs macOS with Xcode, the `android` and `ios` workloads, Android SDK platform 37.0
+(`platforms;android-37.0`, which the .NET 11 Android build compiles against), and what Gradle needs to build the Android
+shim: the Android SDK with platform 36, the JDK the .NET Android build uses (17 or 21; Gradle 8.13 doesn't run on 24 or
+later), and network access the first time (Gradle, its Android plugin and Firestore's library download then). All three
+get one version, which defaults to `0.1.0-preview.g<commit>`:
 
 ```bash
 scripts/pack-local.sh ~/RiderProjects/peerless-feed
@@ -109,7 +110,7 @@ records settled reference counts after forced GCs. Peerless mode also splits the
 and the .NET side (decoding). Each run first checks that both paths produce identical values on a collection that uses
 every value kind.
 
-Requirements: .NET SDK 10.0.403 with the `android` workload, Android NDK r28 (Android NativeAOT needs it to link), a
+Requirements: .NET SDK 11.0.100 with the `android` workload, Android NDK r28 (Android NativeAOT needs it to link), a
 JDK, the Firebase CLI, and an arm64 Android emulator (`Peerless_Bench_API36`, adb serial `emulator-5650`; how to
 create it is at the top of `scripts/run-android-benchmark.sh`).
 
@@ -160,7 +161,7 @@ written, that Peerless decodes it identically to the peered binding, and that re
 are arriving (disposed from a thread-pool thread, mid-callback, and from inside a callback). A failed check fails the
 run, and the script exits nonzero.
 
-Requirements: .NET SDK 10.0.403 with the `ios` workload (27.1), Xcode 27.1, the Firebase CLI, and an arm64 iOS
+Requirements: .NET SDK 11.0.100 with the `ios` workload (27.2), Xcode 27.2, the Firebase CLI, and an arm64 iOS
 Simulator of your own (the script installs over and terminates the app on it).
 
 ```bash

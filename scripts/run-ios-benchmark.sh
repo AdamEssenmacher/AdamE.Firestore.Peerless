@@ -52,7 +52,7 @@ check_firestore_emulator "$host" "$port"
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
-app="$project/bin/Release/net10.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"
+app="$project/bin/Release/net11.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"
 
 xcrun simctl bootstatus "$udid" -b >/dev/null
 xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true

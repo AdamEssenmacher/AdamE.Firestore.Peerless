@@ -18,7 +18,7 @@ if [[ -z "$header_abi" || "$header_abi" != "$managed_abi" ]]; then
 fi
 shim="$root/ios/PeerlessShim"
 out="$root/ios/build"
-app="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS/bin/Release/net10.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"
+app="$root/benchmarks/AdamE.Firestore.Peerless.Benchmarks.iOS/bin/Release/net11.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Benchmarks.iOS.app"
 
 # The Firebase version build-shim.sh builds against (Directory.Packages.props), not whichever ios/build/firebase-*
 # happens to sort first: an older extraction may still be there.

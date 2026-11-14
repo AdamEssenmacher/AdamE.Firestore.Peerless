@@ -50,10 +50,10 @@ esac
 # The Android SDK (36.1) can recompress only some assemblies after a test file changes back to earlier content, and
 # the app then aborts at startup ("Compressed assembly '<assembly_store>' is larger than when the application was
 # built"). Dropping the compression cache first costs a few seconds and avoids that.
-rm -rf "$project/obj/Release/net10.0-android/$rid/android/lz4"
+rm -rf "$project/obj/Release/net11.0-android/$rid/android/lz4"
 # Quiet, but build errors still print.
 dotnet build "$project" -c Release -nologo -v quiet -p:RuntimeIdentifier="$rid"
-apk="$project/bin/Release/net10.0-android/$rid/$package-Signed.apk"
+apk="$project/bin/Release/net11.0-android/$rid/$package-Signed.apk"
 
 adb -s "$serial" install -r "$apk" >/dev/null
 adb -s "$serial" shell am force-stop "$package"
