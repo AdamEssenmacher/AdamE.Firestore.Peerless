@@ -3,7 +3,7 @@
        scripts/test-android-managed.sh builds, installs and launches it and reads its MANAGED_TESTS line from logcat.
        No Firebase app is configured and no backend is needed: the tests call the receiver as the shim would. -->
   <PropertyGroup>
-    <TargetFramework>net10.0-android</TargetFramework>
+    <TargetFramework>net11.0-android</TargetFramework>
     <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
     <OutputType>Exe</OutputType>
     <RootNamespace>AdamE.Firestore.Peerless.Tests.Android</RootNamespace>

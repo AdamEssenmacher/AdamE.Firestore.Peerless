@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <TargetFramework>net10.0-android</TargetFramework>
+    <TargetFramework>net11.0-android</TargetFramework>
     <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
     <RootNamespace>AdamE.Firestore.Peerless.Android</RootNamespace>
     <IsAotCompatible>true</IsAotCompatible>
@@ -20,6 +20,10 @@
 
   <ItemGroup>
     <PackageReference Include="Xamarin.Firebase.Firestore" />
+    <!-- Lifts Firestore's transitive gRPC binding to a version whose ServerListener binding matches the Java
+         interface: on .NET 11, NativeAOT's trimmable typemap generates a Java stub for every bound interface, and the
+         one for io.grpc.internal.ServerListener in 1.82.0.1 doesn't compile (missing transportCreated). -->
+    <PackageReference Include="Xamarin.Grpc.Core" />
     <ProjectReference Include="../AdamE.Firestore.Peerless/AdamE.Firestore.Peerless.csproj" />
   </ItemGroup>
 

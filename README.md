@@ -109,7 +109,7 @@ records settled reference counts after forced GCs. Peerless mode also splits the
 and the .NET side (decoding). Each run first checks that both paths produce identical values on a collection that uses
 every value kind.
 
-Requirements: .NET SDK 10.0.403 with the `android` workload, Android NDK r28 (Android NativeAOT needs it to link), a
+Requirements: .NET SDK 11.0.100 with the `android` workload, Android NDK r28 (Android NativeAOT needs it to link), a
 JDK, the Firebase CLI, and an arm64 Android emulator (`Peerless_Bench_API36`, adb serial `emulator-5650`; how to
 create it is at the top of `scripts/run-android-benchmark.sh`).
 
@@ -160,7 +160,7 @@ written, that Peerless decodes it identically to the peered binding, and that re
 are arriving (disposed from a thread-pool thread, mid-callback, and from inside a callback). A failed check fails the
 run, and the script exits nonzero.
 
-Requirements: .NET SDK 10.0.403 with the `ios` workload (27.1), Xcode 27.1, the Firebase CLI, and an arm64 iOS
+Requirements: .NET SDK 11.0.100 with the `ios` workload (27.2), Xcode 27.2, the Firebase CLI, and an arm64 iOS
 Simulator of your own (the script installs over and terminates the app on it).
 
 ```bash
