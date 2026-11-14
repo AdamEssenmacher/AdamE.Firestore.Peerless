@@ -3,7 +3,7 @@
        scripts/test-ios-managed.sh builds, installs and launches it and reads its MANAGED_TESTS line. No Firebase app
        is configured and no backend is needed: the tests call the receiver as the shim would. -->
   <PropertyGroup>
-    <TargetFramework>net10.0-ios</TargetFramework>
+    <TargetFramework>net11.0-ios</TargetFramework>
     <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <OutputType>Exe</OutputType>
     <RootNamespace>AdamE.Firestore.Peerless.Tests.iOS</RootNamespace>

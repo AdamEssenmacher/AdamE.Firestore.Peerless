@@ -10,7 +10,7 @@ set -euo pipefail
 udid="${1:?usage: test-ios-managed.sh <simulator-udid>}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 project="$root/tests/AdamE.Firestore.Peerless.Tests.iOS"
-app="$project/bin/Release/net10.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Tests.iOS.app"
+app="$project/bin/Release/net11.0-ios/iossimulator-arm64/AdamE.Firestore.Peerless.Tests.iOS.app"
 bundle="com.adame.firestore.peerless.tests"
 timeout_seconds=120
 

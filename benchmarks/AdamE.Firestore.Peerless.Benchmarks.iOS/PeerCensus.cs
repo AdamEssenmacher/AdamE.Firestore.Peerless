@@ -10,7 +10,7 @@ namespace AdamE.Firestore.Peerless.Benchmarks;
 /// </summary>
 /// <remarks>
 /// Read through <see cref="UnsafeAccessorAttribute"/>, which NativeAOT compiles to a direct field access (no
-/// reflection). It is private API of the Microsoft.iOS version this was built with (27.1.10018); if the field were
+/// reflection). It is private API of the Microsoft.iOS version this was built with (27.2.11039); if the field were
 /// renamed the accessor would throw <see cref="MissingFieldException"/> on first use rather than miscount.
 /// Two counts: <see cref="Count"/> is the table's entries. A collected peer's entry is removed only when
 /// NSObject_Disposer drains on the main queue (or at once on explicit Dispose), so on the main queue the count is the

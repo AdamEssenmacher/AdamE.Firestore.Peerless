@@ -18,7 +18,7 @@ packages="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
 min_ios=15.0
 
 # The binding's frameworks, headers included (an app bundle keeps only the binaries). The package's lib directory is
-# found rather than assumed (it is named after the iOS SDK the binding was built with, e.g. net10.0-ios26.0).
+# found rather than assumed (it is named after the binding's own target framework and iOS SDK, e.g. net10.0-ios26.0).
 headers="$out/firebase-$version"
 if [[ ! -f "$headers/.complete" ]]; then
   rm -rf "$headers" && mkdir -p "$headers"

@@ -124,7 +124,7 @@ check_firestore_emulator 127.0.0.1 "$port"
 
 # Extra build properties, if any: BUILD_ARGS="-p:Name=Value"
 dotnet build "$project" -c Release ${BUILD_ARGS:-}
-apk="$(ls "$project"/bin/Release/net10.0-android/android-arm64/*-Signed.apk)"
+apk="$(ls "$project"/bin/Release/net11.0-android/android-arm64/*-Signed.apk)"
 
 adb -s "$serial" install -r "$apk"
 adb -s "$serial" shell am force-stop "$package"

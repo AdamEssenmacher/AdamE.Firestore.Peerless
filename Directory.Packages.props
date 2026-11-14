@@ -1,11 +1,19 @@
 <Project>
   <ItemGroup>
-    <!-- The ordinary, peered bindings that the benchmarks measure against. -->
+    <!-- The ordinary, peered Firestore bindings: the shipped libraries depend on them (an app gets them through the
+         package), and the benchmarks measure against them. -->
     <!-- Bounded below the next major: the Android shim is compiled against the Firestore 26 inside this binding
          (compileOnly), so the package must not let an app restore Firestore 27 under it. Restore picks the lower
          bound. -->
     <PackageVersion Include="Xamarin.Firebase.Firestore" Version="[126.0.2.4,127)" />
     <PackageVersion Include="AdamE.Firebase.iOS.CloudFirestore" Version="12.18.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Raises the gRPC binding that Firestore brings in transitively (1.82.0.1, which breaks NativeAOT builds on
+         .NET 11; see the Android library). The Android library references it, so apps that use the package get it
+         too. -->
+    <PackageVersion Include="Xamarin.Grpc.Core" Version="1.82.0.2" />
   </ItemGroup>
 
   <ItemGroup>
