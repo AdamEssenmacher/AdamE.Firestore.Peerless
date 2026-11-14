@@ -16,11 +16,11 @@ Status: the wire format, the .NET decoder and both shims exist, and both are ben
 under NativeAOT. Nothing is published as a NuGet yet.
 
 To try it as packages before then, pack the core, Android and iOS libraries into a local feed and add that folder to the
-app's NuGet sources. Packing needs macOS with Xcode, the `android` and `ios` workloads, Android platform 37 (the .NET 11
-Android build compiles against it), and what Gradle needs to build the Android shim: the Android SDK with platform 36,
-the JDK the .NET Android build uses (17 or 21; Gradle 8.13 doesn't run on 24 or later), and network access the first
-time (Gradle, its Android plugin and Firestore's library download then). All three get one version, which defaults to
-`0.1.0-preview.g<commit>`:
+app's NuGet sources. Packing needs macOS with Xcode, the `android` and `ios` workloads, Android SDK platform 37.0
+(`platforms;android-37.0`, which the .NET 11 Android build compiles against), and what Gradle needs to build the Android
+shim: the Android SDK with platform 36, the JDK the .NET Android build uses (17 or 21; Gradle 8.13 doesn't run on 24 or
+later), and network access the first time (Gradle, its Android plugin and Firestore's library download then). All three
+get one version, which defaults to `0.1.0-preview.g<commit>`:
 
 ```bash
 scripts/pack-local.sh ~/RiderProjects/peerless-feed
