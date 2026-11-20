@@ -1,6 +1,6 @@
 # AdamE.Firestore.Peerless
 
-Firestore snapshot listening for .NET on Android and iOS, without a managed peer per value.
+Firestore snapshot listening for .NET on Android, iOS, and macOS, without a managed peer per value.
 
 With the ordinary bindings (`Xamarin.Firebase.Firestore`, `AdamE.Firebase.iOS.CloudFirestore`), every document, map,
 boxed number and list item that crosses into .NET becomes a peer object: a JNI global reference held until GC on
@@ -8,7 +8,7 @@ Android, and an `NSObject` peer plus an `objc_msgSend` per call on iOS. Peerless
 (a Kotlin/Java AAR on Android, an Objective-C/Swift xcframework on iOS). Each shim owns the Firestore listener,
 serializes each snapshot into one byte buffer, and makes one call into .NET, where a plain .NET core decodes it.
 
-Scope: listening without peers. Apps keep building queries with the existing bindings, and Peerless does the listening
+On Android and iOS, the scope is listening without peers. Apps keep building queries with the existing bindings, and Peerless does the listening
 and decoding. Full NativeAOT on both platforms is required. Everything is measured against the Firestore emulator,
 compared with the naive peered approach.
 
@@ -72,6 +72,23 @@ don't block inside a callback on a thread that is disposing that listener, and d
 lock the callback also takes; either deadlocks. The first error stops the listener. If you call `Listen` off the main
 thread, the first callback can arrive before `Listen` returns (an early error is held and posted after it returns).
 Exceptions thrown from your callbacks are not caught, as with ordinary Firestore listeners.
+
+### Native macOS
+
+The macOS package reuses the Apple listener shim and the common binary snapshot decoder. It exposes document and
+query listeners with cache and pending-write metadata, plus SDK-backed atomic batches for set, merge, update, and
+delete. Batch completion reports server acceptance or rejection. The SDK handles local pending writes and retries.
+
+```bash
+scripts/pack-local.sh --macos <feed-directory> [version]
+```
+
+Reference `AdamE.Firestore.Peerless.macOS`. Add the `PeerlessMacNative` Swift package product from the NuGet's
+`swift/PeerlessMacNative` directory to the native host image that links Firebase Auth. The NuGet exposes that path
+as the `PeerlessMacSwiftPackage` MSBuild property. Use the same Firebase Apple SDK version in the host and dependency
+graph. Call `adame_peerless_mac_abi_version()` from the host's native initialization code to retain the adapter
+when linking. Configure the default Firebase app before using `new PeerlessFirestore(pathToHostImage)`. Pass the
+image's absolute executable path. For a local run, call `UseEmulator` before starting operations.
 
 ### Errors
 

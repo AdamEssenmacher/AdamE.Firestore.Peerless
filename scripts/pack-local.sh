@@ -4,14 +4,21 @@
 # android and ios workloads: the platform packages carry the shims (the Android AAR, the iOS xcframework), rebuilt
 # here from source. All three share one version, which an app pins once.
 #
-#   scripts/pack-local.sh <feed directory> [version]
+#   scripts/pack-local.sh [--macos] <feed directory> [version]
+#
+# --macos packs the core and macOS package without the iOS or Android workloads.
 #
 # The version defaults to 0.1.0-preview.g<commit>, so a package names the commit it was built from. A tree with
 # uncommitted changes needs an explicit version, which keeps that promise. A version already in the feed is refused:
 # NuGet caches packages by version, so replacing one would leave every consumer on the old bits.
 set -euo pipefail
 
-usage="usage: $0 <feed directory> [version]"
+usage="usage: $0 [--macos] <feed directory> [version]"
+mac_only=false
+if [[ ${1:-} == --macos ]]; then
+  mac_only=true
+  shift
+fi
 [[ $# -ge 1 && $# -le 2 ]] || { echo "$usage" >&2; exit 2; }
 root="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$1"
@@ -30,7 +37,11 @@ fi
 # NuGet caches a package by its version, so one already restored on this Mac would shadow the new build.
 cache="${NUGET_PACKAGES:-$HOME/.nuget/packages}"
 lower_version="$(printf '%s' "$version" | tr '[:upper:]' '[:lower:]')"
-projects=(AdamE.Firestore.Peerless AdamE.Firestore.Peerless.Android AdamE.Firestore.Peerless.iOS)
+if "$mac_only"; then
+  projects=(AdamE.Firestore.Peerless AdamE.Firestore.Peerless.macOS)
+else
+  projects=(AdamE.Firestore.Peerless AdamE.Firestore.Peerless.Android AdamE.Firestore.Peerless.iOS)
+fi
 for id in "${projects[@]}"; do
   lower_id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
   if [[ -e "$feed/$id.$version.nupkg" || -e "$cache/$lower_id/$lower_version" ]]; then
@@ -46,7 +57,9 @@ trap 'rm -rf "$out"' EXIT
 cd "$root"
 # A package must not carry a shim left over from another checkout state: each build target decides from timestamps,
 # which a checkout doesn't order.
-rm -rf ios/build/PeerlessShim.xcframework android/peerless-shim/build/outputs/aar
+if ! "$mac_only"; then
+  rm -rf ios/build/PeerlessShim.xcframework android/peerless-shim/build/outputs/aar
+fi
 for project in "${projects[@]}"; do
   dotnet pack "src/$project/$project.csproj" -c Release -p:Version="$version" -o "$out"
 done
