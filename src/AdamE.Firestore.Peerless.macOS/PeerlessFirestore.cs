@@ -1,11 +1,10 @@
 using System.Runtime.InteropServices;
-using CoreFoundation;
 
 namespace AdamE.Firestore.Peerless.macOS;
 
 /// <summary>Uses the default Firebase app in a host image that links the PeerlessMacNative Swift package product.</summary>
 /// <remarks>The native image stays loaded for the process lifetime. Configure Firebase before using this client.
-/// Snapshot and commit callbacks run on Firestore's default main queue. Dispose listeners to stop delivery.</remarks>
+/// Snapshot and commit callbacks run on Firestore's configured callback queue. Dispose listeners to stop delivery.</remarks>
 public sealed unsafe class PeerlessFirestore
 {
     private readonly delegate* unmanaged<byte*, int, byte*, nuint, int> useEmulator;
@@ -14,6 +13,8 @@ public sealed unsafe class PeerlessFirestore
         delegate* unmanaged<nint, int, nint, nint, void>, int, byte*, nuint, nint> listen;
     private readonly delegate* unmanaged<nint, delegate* unmanaged<nint, void>, void> remove;
     private readonly delegate* unmanaged<byte*, nint, delegate* unmanaged<nint, int, nint, void>, byte*, nuint, int> commit;
+
+    private readonly delegate* unmanaged<nint, delegate* unmanaged<nint, void>, void> post;
 
     private const int ErrorCapacity = 1024;
 
@@ -31,6 +32,7 @@ public sealed unsafe class PeerlessFirestore
                 delegate* unmanaged<nint, byte*, nuint, nint, void>,
                 delegate* unmanaged<nint, int, nint, nint, void>, int, byte*, nuint, nint>)Export("listen");
             remove = (delegate* unmanaged<nint, delegate* unmanaged<nint, void>, void>)Export("remove");
+            post = (delegate* unmanaged<nint, delegate* unmanaged<nint, void>, void>)Export("post");
             commit = (delegate* unmanaged<byte*, nint, delegate* unmanaged<nint, int, nint, void>, byte*, nuint, int>)Export("commit");
         }
         catch
@@ -142,7 +144,7 @@ public sealed unsafe class PeerlessFirestore
 
         try
         {
-            receiver.Gate.Attach(() => remove(registration, &Release), DispatchQueue.MainQueue.DispatchAsync);
+            receiver.Gate.Attach(() => remove(registration, &Release), Post);
             return receiver;
         }
         catch
@@ -150,6 +152,17 @@ public sealed unsafe class PeerlessFirestore
             receiver.Dispose();
             throw;
         }
+    }
+
+    private void Post(Action action) => post(GCHandle.ToIntPtr(GCHandle.Alloc(action)), &DeliverPosted);
+
+    [UnmanagedCallersOnly]
+    private static void DeliverPosted(nint context)
+    {
+        var handle = GCHandle.FromIntPtr(context);
+        var action = (Action)handle.Target!;
+        handle.Free();
+        action();
     }
 
     private static InvalidOperationException Refused(byte* message, string operation) =>

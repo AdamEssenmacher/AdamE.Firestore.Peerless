@@ -54,13 +54,24 @@ MacExport int32_t adame_peerless_mac_use_emulator(const char *host, int32_t port
         [store useEmulatorWithHost:@(host) port:port];
         FIRFirestoreSettings *settings = store.settings;
         settings.sslEnabled = NO;
-        settings.dispatchQueue = dispatch_get_main_queue();
         store.settings = settings;
         return 1;
     } @catch (NSException *failure) {
         WriteError(error, capacity, failure.reason);
         return 0;
     }
+}
+
+static FIRFieldPath *FieldPath(NSString *name) {
+    return [[FIRFieldPath alloc] initWithFields:[name componentsSeparatedByString:@"."]];
+}
+
+MacExport void adame_peerless_mac_post(void *context, void (*callback)(void *)) {
+    dispatch_queue_t queue = [FIRFirestore firestore].settings.dispatchQueue;
+    dispatch_queue_t main = dispatch_get_main_queue();
+    dispatch_block_t deliver = ^{ callback(context); };
+    if (queue == main) dispatch_async(main, deliver);
+    else dispatch_async(main, ^{ dispatch_async(queue, deliver); });
 }
 
 MacExport void *adame_peerless_mac_listen(const char *path, const char *json, void *context,
@@ -76,11 +87,11 @@ MacExport void *adame_peerless_mac_listen(const char *path, const char *json, vo
         NSDictionary *spec = Parse(json);
         FIRQuery *query = [store collectionWithPath:@(path)];
         for (NSArray *filter in spec[@"filters"]) {
-            FIRFieldPath *field = [[FIRFieldPath alloc] initWithFields:@[filter[0]]];
+            FIRFieldPath *field = FieldPath(filter[0]);
             query = [query queryWhereFieldPath:field isEqualTo:Convert(filter[1], store)];
         }
         if (spec[@"order"]) {
-            FIRFieldPath *field = [[FIRFieldPath alloc] initWithFields:@[spec[@"order"]]];
+            FIRFieldPath *field = FieldPath(spec[@"order"]);
             query = [query queryOrderedByFieldPath:field descending:[spec[@"descending"] boolValue]];
         }
         if (spec[@"limit"]) query = [query queryLimitedTo:[spec[@"limit"] integerValue]];

@@ -9,8 +9,9 @@
 # --macos packs the core and macOS package without the iOS or Android workloads.
 #
 # The version defaults to 0.1.0-preview.g<commit>, so a package names the commit it was built from. A tree with
-# uncommitted changes needs an explicit version, which keeps that promise. A version already in the feed is refused:
-# NuGet caches packages by version, so replacing one would leave every consumer on the old bits.
+# uncommitted changes needs an explicit version, which keeps that promise. Run both modes from the same revision to share a version.
+# Both reuse the core package already in the selected feed. Platform packages cannot be overwritten because NuGet
+# caches packages by version.
 set -euo pipefail
 
 usage="usage: $0 [--macos] <feed directory> [version]"
@@ -42,12 +43,17 @@ if "$mac_only"; then
 else
   projects=(AdamE.Firestore.Peerless AdamE.Firestore.Peerless.Android AdamE.Firestore.Peerless.iOS)
 fi
+pending=()
 for id in "${projects[@]}"; do
+  if [[ "$id" == AdamE.Firestore.Peerless && -f "$feed/$id.$version.nupkg" ]]; then
+    continue
+  fi
   lower_id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
   if [[ -e "$feed/$id.$version.nupkg" || -e "$cache/$lower_id/$lower_version" ]]; then
     echo "pack-local: $id $version is already in $feed or the NuGet cache; pick another version" >&2
     exit 2
   fi
+  pending+=("$id")
 done
 
 # Into a folder of its own first, so a failed pack leaves nothing in the feed.
@@ -60,7 +66,7 @@ cd "$root"
 if ! "$mac_only"; then
   rm -rf ios/build/PeerlessShim.xcframework android/peerless-shim/build/outputs/aar
 fi
-for project in "${projects[@]}"; do
+for project in "${pending[@]}"; do
   dotnet pack "src/$project/$project.csproj" -c Release -p:Version="$version" -o "$out"
 done
 mv "$out"/*.nupkg "$feed"/

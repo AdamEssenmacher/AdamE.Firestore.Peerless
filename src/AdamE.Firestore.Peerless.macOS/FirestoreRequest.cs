@@ -5,6 +5,7 @@ using System.Text.Json;
 
 namespace AdamE.Firestore.Peerless.macOS;
 
+/// <summary>Query field names use dots to address nested fields, as update field names do.</summary>
 public sealed record FirestoreQuery(
     IReadOnlyList<KeyValuePair<string, FirestoreValue>> Filters,
     string? OrderBy = null,
@@ -49,6 +50,7 @@ internal static class FirestoreRequest
         writer.WriteStartArray();
         foreach (var write in writes)
         {
+            ValidateFields(write);
             writer.WriteStartObject();
             writer.WriteString("path", write.DocumentPath);
             writer.WriteString("kind", write.Kind switch
@@ -82,6 +84,25 @@ internal static class FirestoreRequest
         }
         writer.WriteEndArray();
     });
+
+    private static void ValidateFields(FirestoreWrite write)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        void Add(string name)
+        {
+            if (write.Kind == FirestoreWriteKind.Delete)
+                throw new ArgumentException("A delete cannot include fields or transforms.", nameof(write));
+            if (!names.Add(name))
+                throw new ArgumentException($"Field '{name}' is supplied more than once.", nameof(write));
+        }
+
+        foreach (var (name, _) in write.Fields ?? [])
+            Add(name);
+        foreach (var (name, _) in write.Increments ?? [])
+            Add(name);
+        foreach (var name in write.ServerTimestamps ?? [])
+            Add(name);
+    }
 
     private static string Encode(Action<Utf8JsonWriter> write)
     {
