@@ -38,6 +38,37 @@ public sealed class FirestoreRequestTests
         Assert.Empty(json.RootElement[1].GetProperty("fields").EnumerateObject());
     }
 
+    [Fact]
+    public void Rejects_descending_order_without_an_order_field() =>
+        Assert.Throws<ArgumentException>(() => FirestoreRequest.Query(new FirestoreQuery([], Descending: true)));
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Rejects_nonpositive_limits(int limit) =>
+        Assert.Throws<ArgumentOutOfRangeException>(() => FirestoreRequest.Query(new FirestoreQuery([], Limit: limit)));
+
+    [Fact]
+    public void Encodes_descending_order_and_the_smallest_valid_limit()
+    {
+        using var json = JsonDocument.Parse(FirestoreRequest.Query(
+            new FirestoreQuery([], OrderBy: "address.score", Descending: true, Limit: 1)));
+
+        Assert.Equal("address.score", json.RootElement.GetProperty("order").GetString());
+        Assert.True(json.RootElement.GetProperty("descending").GetBoolean());
+        Assert.Equal(1, json.RootElement.GetProperty("limit").GetInt32());
+    }
+
+    [Fact]
+    public void Encodes_a_query_with_neither_order_nor_limit()
+    {
+        using var json = JsonDocument.Parse(FirestoreRequest.Query(new FirestoreQuery([])));
+
+        Assert.False(json.RootElement.TryGetProperty("order", out _));
+        Assert.False(json.RootElement.TryGetProperty("descending", out _));
+        Assert.False(json.RootElement.TryGetProperty("limit", out _));
+    }
+
     private static KeyValuePair<string, FirestoreValue> Field(string name) =>
         KeyValuePair.Create(name, FirestoreValue.FromInteger(5));
 

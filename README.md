@@ -83,6 +83,9 @@ delete. Batch completion reports server acceptance or rejection. The SDK handles
 scripts/pack-local.sh --macos <feed-directory> [version]
 ```
 
+To put the macOS and mobile packages in one feed under one version, run both pack modes from the
+same clean commit and omit the version argument.
+
 Reference `AdamE.Firestore.Peerless.macOS`. Add the `PeerlessMacNative` Swift package product from the NuGet's
 `swift/PeerlessMacNative` directory to the native host image that links Firebase Auth. The NuGet exposes that path
 as the `PeerlessMacSwiftPackage` MSBuild property. Use the same Firebase Apple SDK version in the host and dependency

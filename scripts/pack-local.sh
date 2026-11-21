@@ -9,9 +9,9 @@
 # --macos packs the core and macOS package without the iOS or Android workloads.
 #
 # The version defaults to 0.1.0-preview.g<commit>, so a package names the commit it was built from. A tree with
-# uncommitted changes needs an explicit version, which keeps that promise. Run both modes from the same revision to share a version.
-# Both reuse the core package already in the selected feed. Platform packages cannot be overwritten because NuGet
-# caches packages by version.
+# uncommitted changes needs an explicit version. Run both modes from the same clean revision without a version
+# argument to share the core package. Explicit versions are single-use because they do not identify the source
+# revision. Platform packages cannot be overwritten because NuGet caches packages by version.
 set -euo pipefail
 
 usage="usage: $0 [--macos] <feed directory> [version]"
@@ -25,6 +25,7 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$1"
 feed="$(cd "$1" && pwd)"
 
+commit_version=false
 if [[ $# -eq 2 ]]; then
   version="$2"
 else
@@ -33,6 +34,7 @@ else
     exit 2
   fi
   version="0.1.0-preview.g$(git -C "$root" rev-parse --short=8 HEAD)"
+  commit_version=true
 fi
 
 # NuGet caches a package by its version, so one already restored on this Mac would shadow the new build.
@@ -45,11 +47,17 @@ else
 fi
 pending=()
 for id in "${projects[@]}"; do
-  if [[ "$id" == AdamE.Firestore.Peerless && -f "$feed/$id.$version.nupkg" ]]; then
+  lower_id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
+  feed_package="$feed/$id.$version.nupkg"
+  cache_dir="$cache/$lower_id/$lower_version"
+  if "$commit_version" && [[ "$id" == AdamE.Firestore.Peerless && -f "$feed_package" ]]; then
+    if [[ -e "$cache_dir" ]] && ! cmp -s "$feed_package" "$cache_dir/$lower_id.$lower_version.nupkg"; then
+      echo "pack-local: $id $version in the NuGet cache does not match $feed_package" >&2
+      exit 2
+    fi
     continue
   fi
-  lower_id="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
-  if [[ -e "$feed/$id.$version.nupkg" || -e "$cache/$lower_id/$lower_version" ]]; then
+  if [[ -e "$feed_package" || -e "$cache_dir" ]]; then
     echo "pack-local: $id $version is already in $feed or the NuGet cache; pick another version" >&2
     exit 2
   fi

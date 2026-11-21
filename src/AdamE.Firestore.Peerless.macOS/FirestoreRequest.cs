@@ -25,6 +25,11 @@ internal static class FirestoreRequest
 {
     public static string Query(FirestoreQuery query) => Encode(writer =>
     {
+        if (query.Descending && query.OrderBy is null)
+            throw new ArgumentException("Descending order requires an order field.", nameof(query));
+        if (query.Limit is < 1)
+            throw new ArgumentOutOfRangeException(nameof(query), query.Limit, "The query limit must be positive.");
+
         writer.WriteStartObject();
         writer.WriteStartArray("filters");
         foreach (var (field, value) in query.Filters)
