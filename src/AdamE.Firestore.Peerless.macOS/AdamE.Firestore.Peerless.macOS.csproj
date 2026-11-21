@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>14.0</SupportedOSPlatformVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsPackable>true</IsPackable>
+    <Description>Peerless Firestore listeners and atomic batches for .NET on native macOS.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AdamE.Firestore.Peerless/AdamE.Firestore.Peerless.csproj" />
+    <None Include="../../Package.swift" Pack="true" PackagePath="swift/PeerlessMacNative/Package.swift" />
+    <None Include="../../ios/PeerlessShim/src/**/*" Pack="true" PackagePath="swift/PeerlessMacNative/ios/PeerlessShim/src/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="../../ios/PeerlessShim/include/**/*" Pack="true" PackagePath="swift/PeerlessMacNative/ios/PeerlessShim/include/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="../../macos/PeerlessMacNative/**/*" Pack="true" PackagePath="swift/PeerlessMacNative/macos/PeerlessMacNative/%(RecursiveDir)%(Filename)%(Extension)" />
+    <None Include="build/AdamE.Firestore.Peerless.macOS.props" Pack="true" PackagePath="build/" />
+  </ItemGroup>
+</Project>
